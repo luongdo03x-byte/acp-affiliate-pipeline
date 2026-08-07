@@ -509,6 +509,20 @@ def test_shopee_safe_url():
     check("URL sản phẩm không giữ credential_token",
           "credential_token" not in resolved_opaapi.product_url, resolved_opaapi.product_url)
 
+    # Some Shopee affiliate links land on /opaanlp/<shop>/<item> instead of
+    # /opaapi/lp/<shop>/<item>. It carries the same product identity and must
+    # be canonicalized before metadata lookup.
+    opaanlp = _FakeSession([
+        _FakeHttpResponse(302, {"Location":
+            "https://shopee.vn/opaanlp/252198883/26945064006?credential_token=SECRET"}),
+        _FakeHttpResponse(200, {"Content-Type": "text/html; charset=utf-8"}, b"<html></html>"),
+    ])
+    resolved_opaanlp = AffiliateUrlResolver(
+        SafeHttpClient(session=opaanlp, dns_resolver=_public_dns)).resolve("https://s.shopee.vn/opaanlp")
+    check("opaanlp được chuẩn hoá thành URL sản phẩm sạch",
+          resolved_opaanlp.product_url == "https://shopee.vn/product/252198883/26945064006",
+          resolved_opaanlp.product_url)
+
     evil = _FakeSession([_FakeHttpResponse(302, {"Location": "https://evil.example/x"})])
     try:
         AffiliateUrlResolver(SafeHttpClient(session=evil, dns_resolver=_public_dns)).resolve("https://s.shopee.vn/abc")

@@ -395,6 +395,7 @@ def _product_ids_from_url(url: str):
         r"-i\.(\d+)\.(\d+)(?:$|[/?])",
         r"/product/(\d+)/(\d+)(?:$|[/?])",
         r"/opaapi/lp/(\d+)/(\d+)(?:$|[/?])",
+        r"/opaanlp/(\d+)/(\d+)(?:$|[/?])",
     )
     for pattern in patterns:
         match = re.search(pattern, path)
@@ -440,6 +441,9 @@ def _item_id_from_path(path: str):
     if match:
         return match.group(2)
     match = re.search(r"/opaapi/lp/(\d+)/(\d+)(?:$|[/?])", path)
+    if match:
+        return match.group(2)
+    match = re.search(r"/opaanlp/(\d+)/(\d+)(?:$|[/?])", path)
     if match:
         return match.group(2)
     return None
