@@ -220,6 +220,48 @@ def test_single_product_flow():
     conn.close()
 
 
+def test_manual_shopee_post_flow():
+    print("\\nShopee affiliate có sẵn thành một bài")
+    from acp.adapters.base import RawProduct
+
+    class _NoTrackingSource:
+        name = "manual_shopee"
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    conn = connect()
+    raw = RawProduct(
+        external_product_id="SHOPEE_TEST_1",
+        name="Váy hoa nữ test",
+        current_price=289000,
+        original_price=399000,
+        commission_value=0,
+        commission_rate=None,
+        category_code="khac",
+        product_url="https://shopee.vn/vay-i.123.456",
+        merchant="shopee.vn",
+        image_url_original="https://img.example/product.jpg",
+        image_path_local=None,
+    )
+    link = "https://s.shopee.vn/affiliate-EXACT"
+    res = pipeline.create_post_from_manual_affiliate_product(
+        conn, {"storage": _FakeStorage()}, _NoTrackingSource(), raw,
+        affiliate_url=link, campaign_code="gd2026", channel_code="ch1")
+    check("manual tạo bài thành công", res.get("ok"), res.get("error"))
+    post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+    check("giữ nguyên affiliate link", post["affiliate_link"] == link, post["affiliate_link"])
+    check("manual không có thread_id", post["thread_id"] is None)
+    check("manual không tạo publish job",
+          conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0] == 0)
+    payload = json.loads(post["sub_id_payload"])
+    check("manual ghi provider rõ ràng", payload.get("provider") == "shopee_direct", payload)
+    check("manual ghi link mode prebuilt", payload.get("link_mode") == "prebuilt", payload)
+    check("manual không giả sub1", not any(k.startswith("sub") for k in payload), payload)
+    check("manual không nhúng post id vào link", res["post_id"] not in post["affiliate_link"])
+    check("manual vẫn có disclosure", content.DISCLOSURE_DEFAULT in post["caption_final"])
+    conn.close()
+
+
 class _FakeStorage:
     kind = "fake"
 
@@ -251,6 +293,108 @@ def test_web_security():
     check("mật khẩu đúng thì vào được", r.status_code == 302, r.status_code)
     check("sau đăng nhập xem được dashboard", c.get("/").status_code == 200)
 
+    # Shopee direct: web flow is server-rendered, CSRF-protected and must not
+    # instantiate/call the ACCESSTRADE source just to open the manual tab.
+    from acp.adapters.base import RawProduct
+    from acp.adapters.shopee_affiliate import ProductMetadata, ResolvedAffiliateUrl
+
+    class _FakeManualShopee:
+        name = "manual_shopee"
+
+        def resolve(self, affiliate_url):
+            return ResolvedAffiliateUrl(
+                affiliate_url=affiliate_url,
+                product_url="https://shopee.vn/vay-i.123.456")
+
+        def metadata(self, product_url):
+            return ProductMetadata(
+                name="Váy hoa nữ test", current_price=289000, original_price=399000,
+                image_url="https://img.example/product.jpg", shop="Shop Test")
+
+        def validate_confirmed_urls(self, affiliate_url, product_url):
+            if not affiliate_url.startswith("https://s.shopee.vn/"):
+                raise AssertionError("affiliate URL bị đổi")
+            if product_url != "https://shopee.vn/vay-i.123.456":
+                raise AssertionError("product URL bị đổi")
+
+        def prepare_product(self, confirmed, media_dir):
+            return RawProduct(
+                external_product_id="456", name=confirmed.name,
+                current_price=confirmed.current_price, original_price=confirmed.original_price,
+                commission_value=0, commission_rate=None, category_code="khac",
+                product_url=confirmed.product_url, merchant="shopee.vn",
+                image_url_original=confirmed.image_url, image_path_local=None)
+
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopee()
+    original_get_source = factory.get_source
+    try:
+        factory.get_source = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("manual tab không được gọi ACCESSTRADE source"))
+        manual_page = c.get("/sanpham?mode=affiliate")
+    finally:
+        factory.get_source = original_get_source
+    check("tab affiliate mở mà không gọi source ACCESSTRADE",
+          manual_page.status_code == 200 and "Nhập link affiliate" in manual_page.get_data(as_text=True))
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    check("resolve affiliate thiếu CSRF bị chặn",
+          c.post("/sanpham/affiliate/resolve", data={"affiliate_url": "https://s.shopee.vn/abc"}).status_code == 400)
+
+    before = connect().execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    resolved_page = c.post("/sanpham/affiliate/resolve", data={
+        "_csrf": csrf, "affiliate_url": "https://s.shopee.vn/abc"})
+    body = resolved_page.get_data(as_text=True)
+    check("resolve affiliate luôn mở màn hình xác nhận",
+          resolved_page.status_code == 200 and "Váy hoa nữ test" in body and "Tạo bài nháp" in body)
+    conn = connect()
+    after_resolve = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    conn.close()
+    check("resolve metadata chưa tạo post", before == after_resolve, (before, after_resolve))
+
+    invalid_create = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "", "current_price": "0", "image_url": "", "channel_code": "ch1",
+    })
+    check("create thiếu tên giá ảnh bị từ chối", invalid_create.status_code == 400, invalid_create.status_code)
+
+    created = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "Váy hoa nữ test",
+        "current_price": "289000",
+        "original_price": "399000",
+        "image_url": "https://img.example/product.jpg",
+        "shop": "Shop Test",
+        "channel_code": "ch1",
+    })
+    check("create affiliate draft redirect sang duyệt",
+          created.status_code == 302 and "/duyet" in created.location, getattr(created, "location", ""))
+    conn = connect()
+    manual = conn.execute("""
+        SELECT p.*, pr.source FROM post p
+        JOIN product pr ON pr.id=p.product_id
+        WHERE pr.source='manual_shopee'
+        ORDER BY p.created_at DESC LIMIT 1
+    """).fetchone()
+    check("web manual tạo đúng source", manual is not None and manual["source"] == "manual_shopee")
+    check("web manual dừng ở review", manual and manual["status"] in ("PENDING_REVIEW", "DRAFT"), manual["status"] if manual else None)
+    check("web manual không có thread_id", manual and manual["thread_id"] is None)
+    check("web manual giữ nguyên affiliate link", manual and manual["affiliate_link"] == "https://s.shopee.vn/abc",
+          manual["affiliate_link"] if manual else None)
+    payload = json.loads(manual["sub_id_payload"]) if manual else {}
+    check("web manual dùng attribution shopee_direct", payload.get("provider") == "shopee_direct", payload)
+    check("web manual không có fake sub id", not any(k.startswith("sub") for k in payload), payload)
+    check("web manual không tạo publish job",
+          conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0] == 0)
+    conn.close()
+
     check("POST thiếu CSRF bị chặn",
           c.post("/vanhanh/work", data={}).status_code == 400)
 
@@ -276,6 +420,261 @@ def test_web_security():
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY", "ACP_WEBHOOK_SECRET"):
         os.environ.pop(var, None)
+
+
+class _FakeHttpResponse:
+    def __init__(self, status=200, headers=None, body=b"", url="https://shopee.vn/x"):
+        self.status_code = status
+        self.headers = headers or {}
+        self._body = body
+        self.url = url
+
+    def iter_content(self, chunk_size=65536):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i:i + chunk_size]
+
+    def close(self):
+        pass
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.trust_env = True
+        self.headers = {}
+        self.cookies = type("_Cookies", (), {"clear": lambda self: None})()
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise AssertionError("unexpected HTTP call")
+        return self.responses.pop(0)
+
+
+def _public_dns(host, port, *args, **kwargs):
+    return [(2, 1, 6, "", ("93.184.216.34", port or 443))]
+
+
+def _private_dns(host, port, *args, **kwargs):
+    return [(2, 1, 6, "", ("127.0.0.1", port or 443))]
+
+
+def test_shopee_safe_url():
+    print("\\nLink affiliate Shopee an toàn")
+    from acp.adapters.safe_http import SafeHttpClient, SafeHttpError
+    from acp.adapters.shopee_affiliate import AffiliateUrlResolver, AffiliateImportError
+
+    resolver = AffiliateUrlResolver(SafeHttpClient(session=_FakeSession([]), dns_resolver=_public_dns))
+    check("nhận host shopee.vn", resolver.validate_shopee_url("https://shopee.vn/item-i.1.2").startswith("https://shopee.vn"))
+    check("nhận host s.shopee.vn", resolver.validate_shopee_url("https://s.shopee.vn/abc").startswith("https://s.shopee.vn"))
+
+    for bad in ("file:///etc/passwd", "ftp://shopee.vn/x", "https://example.com/x"):
+        try:
+            resolver.validate_shopee_url(bad)
+            check(f"chặn URL không hợp lệ {bad}", False)
+        except AffiliateImportError:
+            check(f"chặn URL không hợp lệ {bad}", True)
+
+    try:
+        SafeHttpClient(session=_FakeSession([]), dns_resolver=_private_dns).get(
+            "https://shopee.vn/x", allowed_hosts={"shopee.vn"})
+        check("chặn DNS trỏ loopback/private", False)
+    except SafeHttpError:
+        check("chặn DNS trỏ loopback/private", True)
+
+    session = _FakeSession([
+        _FakeHttpResponse(302, {"Location": "https://shopee.vn/product-i.1.2"}),
+        _FakeHttpResponse(200, {"Content-Type": "text/html; charset=utf-8"}, b"<html></html>",
+                          "https://shopee.vn/product-i.1.2"),
+    ])
+    resolved = AffiliateUrlResolver(SafeHttpClient(session=session, dns_resolver=_public_dns)).resolve(
+        "https://s.shopee.vn/abc")
+    check("follow redirect thủ công tới Shopee", resolved.product_url == "https://shopee.vn/product-i.1.2", resolved.product_url)
+    check("không dùng auto redirect", all(call[1].get("allow_redirects") is False for call in session.calls))
+
+    evil = _FakeSession([_FakeHttpResponse(302, {"Location": "https://evil.example/x"})])
+    try:
+        AffiliateUrlResolver(SafeHttpClient(session=evil, dns_resolver=_public_dns)).resolve("https://s.shopee.vn/abc")
+        check("chặn redirect ra host ngoài allowlist", False)
+    except AffiliateImportError:
+        check("chặn redirect ra host ngoài allowlist", True)
+
+
+def fixture_text(name):
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_shopee_metadata():
+    print("\\nMetadata Shopee manual")
+    from acp.adapters.safe_http import SafeHttpResponse
+    from acp.adapters.shopee_affiliate import (
+        ConfirmedProductInput, ManualShopeeSource, ProductMetadataResolver,
+    )
+
+    class _StaticHttp:
+        def __init__(self, body, ctype="text/html"):
+            self.body = body.encode("utf-8")
+            self.ctype = ctype
+
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            return SafeHttpResponse(url, self.body, self.ctype)
+
+    meta = ProductMetadataResolver(_StaticHttp(fixture_text("shopee_product_jsonld.html"))).resolve(
+        "https://shopee.vn/vay-i.123.456")
+    check("JSON-LD ưu tiên tên sản phẩm", meta.name == "Váy hoa nữ test", meta.name)
+    check("JSON-LD đọc giá VND", meta.current_price == 289000, meta.current_price)
+    check("JSON-LD đọc ảnh", meta.image_url.endswith("/product.jpg"), meta.image_url)
+    check("JSON-LD đọc shop/brand", meta.shop == "Shop Test", meta.shop)
+
+    og = ProductMetadataResolver(_StaticHttp(fixture_text("shopee_product_og.html"))).resolve(
+        "https://shopee.vn/tui-i.12.34")
+    check("OpenGraph fallback tên", og.name == "Túi xách nữ test", og.name)
+    check("OpenGraph fallback giá", og.current_price == 199000, og.current_price)
+    check("metadata thiếu shop không bịa", og.shop is None, og.shop)
+
+    confirmed = ConfirmedProductInput(
+        affiliate_url="https://s.shopee.vn/abc",
+        product_url="https://shopee.vn/vay-i.123.456",
+        name="Váy hoa nữ test",
+        current_price=289000,
+        original_price=None,
+        image_url="https://img.example/product.jpg",
+        shop="Shop Test",
+    )
+    raw = ManualShopeeSource.normalize_confirmed(confirmed)
+    check("lấy item id từ URL", raw.external_product_id == "456", raw.external_product_id)
+    check("merchant cố định shopee.vn", raw.merchant == "shopee.vn", raw.merchant)
+    check("không bịa commission", raw.commission_value == 0 and raw.commission_rate is None)
+    check("không bịa rating/review", raw.rating is None and raw.review_count == 0)
+
+    fallback = ConfirmedProductInput(
+        affiliate_url="https://s.shopee.vn/abc",
+        product_url="https://shopee.vn/product-khong-co-id?x=1",
+        name="SP", current_price=100000, original_price=None,
+        image_url="https://img.example/x.jpg", shop=None,
+    )
+    a = ManualShopeeSource.normalize_confirmed(fallback).external_product_id
+    b = ManualShopeeSource.normalize_confirmed(fallback).external_product_id
+    check("fallback ID deterministic", a == b and a.startswith("url_"), a)
+
+
+def test_shopee_image_materialize():
+    print("\\nẢnh Shopee manual")
+    from io import BytesIO
+    from PIL import Image
+    from acp.adapters.safe_http import SafeHttpResponse
+    from acp.adapters.shopee_affiliate import ManualShopeeSource
+
+    buf = BytesIO()
+    Image.new("RGB", (2, 2), "white").save(buf, format="JPEG")
+    image_bytes = buf.getvalue()
+
+    class _ImageHttp:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            return SafeHttpResponse(url, image_bytes, "image/jpeg")
+
+    src = ManualShopeeSource(http=_ImageHttp())
+    media = tempfile.mkdtemp()
+    path = src.materialize_image("https://img.example/product.jpg", media)
+    check("tải ảnh vào media source", os.path.isfile(path), path)
+    check("tên file không dùng input URL", "img.example" not in os.path.basename(path), path)
+    with Image.open(path) as im:
+        check("file ảnh Pillow đọc được", im.size == (2, 2), im.size)
+
+
+def test_shopee_web_contract_source():
+    print("\\nHợp đồng web Shopee direct")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    server_body = open(os.path.join(root, "web", "server.py"), encoding="utf-8").read()
+    product_tpl = open(os.path.join(root, "web", "templates", "products.html"), encoding="utf-8").read()
+    check("có factory riêng cho Shopee direct", 'SHOPEE_SOURCE_FACTORY' in server_body)
+    check("có route phân tích affiliate", '/sanpham/affiliate/resolve' in server_body)
+    check("có route tạo bài affiliate", '/sanpham/affiliate/create' in server_body)
+    check("manual dùng pipeline prebuilt", 'create_post_from_manual_affiliate_product' in server_body)
+    check("manual chỉ dựng storage context", '{"storage": storage.get_storage()}' in server_body)
+    check("UI có tab nhập affiliate", 'Nhập link affiliate' in product_tpl)
+    check("UI có nút phân tích", 'Phân tích link' in product_tpl)
+    check("UI có nút tạo bài nháp", 'Tạo bài nháp' in product_tpl)
+    check("UI sản phẩm không có Đăng ngay", 'Đăng ngay' not in product_tpl)
+
+
+def test_dark_premium_template_contract():
+    print("\\nDark Premium template contract")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tpl_dir = os.path.join(root, "web", "templates")
+    static_css = os.path.join(root, "web", "static", "acp.css")
+    base = open(os.path.join(tpl_dir, "base.html"), encoding="utf-8").read()
+    check("base tải stylesheet Dark Premium", "acp.css" in base)
+    check("base dùng app shell", "app-shell" in base and "sidebar" in base)
+    check("CSS dùng accent violet", os.path.exists(static_css) and "#8B5CF6" in open(static_css, encoding="utf-8").read() if os.path.exists(static_css) else False)
+    check("CSS có responsive 960px", os.path.exists(static_css) and "max-width: 960px" in open(static_css, encoding="utf-8").read() if os.path.exists(static_css) else False)
+    check("CSS có focus-visible", os.path.exists(static_css) and ":focus-visible" in open(static_css, encoding="utf-8").read() if os.path.exists(static_css) else False)
+    for name in ("dashboard.html", "products.html", "review.html", "channels.html", "ops.html", "scoring.html"):
+        body = open(os.path.join(tpl_dir, name), encoding="utf-8").read()
+        check(f"{name} có page header", "page-header" in body)
+    product = open(os.path.join(tpl_dir, "products.html"), encoding="utf-8").read()
+    check("trang sản phẩm không có action đăng ngay", "Đăng ngay" not in product)
+
+
+def test_shopee_edge_hardening():
+    print("\\nShopee edge hardening")
+    from acp.adapters.safe_http import SafeHttpClient, SafeHttpError, SafeHttpResponse
+    from acp.adapters.shopee_affiliate import ProductMetadataResolver, ManualShopeeSource, _vnd_int
+
+    check("giá JSON-LD dạng .0 không bị nhân 10", _vnd_int("199000.0") == 199000, _vnd_int("199000.0"))
+
+    malformed = '<html><head><meta property="og:title" content="Fallback OK"><script type="application/ld+json">{bad json</script></head></html>'
+    class _Static:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            return SafeHttpResponse(url, malformed.encode(), "text/html")
+    meta = ProductMetadataResolver(_Static()).resolve("https://shopee.vn/x-i.1.2")
+    check("JSON-LD hỏng vẫn fallback OpenGraph", meta.name == "Fallback OK", meta.name)
+
+    empty = '<html><head></head><body></body></html>'
+    class _Empty:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            return SafeHttpResponse(url, empty.encode(), "text/html")
+    blank = ProductMetadataResolver(_Empty()).resolve("https://shopee.vn/x-i.1.2")
+    check("HTML không metadata không bịa dữ liệu",
+          blank.name is None and blank.current_price is None and blank.image_url is None and blank.shop is None)
+
+    too_big = _FakeSession([_FakeHttpResponse(200, {"Content-Type":"text/html"}, b"123456")])
+    try:
+        SafeHttpClient(session=too_big, dns_resolver=_public_dns, max_bytes=5).get(
+            "https://shopee.vn/x", allowed_hosts={"shopee.vn"}, expected_content_prefix="text/html")
+        check("chặn response quá lớn", False)
+    except SafeHttpError:
+        check("chặn response quá lớn", True)
+
+    wrong = _FakeSession([_FakeHttpResponse(200, {"Content-Type":"application/json"}, b"{}")])
+    try:
+        SafeHttpClient(session=wrong, dns_resolver=_public_dns).get(
+            "https://shopee.vn/x", allowed_hosts={"shopee.vn"}, expected_content_prefix="text/html")
+        check("chặn metadata sai content type", False)
+    except SafeHttpError:
+        check("chặn metadata sai content type", True)
+
+    redirects = _FakeSession([
+        _FakeHttpResponse(302, {"Location":"https://shopee.vn/b"}),
+        _FakeHttpResponse(302, {"Location":"https://shopee.vn/c"}),
+    ])
+    try:
+        SafeHttpClient(session=redirects, dns_resolver=_public_dns, max_redirects=1).get(
+            "https://shopee.vn/a", allowed_hosts={"shopee.vn"})
+        check("giới hạn số redirect", False)
+    except SafeHttpError:
+        check("giới hạn số redirect", True)
+
+    class _WrongImage:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            return SafeHttpResponse(url, b"<html>", "text/html")
+    try:
+        ManualShopeeSource(http=_WrongImage()).materialize_image("https://img.example/x", tempfile.mkdtemp())
+        check("chặn URL ảnh trả HTML", False)
+    except Exception:
+        check("chặn URL ảnh trả HTML", True)
 
 
 def test_production_guard():
@@ -432,6 +831,13 @@ if __name__ == "__main__":
     test_transaction_status_mapping()
     test_factory()
     test_single_product_flow()
+    test_shopee_safe_url()
+    test_shopee_metadata()
+    test_shopee_image_materialize()
+    test_manual_shopee_post_flow()
+    test_shopee_web_contract_source()
+    test_dark_premium_template_contract()
+    test_shopee_edge_hardening()
     test_web_security()
     test_production_guard()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")

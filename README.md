@@ -295,3 +295,44 @@ ngày, ràng buộc CSDL.
 - Job gia hạn token 60 ngày — `live.py` có sẵn chỗ, chưa nối vào hàng đợi.
 - Cảnh báo Telegram/email (FR10).
 - Auto-approve có điều kiện — chỉ nên bật sau >200 bài duyệt tay với tỷ lệ reject <3%.
+
+---
+
+## Nhập link affiliate Shopee có sẵn
+
+ACP có một luồng riêng cho link affiliate Shopee mà operator đã tạo trước đó. Luồng này **không gọi ACCESSTRADE để tạo tracking link mới**.
+
+Trên dashboard:
+
+```text
+/sanpham
+→ Nhập link affiliate
+→ dán link Shopee
+→ Phân tích link
+→ kiểm tra/chỉnh tên, giá, ảnh, shop
+→ chọn kênh Threads
+→ Tạo bài nháp
+→ /duyet
+```
+
+ACP thử resolve link và đọc metadata công khai bằng JSON-LD/OpenGraph. Nếu Shopee không trả đủ metadata, màn hình xác nhận vẫn mở để nhập phần còn thiếu thủ công.
+
+Các nguyên tắc bắt buộc của luồng này:
+
+- link affiliate được lưu **nguyên đúng giá trị operator nhập** trong `post.affiliate_link`;
+- `manual_shopee` và ACCESSTRADE là hai nguồn độc lập;
+- không tự thêm `sub1=post_id` vào link Shopee có sẵn;
+- attribution của bài manual ghi rõ `provider=shopee_direct`, `link_mode=prebuilt`;
+- resolve/create chỉ tạo `PENDING_REVIEW` (hoặc `DRAFT` nếu caption chưa qua validator);
+- không tạo `PUBLISH_POST` trước khi operator duyệt tại `/duyet`;
+- outbound URL và ảnh đi qua kiểm tra scheme/host/DNS/IP, redirect, Content-Type và giới hạn kích thước để giảm rủi ro SSRF.
+
+## Dark Premium dashboard
+
+Dashboard server-rendered dùng design system chung tại:
+
+```text
+web/static/acp.css
+```
+
+Giao diện mới áp dụng cho Tổng quan, Sản phẩm, Kênh, Chờ duyệt, Vận hành, Chấm điểm và Đăng nhập. Không thêm React/Vue/Tailwind hoặc frontend build pipeline; route, CSRF, auth và business logic hiện có vẫn giữ nguyên.

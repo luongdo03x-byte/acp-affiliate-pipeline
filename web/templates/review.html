@@ -1,76 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Chờ duyệt — Sổ cái affiliate{% endblock %}
+{% block title %}Chờ duyệt — ACP{% endblock %}
 {% block content %}
-<h1>Chờ duyệt</h1>
-<p class="lede">Đây là chốt chặn duy nhất có người trong toàn bộ pipeline. Duyệt xong bài sẽ tự lên lịch theo giãn cách của kênh.</p>
-
-{% if request.args.get('err') %}
-<div class="card" style="border-color:#E3C3C2;background:#FBF0EF;margin-bottom:20px">
-  <strong>Không duyệt được.</strong> {{ request.args.get('err') }}
+<div class="page-header">
+  <div><div class="eyebrow">Human review gate</div><h1>Chờ duyệt</h1><p class="lede">Kiểm tra ảnh, caption và link trước khi bài được lên lịch. Đây là chốt người duyệt duy nhất của pipeline.</p></div>
+  <a class="btn btn--ghost" href="/sanpham">Tạo bài mới</a>
 </div>
-{% endif %}
 
-{% if not posts %}
-<div class="empty">Hết bài chờ duyệt. Chạy <code>python3 run.py plan</code> rồi <code>python3 run.py work</code> để sinh lô mới.</div>
-{% endif %}
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không duyệt được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if not posts %}<div class="empty-state">Không còn bài chờ duyệt.</div>{% endif %}
 
+<div class="review-list">
 {% for p in posts %}
-<div class="card" style="margin-bottom:18px">
-  <div style="display:flex;gap:20px;flex-wrap:wrap">
-    <img src="{{ '/media/' ~ p.id ~ '.jpg' }}" alt="Ảnh đăng bài" width="188" height="188"
-         style="border-radius:8px;border:1px solid var(--rule);object-fit:cover;flex:0 0 188px">
-
-    <div style="flex:1;min-width:320px">
-      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
-        <strong style="font-family:var(--display);font-size:16px">{{ p.product_name }}</strong>
-        <span class="n" style="font-size:13px">điểm {{ '%.3f'|format(p.score or 0) }}</span>
-      </div>
-
-      <div style="margin:8px 0 12px;display:flex;gap:6px;flex-wrap:wrap">
-        <span class="tag">{{ p.category_code }}</span>
-        <span class="tag">{{ p.template_name }}</span>
-        <span class="tag">biến thể {{ p.variant_code }}</span>
-        <span class="tag">{{ p.channel_handle }}</span>
-        <span class="tag warn">hoa hồng {{ p.commission_value|vnd }}</span>
-        <span class="tag">{{ p.rating }}★ · {{ p.review_count|num }} đánh giá · bán {{ p.sold_count|num }}</span>
-      </div>
-
-      {% if p.status == 'DRAFT' and p.reject_reason %}
-      <div class="card" style="border-color:#E3C3C2;background:#FBF0EF;padding:10px 12px;margin-bottom:12px">
-        <strong style="font-size:13.5px">Không đạt kiểm tra tự động</strong>
-        <div style="font-size:13.5px;margin-top:2px">{{ p.reject_reason }}</div>
-      </div>
-      {% endif %}
-
-      <form method="post" action="/duyet/{{ p.id }}/approve">
-  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-        <textarea name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:12px;flex-wrap:wrap">
-          <span class="dim" style="font-family:var(--mono);font-size:12px">{{ p.caption_final|length }}/500 ký tự</span>
-          <div style="display:flex;gap:8px">
-            <button class="primary" type="submit">Duyệt và lên lịch</button>
-            <button class="ghost" type="submit" formaction="/duyet/{{ p.id }}/reject">Bỏ qua</button>
-          </div>
-        </div>
-      </form>
+<article class="review-card">
+  <img class="review-card__image" src="{{ '/media/' ~ p.id ~ '.jpg' }}" alt="Ảnh đăng bài">
+  <div>
+    <div class="review-card__head"><strong>{{ p.product_name }}</strong><span class="status-badge status-badge--accent">điểm {{ '%.3f'|format(p.score or 0) }}</span></div>
+    <div class="review-tags">
+      <span class="tag">{{ p.category_code }}</span><span class="tag">{{ p.template_name }}</span><span class="tag">biến thể {{ p.variant_code }}</span>
+      <span class="tag">{{ p.channel_handle }}</span><span class="tag warn">hoa hồng {{ p.commission_value|vnd }}</span>
+      <span class="tag">{{ p.rating or '—' }}★ · {{ p.review_count|num }} đánh giá · bán {{ p.sold_count|num }}</span>
     </div>
+    {% if p.status == 'DRAFT' and p.reject_reason %}<div class="alert alert--error"><strong>Không đạt kiểm tra tự động.</strong><span>{{ p.reject_reason }}</span></div>{% endif %}
+    <form method="post" action="/duyet/{{ p.id }}/approve">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <div class="field"><label for="caption-{{ p.id }}">Caption</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
+      <div class="review-actions"><span class="dim mono">{{ p.caption_final|length }}/500 ký tự</span><div class="review-actions__buttons"><button class="btn btn--danger" type="submit" formaction="/duyet/{{ p.id }}/reject">Bỏ qua</button><button class="btn btn--primary" type="submit">Duyệt & lên lịch</button></div></div>
+    </form>
   </div>
-</div>
+</article>
 {% endfor %}
+</div>
 
 {% if recent %}
-<h2>Vừa xử lý</h2>
-<table>
-  <thead><tr><th>Sản phẩm</th><th>Trạng thái</th><th>Thời điểm</th></tr></thead>
-  <tbody>
-  {% for r in recent %}
-    <tr>
-      <td>{{ r.product_name }}</td>
-      <td><span class="tag {{ 'ok' if r.status=='PUBLISHED' else ('bad' if r.status=='REJECTED' else 'warn') }}">{{ r.status }}</span></td>
-      <td class="dim n" style="text-align:left">{{ (r.published_at or r.scheduled_at or '')[:16]|replace('T',' ') }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="section-heading section-heading--spaced"><div><h2>Vừa xử lý</h2><p class="note">Lịch sử gần nhất sau bước duyệt.</p></div></div>
+<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Sản phẩm</th><th>Trạng thái</th><th>Thời điểm</th></tr></thead><tbody>
+{% for r in recent %}<tr><td>{{ r.product_name }}</td><td><span class="tag {{ 'ok' if r.status=='PUBLISHED' else ('bad' if r.status=='REJECTED' else 'warn') }}">{{ r.status }}</span></td><td class="dim mono">{{ (r.published_at or r.scheduled_at or '')[:16]|replace('T',' ') }}</td></tr>{% endfor %}
+</tbody></table></div></div>
 {% endif %}
 {% endblock %}

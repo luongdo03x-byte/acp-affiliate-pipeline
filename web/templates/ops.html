@@ -1,98 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Vận hành — Sổ cái affiliate{% endblock %}
+{% block title %}Vận hành — ACP{% endblock %}
 {% block content %}
-<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-  <div>
-    <h1>Vận hành</h1>
-    <p class="lede">Hàng đợi luôn có tồn — đó là trạng thái bình thường, không phải tắc nghẽn. Giãn cách đăng bài mới là ràng buộc thật.</p>
-  </div>
-  <form method="post" action="/vanhanh/work">
-  <input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="primary">Chạy hàng đợi ngay</button></form>
+<div class="page-header">
+  <div><div class="eyebrow">Runtime & queue</div><h1>Vận hành</h1><p class="lede">Theo dõi hàng đợi, lịch đăng, lỗi và audit log. Job READY chờ đúng lịch là trạng thái bình thường.</p></div>
+  <form method="post" action="/vanhanh/work"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--primary" type="submit">Chạy hàng đợi ngay</button></form>
 </div>
 
-<div class="chain">
-  {% for k, label in [('READY','Sẵn sàng'),('RUNNING','Đang chạy'),('DONE','Xong'),('FAILED','Thất bại')] %}
-  <div class="step">
-    <div class="k">{{ label }}</div>
-    <div class="v" {% if k=='FAILED' and queue.get(k) %}style="color:var(--alert)"{% endif %}>{{ queue.get(k, 0) }}</div>
-  </div>
-  {% endfor %}
+<div class="kpi-grid kpi-grid--4">
+{% for k, label in [('READY','Sẵn sàng'),('RUNNING','Đang chạy'),('DONE','Hoàn tất'),('FAILED','Thất bại')] %}
+<div class="kpi-card {{ 'kpi-card--danger' if k=='FAILED' and queue.get(k) }}"><div class="kpi-label">{{ label }}</div><div class="kpi-value">{{ queue.get(k, 0) }}</div><div class="kpi-meta">{{ k }}</div></div>
+{% endfor %}
 </div>
 
-<h2>Kênh đăng bài</h2>
-<table>
-  <thead><tr><th>Kênh</th><th>Trạng thái</th><th class="n">Hôm nay</th><th class="n">Trần ngày</th>
-    <th class="n">Đang chờ đăng</th><th class="n">Giãn cách</th></tr></thead>
-  <tbody>
-  {% for c in channels %}
-    <tr>
-      <td>{{ c.handle }}<br><span class="dim" style="font-size:12.5px">{{ c.code }}</span></td>
-      <td><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span></td>
-      <td class="n">{{ c.today }}</td>
-      <td class="n dim">{{ c.daily_post_cap }}</td>
-      <td class="n dim">{{ c.queued }}</td>
-      <td class="n dim">{{ c.min_gap_minutes }} phút</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-<p class="note">Trần ngày là giới hạn tự đặt, thấp hơn nhiều mức 250 bài/24h mà Threads cho phép. Đăng dày hơn thì lượt xem mỗi bài giảm.</p>
+<div class="section-heading section-heading--spaced"><div><h2>Kênh đăng bài</h2><p class="note">Quota và lịch đăng của từng kênh.</p></div></div>
+<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Kênh</th><th>Trạng thái</th><th class="n">Hôm nay</th><th class="n">Trần ngày</th><th class="n">Chờ đăng</th><th class="n">Giãn cách</th></tr></thead><tbody>
+{% for c in channels %}<tr><td><strong>{{ c.handle }}</strong><span class="mono-sub">{{ c.code }}</span></td><td><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span></td><td class="n">{{ c.today }}</td><td class="n dim">{{ c.daily_post_cap }}</td><td class="n dim">{{ c.queued }}</td><td class="n dim">{{ c.min_gap_minutes }} phút</td></tr>{% endfor %}
+</tbody></table></div></div>
 
 <div class="grid2">
-<div>
-  <h2>Bài đăng theo trạng thái</h2>
-  <table>
-    <tbody>
-    {% for s in posts_by_status %}
-      <tr><td>{{ s.status }}</td><td class="n">{{ s.n }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-<div>
-  <h2>Job bị hoãn</h2>
-  {% if deferred %}
-  <table>
-    <tbody>
-    {% for j in deferred %}
-      <tr><td>{{ j.job_type }}<br><span class="dim" style="font-size:12.5px">{{ j.last_error[:70] }}</span></td>
-          <td class="n dim">{{ j.run_after[11:16] }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}<div class="empty">Không có job nào bị hoãn.</div>{% endif %}
-</div>
+<section class="card panel"><div class="panel-header"><h2>Bài đăng theo trạng thái</h2></div><div class="table-card"><table class="data-table"><tbody>{% for s in posts_by_status %}<tr><td>{{ s.status }}</td><td class="n">{{ s.n }}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="card panel"><div class="panel-header"><h2>Job bị hoãn</h2></div>{% if deferred %}<div class="table-card"><table class="data-table"><tbody>{% for j in deferred %}<tr><td>{{ j.job_type }}<span class="mono-sub">{{ j.last_error[:70] }}</span></td><td class="n dim">{{ j.run_after[11:16] }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-state">Không có job nào bị hoãn.</div>{% endif %}</section>
 </div>
 
-<h2>Job thất bại</h2>
-{% if failed %}
-<table>
-  <thead><tr><th>Loại</th><th>Lỗi</th><th class="n">Lần thử</th></tr></thead>
-  <tbody>
-  {% for j in failed %}
-    <tr>
-      <td>{{ j.job_type }}</td>
-      <td style="font-size:13px">{{ j.last_error[:150] }}</td>
-      <td class="n">{{ j.attempt_count }}/{{ j.max_attempts }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-<p class="note">Lỗi vi phạm nội dung không bao giờ được thử lại — bài quay về hàng đợi duyệt để người xem lại. Thử lại nội dung bị từ chối là cách nhanh nhất để mất tài khoản.</p>
-{% else %}<div class="empty">Không có job nào thất bại.</div>{% endif %}
+<div class="section-heading section-heading--spaced"><div><h2>Job thất bại</h2><p class="note">Lỗi cần operator xem lại.</p></div></div>
+{% if failed %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Loại</th><th>Lỗi</th><th class="n">Lần thử</th></tr></thead><tbody>{% for j in failed %}<tr><td>{{ j.job_type }}</td><td>{{ j.last_error[:150] }}</td><td class="n">{{ j.attempt_count }}/{{ j.max_attempts }}</td></tr>{% endfor %}</tbody></table></div></div>{% else %}<div class="empty-state">Không có job nào thất bại.</div>{% endif %}
 
-<h2>Nhật ký</h2>
-<table>
-  <thead><tr><th>Thời điểm</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead>
-  <tbody>
-  {% for a in audit %}
-    <tr>
-      <td class="dim n" style="text-align:left">{{ a.created_at[5:16]|replace('T',' ') }}</td>
-      <td class="dim">{{ a.entity }}</td>
-      <td>{{ a.action }}</td>
-      <td class="dim">{{ a.actor }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="section-heading section-heading--spaced"><div><h2>Nhật ký hệ thống</h2><p class="note">12 hành động gần nhất.</p></div></div>
+<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Thời điểm</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{% for a in audit %}<tr><td class="dim mono">{{ a.created_at[5:16]|replace('T',' ') }}</td><td class="dim">{{ a.entity }}</td><td>{{ a.action }}</td><td class="dim">{{ a.actor }}</td></tr>{% endfor %}</tbody></table></div></div>
 {% endblock %}
