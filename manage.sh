@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+BASE="${ACP_BASE:-$HOME/Downloads/ACP}"
+ACTIVE="$BASE/acp"
+SHARED="$BASE/shared"
+RUN_DIR="$SHARED/run"
+LOG_DIR="$BASE/logs"
+BACKUP_DIR="$BASE/backups"
+RELEASES_DIR="$BASE/releases"
+APP_PID="$RUN_DIR/acp.pid"
+NGROK_PID="$RUN_DIR/ngrok.pid"
+PREVIOUS_FILE="$RUN_DIR/previous_release"
+SCRIPT_REAL="$(readlink -f "$0")"
+
+mkdir -p "$RUN_DIR" "$LOG_DIR" "$BACKUP_DIR" "$RELEASES_DIR"
+
+info() { printf '%s\n' "$*"; }
+warn() { printf '⚠ %s\n' "$*" >&2; }
+die() { printf '✗ %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Cách dùng:
+  ./manage.sh start
+  ./manage.sh stop
+  ./manage.sh restart
+  ./manage.sh status
+  ./manage.sh test
+  ./manage.sh upgrade <file.zip> <version>
+  ./manage.sh rollback
+
+Biến tùy chọn:
+  ACP_BASE=/duong/dan/ACP   # mặc định ~/Downloads/ACP
+EOF
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $1"
+}
+
+current_release() {
+    [[ -e "$ACTIVE" || -L "$ACTIVE" ]] || die "Không tìm thấy bản đang chạy: $ACTIVE"
+    readlink -f "$ACTIVE"
+}
+
+release_version() {
+    local release="$1"
+    basename "$(dirname "$release")"
+}
+
+load_env_from() {
+    local release="$1"
+    local env_file="$release/.env.local"
+    [[ -f "$env_file" ]] || die "Không tìm thấy $env_file"
+    set +u
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set -u
+}
+
+pid_matches() {
+    local pid_file="$1"
+    local needle="$2"
+    [[ -f "$pid_file" ]] || return 1
+    local pid
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    local cmd
+    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    [[ "$cmd" == *"$needle"* ]]
+}
+
+stop_pid() {
+    local pid_file="$1"
+    local needle="$2"
+    local label="$3"
+
+    if ! pid_matches "$pid_file" "$needle"; then
+        rm -f "$pid_file"
+        return 0
+    fi
+
+    local pid
+    pid="$(cat "$pid_file")"
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$pid_file"
+            info "✓ Đã dừng $label"
+            return 0
+        fi
+        sleep 0.25
+    done
+
+    warn "$label chưa dừng sau 5 giây; gửi SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$pid_file"
+}
+
+derive_ngrok_url() {
+    local candidate="${ACP_NGROK_URL:-}"
+    if [[ -z "$candidate" && "${ACP_PUBLIC_BASE_URL:-}" == *ngrok* ]]; then
+        candidate="$ACP_PUBLIC_BASE_URL"
+    fi
+    if [[ -z "$candidate" && "${ACP_MEDIA_BASE_URL:-}" == *ngrok* ]]; then
+        candidate="${ACP_MEDIA_BASE_URL%/media}"
+    fi
+    printf '%s' "$candidate"
+}
+
+wait_http() {
+    local port="$1"
+    local code
+    for _ in {1..30}; do
+        code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+        if [[ -n "$code" && "$code" != "000" ]]; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+cmd_start() {
+    require_cmd curl
+    local release
+    release="$(current_release)"
+    [[ -f "$release/run.py" ]] || die "Thiếu run.py trong $release"
+    [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
+
+    load_env_from "$release"
+    local port="${PORT:-5000}"
+
+    if pid_matches "$APP_PID" "run.py serve"; then
+        info "ACP_ALREADY_RUNNING pid=$(cat "$APP_PID")"
+    else
+        rm -f "$APP_PID"
+        (
+            cd "$release"
+            nohup "$release/.venv/bin/python" "$release/run.py" serve \
+                >>"$LOG_DIR/acp.log" 2>&1 &
+            echo $! >"$APP_PID"
+        )
+
+        if ! wait_http "$port"; then
+            warn "ACP không trả HTTP trên 127.0.0.1:$port"
+            tail -n 30 "$LOG_DIR/acp.log" 2>/dev/null || true
+            stop_pid "$APP_PID" "run.py serve" "ACP" || true
+            return 1
+        fi
+        info "ACP_STARTED pid=$(cat "$APP_PID") url=http://127.0.0.1:$port"
+    fi
+
+    local ngrok_url
+    ngrok_url="$(derive_ngrok_url)"
+    if [[ -n "$ngrok_url" ]]; then
+        if ! command -v ngrok >/dev/null 2>&1; then
+            warn "Có URL ngrok nhưng máy chưa có lệnh ngrok; ACP local vẫn đang chạy."
+        elif pid_matches "$NGROK_PID" "ngrok http"; then
+            info "NGROK_ALREADY_RUNNING pid=$(cat "$NGROK_PID") url=$ngrok_url"
+        else
+            rm -f "$NGROK_PID"
+            nohup ngrok http "$port" --url "$ngrok_url" \
+                >>"$LOG_DIR/ngrok.log" 2>&1 &
+            echo $! >"$NGROK_PID"
+            sleep 1
+            if pid_matches "$NGROK_PID" "ngrok http"; then
+                info "NGROK_STARTED pid=$(cat "$NGROK_PID") url=$ngrok_url"
+            else
+                warn "ngrok không khởi động được; xem $LOG_DIR/ngrok.log"
+                rm -f "$NGROK_PID"
+            fi
+        fi
+    fi
+}
+
+cmd_stop() {
+    stop_pid "$NGROK_PID" "ngrok http" "ngrok"
+    stop_pid "$APP_PID" "run.py serve" "ACP"
+    info "ACP_STOPPED"
+}
+
+cmd_restart() {
+    cmd_stop
+    cmd_start
+}
+
+cmd_status() {
+    local release version
+    release="$(current_release)"
+    version="$(release_version "$release")"
+    info "Release : $version"
+    info "Path    : $release"
+
+    if pid_matches "$APP_PID" "run.py serve"; then
+        info "ACP     : RUNNING (pid $(cat "$APP_PID"))"
+    else
+        info "ACP     : STOPPED"
+    fi
+
+    if pid_matches "$NGROK_PID" "ngrok http"; then
+        info "ngrok   : RUNNING (pid $(cat "$NGROK_PID"))"
+    else
+        info "ngrok   : STOPPED"
+    fi
+
+    if [[ -d "$release/.git" ]]; then
+        info "Git     : $(git -C "$release" branch --show-current 2>/dev/null || true) @ $(git -C "$release" rev-parse --short HEAD 2>/dev/null || true)"
+    fi
+}
+
+run_release_tests() {
+    local release="$1"
+    local parent
+    parent="$(dirname "$release")"
+    [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
+
+    load_env_from "$release"
+    (
+        cd "$parent"
+        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" -m acp.tests.test_pipeline
+        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" -m acp.tests.test_pilot
+    )
+    (
+        cd "$release"
+        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" run.py doctor
+    )
+}
+
+cmd_test() {
+    local release
+    release="$(current_release)"
+    run_release_tests "$release"
+    info "TEST_OK"
+}
+
+backup_db() {
+    local release="$1"
+    local version="$2"
+    load_env_from "$release"
+    [[ -n "${ACP_DB:-}" ]] || die "ACP_DB chưa được khai trong .env.local"
+    [[ -f "$ACP_DB" ]] || die "Không tìm thấy database: $ACP_DB"
+
+    local stamp backup
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    backup="$BACKUP_DIR/acp-live-before-${version}-${stamp}.db"
+
+    python3 - "$ACP_DB" "$backup" <<'PY'
+import sqlite3
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = sqlite3.connect(src_path)
+dst = sqlite3.connect(dst_path)
+try:
+    src.backup(dst)
+finally:
+    dst.close()
+    src.close()
+PY
+    [[ -s "$backup" ]] || die "Backup database thất bại"
+    info "DB_BACKUP=$backup"
+}
+
+extract_release() {
+    local zip_file="$1"
+    local version="$2"
+    local release_root="$RELEASES_DIR/$version"
+    local new="$release_root/acp"
+
+    [[ -f "$zip_file" ]] || die "Không tìm thấy ZIP: $zip_file"
+    [[ ! -e "$release_root" ]] || die "Release $version đã tồn tại: $release_root"
+    require_cmd unzip
+
+    local tmp stage nested run_py src_app
+    tmp="$(mktemp -d)"
+    stage="$tmp/stage"
+    mkdir -p "$stage" "$release_root"
+    trap 'rm -rf "${tmp:-}"' RETURN
+
+    unzip -q "$zip_file" -d "$stage"
+    run_py="$(find "$stage" -maxdepth 4 -type f -name run.py -print -quit)"
+
+    if [[ -z "$run_py" ]]; then
+        nested="$(find "$stage" -maxdepth 3 -type f -name '*.zip' -print -quit)"
+        if [[ -n "$nested" ]]; then
+            mkdir -p "$tmp/nested"
+            unzip -q "$nested" -d "$tmp/nested"
+            run_py="$(find "$tmp/nested" -maxdepth 4 -type f -name run.py -print -quit)"
+        fi
+    fi
+
+    [[ -n "$run_py" ]] || die "ZIP không chứa ACP run.py"
+    src_app="$(dirname "$run_py")"
+    cp -a "$src_app" "$new"
+
+    rm -rf "$new/.venv" "$new/var" "$new/.env.local" "$new/.git"
+    ln -s "$SHARED/var" "$new/var"
+    ln -s "$SHARED/.env.local" "$new/.env.local"
+
+    if [[ ! -f "$new/manage.sh" ]]; then
+        cp "$SCRIPT_REAL" "$new/manage.sh"
+    fi
+    chmod +x "$new/manage.sh"
+
+    printf '%s' "$new"
+}
+
+prepare_git_metadata() {
+    local old="$1"
+    local new="$2"
+    local version="$3"
+    if [[ ! -d "$old/.git" ]]; then
+        return 0
+    fi
+    cp -a "$old/.git" "$new/.git"
+    local branch="upgrade/$version"
+    git -C "$new" switch -c "$branch" >/dev/null 2>&1 || git -C "$new" switch "$branch" >/dev/null 2>&1 || true
+}
+
+install_release() {
+    local new="$1"
+    [[ -f "$new/requirements.txt" ]] || die "Thiếu requirements.txt trong release mới"
+    python3 -m venv "$new/.venv"
+    "$new/.venv/bin/python" -m pip install --disable-pip-version-check -r "$new/requirements.txt"
+}
+
+migrate_release() {
+    local new="$1"
+    local parent
+    parent="$(dirname "$new")"
+    load_env_from "$new"
+    (
+        cd "$parent"
+        ACP_ADAPTER=mock ACP_SOURCE=mock "$new/.venv/bin/python" - <<'PY'
+from acp.core.db import init_db
+init_db()
+print("SCHEMA_OK")
+PY
+    )
+}
+
+switch_active() {
+    local target="$1"
+    local temp_link="$BASE/.acp-next-$$"
+    [[ -d "$target" ]] || die "Release không tồn tại: $target"
+
+    if [[ -e "$ACTIVE" && ! -L "$ACTIVE" ]]; then
+        die "$ACTIVE phải là symlink trước khi dùng upgrade/rollback tự động"
+    fi
+
+    ln -s "$target" "$temp_link"
+    mv -Tf "$temp_link" "$ACTIVE"
+}
+
+cmd_upgrade() {
+    local zip_file="${1:-}"
+    local version="${2:-}"
+    [[ -n "$zip_file" && -n "$version" ]] || { usage; return 2; }
+
+    local old
+    old="$(current_release)"
+    if [[ -d "$old/.git" && -n "$(git -C "$old" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        die "Git working tree hiện tại chưa sạch. Commit/stash trước khi upgrade."
+    fi
+
+    cmd_stop
+    backup_db "$old" "$version"
+
+    local new
+    new="$(extract_release "$zip_file" "$version")"
+    prepare_git_metadata "$old" "$new" "$version"
+    install_release "$new"
+    run_release_tests "$new"
+    migrate_release "$new"
+
+    printf '%s\n' "$old" >"$PREVIOUS_FILE"
+    switch_active "$new"
+
+    if ! cmd_start; then
+        warn "Release mới không khởi động được; tự động quay lại release trước."
+        switch_active "$old"
+        cmd_start || true
+        return 1
+    fi
+
+    info "UPGRADE_OK version=$version"
+}
+
+cmd_rollback() {
+    [[ -f "$PREVIOUS_FILE" ]] || die "Chưa có release trước để rollback"
+    local previous current
+    previous="$(cat "$PREVIOUS_FILE")"
+    [[ -d "$previous" ]] || die "Release rollback không còn tồn tại: $previous"
+    current="$(current_release)"
+    [[ "$previous" != "$current" ]] || die "Release trước trùng release hiện tại"
+
+    cmd_stop
+    switch_active "$previous"
+    printf '%s\n' "$current" >"$PREVIOUS_FILE"
+    if ! cmd_start; then
+        warn "Rollback đã đổi symlink nhưng app chưa khởi động; kiểm tra log."
+        return 1
+    fi
+    info "ROLLBACK_OK release=$(release_version "$previous")"
+}
+
+case "${1:-}" in
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart ;;
+    status) cmd_status ;;
+    test) cmd_test ;;
+    upgrade) shift; cmd_upgrade "$@" ;;
+    rollback) cmd_rollback ;;
+    -h|--help|help|"") usage ;;
+    *) usage >&2; exit 2 ;;
+esac

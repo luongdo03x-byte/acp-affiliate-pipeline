@@ -32,6 +32,32 @@ EPC               1.277đ
 
 ---
 
+## Quản lý app bằng một lệnh
+
+Sau khi setup release/shared một lần, ưu tiên dùng `manage.sh` thay cho việc mở nhiều terminal và nạp env thủ công:
+
+```bash
+./manage.sh start
+./manage.sh status
+./manage.sh restart
+./manage.sh stop
+./manage.sh test
+./manage.sh upgrade ~/Downloads/acp_2.1.zip 2.1
+./manage.sh rollback
+```
+
+Để gọi từ thư mục `~/Downloads/ACP`:
+
+```bash
+cd ~/Downloads/ACP
+ln -sfn "acp/manage.sh" manage.sh
+./manage.sh status
+```
+
+Runtime/secrets vẫn nằm ở `~/Downloads/ACP/shared`, log ở `~/Downloads/ACP/logs`, backup DB ở `~/Downloads/ACP/backups`. `manage.sh test` và bước xác minh upgrade luôn ép adapter/source về mock để không đăng bài thật. Xem `docs/ACP_RUNBOOK.md` cho quy trình đầy đủ.
+
+---
+
 ## Các lệnh
 
 | Lệnh | Việc |
