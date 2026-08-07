@@ -74,7 +74,7 @@ class AffiliateUrlResolver:
             )
         except (SafeHttpError, OSError) as exc:
             raise AffiliateImportError("Không thể phân tích link affiliate Shopee.") from exc
-        return ResolvedAffiliateUrl(affiliate_url=affiliate_url, product_url=response.final_url)
+        return ResolvedAffiliateUrl(affiliate_url=affiliate_url, product_url=canonical_product_url(response.final_url))
 
 
 class _MetadataHTMLParser(HTMLParser):
@@ -188,28 +188,67 @@ def _offers(node):
     return offers if isinstance(offers, dict) else {}
 
 
+def _api_price(value):
+    """Convert Shopee API fixed-point price (1 VND == 100000 units) to VND."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        value = value.get("single_value")
+        if value in (None, -1):
+            return None
+    try:
+        raw = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if raw < 0:
+        return None
+    return int(raw / Decimal("100000"))
+
+
+def _api_image(value):
+    if isinstance(value, list):
+        value = next((x for x in value if x), None)
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("image")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.startswith(("http://", "https://")):
+        return value
+    return "https://down-vn.img.susercontent.com/file/" + value
+
+
+def _merge_metadata(primary: ProductMetadata, fallback: ProductMetadata) -> ProductMetadata:
+    return ProductMetadata(
+        name=primary.name or fallback.name,
+        current_price=primary.current_price or fallback.current_price,
+        original_price=primary.original_price or fallback.original_price,
+        image_url=primary.image_url or fallback.image_url,
+        shop=primary.shop or fallback.shop,
+    )
+
+
+def _has_core_metadata(meta: ProductMetadata) -> bool:
+    return bool(meta.name and meta.current_price and meta.image_url)
+
+
 class ProductMetadataResolver:
     def __init__(self, http=None):
         self.http = http or SafeHttpClient()
 
-    def resolve(self, product_url: str) -> ProductMetadata:
-        try:
-            response = self.http.get(
-                product_url,
-                allowed_hosts=SHOPEE_HOSTS,
-                expected_content_prefix="text/html",
-            )
-        except SafeHttpError as exc:
-            raise AffiliateImportError("Không thể tải thông tin sản phẩm Shopee.") from exc
-
+    def _html_metadata(self, product_url: str) -> ProductMetadata:
+        response = self.http.get(
+            product_url,
+            allowed_hosts=SHOPEE_HOSTS,
+            expected_content_prefix="text/html",
+        )
         if response.content_type and not response.content_type.startswith("text/html"):
-            raise AffiliateImportError("Trang sản phẩm không trả HTML.")
+            raise SafeHttpError("Trang sản phẩm không trả HTML")
         html = response.content.decode("utf-8", errors="replace")
         parser = _MetadataHTMLParser()
         try:
             parser.feed(html)
         except Exception:
-            # Malformed HTML should still allow a partial metadata result.
             pass
 
         product = None
@@ -247,23 +286,149 @@ class ProductMetadataResolver:
             shop=shop,
         )
 
+    def _api_metadata(self, product_url: str) -> ProductMetadata:
+        shop_id, item_id = _product_ids_from_url(product_url)
+        if not shop_id or not item_id:
+            return ProductMetadata()
+
+        candidates = [
+            "https://shopee.vn/api/v4/pdp/get_pc?" + urlencode({
+                "shop_id": shop_id,
+                "item_id": item_id,
+            }),
+            "https://shopee.vn/api/v4/item/get?" + urlencode({
+                "shopid": shop_id,
+                "itemid": item_id,
+            }),
+        ]
+
+        for api_url in candidates:
+            try:
+                response = self.http.get(
+                    api_url,
+                    allowed_hosts=SHOPEE_HOSTS,
+                    expected_content_prefix="application/json",
+                )
+            except (SafeHttpError, OSError):
+                continue
+            if not (response.content_type or "").startswith("application/json"):
+                continue
+            try:
+                payload = json.loads(response.content.decode("utf-8", errors="replace"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+                continue
+
+            data = payload["data"]
+            item = data.get("item") if isinstance(data.get("item"), dict) else data
+            product_price = data.get("product_price") if isinstance(data.get("product_price"), dict) else {}
+            shop_detail = data.get("shop_detailed") if isinstance(data.get("shop_detailed"), dict) else {}
+
+            name = item.get("title") or item.get("name")
+            image = item.get("image") or data.get("image")
+
+            current_raw = None
+            original_raw = None
+            price_block = product_price.get("price")
+            if isinstance(price_block, dict):
+                current_raw = price_block.get("single_value")
+                if current_raw in (None, -1):
+                    candidates_price = [price_block.get("range_min"), price_block.get("range_max")]
+                    current_raw = next((x for x in candidates_price if x not in (None, -1)), None)
+            else:
+                current_raw = item.get("price") or item.get("price_min")
+
+            before = product_price.get("price_before_discount")
+            if isinstance(before, dict):
+                original_raw = before.get("single_value")
+                if original_raw in (None, -1):
+                    original_raw = next((x for x in (before.get("range_min"), before.get("range_max"))
+                                         if x not in (None, -1)), None)
+            else:
+                original_raw = item.get("price_before_discount") or item.get("price_min_before_discount")
+
+            current = _api_price(current_raw)
+            original = _api_price(original_raw)
+            if original and current and original <= current:
+                original = None
+
+            shop = (shop_detail.get("name") or item.get("shop_name") or data.get("shop_name"))
+            meta = ProductMetadata(
+                name=str(name).strip() if isinstance(name, str) and name.strip() else None,
+                current_price=current,
+                original_price=original,
+                image_url=_api_image(image),
+                shop=str(shop).strip() if isinstance(shop, str) and shop.strip() else None,
+            )
+            if any((meta.name, meta.current_price, meta.image_url, meta.shop)):
+                return meta
+        return ProductMetadata()
+
+    def resolve(self, product_url: str) -> ProductMetadata:
+        product_url = canonical_product_url(product_url)
+        html_meta = ProductMetadata()
+        html_error = None
+        try:
+            html_meta = self._html_metadata(product_url)
+        except (SafeHttpError, OSError) as exc:
+            html_error = exc
+
+        if _has_core_metadata(html_meta):
+            return html_meta
+
+        api_meta = self._api_metadata(product_url)
+        merged = _merge_metadata(html_meta, api_meta)
+        if any((merged.name, merged.current_price, merged.image_url, merged.shop)):
+            return merged
+
+        if html_error is not None:
+            raise AffiliateImportError("Không thể tải thông tin sản phẩm Shopee.") from html_error
+        return merged
+
+
+def _product_ids_from_url(url: str):
+    parsed = urlsplit(url)
+    path = parsed.path or ""
+
+    patterns = (
+        r"-i\.(\d+)\.(\d+)(?:$|[/?])",
+        r"/product/(\d+)/(\d+)(?:$|[/?])",
+        r"/opaapi/lp/(\d+)/(\d+)(?:$|[/?])",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, path)
+        if match:
+            return match.group(1), match.group(2)
+
+    params = {k.lower(): v for k, v in parse_qsl(parsed.query, keep_blank_values=False)}
+    shop = params.get("shopid") or params.get("shop_id")
+    item = params.get("itemid") or params.get("item_id")
+    if shop and item and str(shop).isdigit() and str(item).isdigit():
+        return str(shop), str(item)
+    return None, None
+
 
 def canonical_product_url(url: str) -> str:
     parsed = urlsplit(url)
     scheme = parsed.scheme.lower()
     host = (parsed.hostname or "").lower().rstrip(".")
+
+    shop_id, item_id = _product_ids_from_url(url)
+    if shop_id and item_id:
+        # Shopee short links can land on /opaapi/lp/... with a short-lived
+        # credential_token.  Never persist that URL or its query string.
+        return f"https://shopee.vn/product/{shop_id}/{item_id}"
+
     netloc = host
     if parsed.port and not ((scheme == "https" and parsed.port == 443) or (scheme == "http" and parsed.port == 80)):
         netloc = f"{host}:{parsed.port}"
 
     path = parsed.path or "/"
-    if _item_id_from_path(path):
-        query = ""
-    else:
-        keep = {"itemid", "item_id", "shopid", "shop_id"}
-        params = sorted((k.lower(), v) for k, v in parse_qsl(parsed.query, keep_blank_values=False)
-                        if k.lower() in keep)
-        query = urlencode(params)
+    keep = {"itemid", "item_id", "shopid", "shop_id"}
+    params = sorted((k.lower(), v) for k, v in parse_qsl(parsed.query, keep_blank_values=False)
+                    if k.lower() in keep)
+    query = urlencode(params)
     return urlunsplit((scheme, netloc, path, query, ""))
 
 
@@ -274,15 +439,14 @@ def _item_id_from_path(path: str):
     match = re.search(r"/product/(\d+)/(\d+)(?:$|[/?])", path)
     if match:
         return match.group(2)
+    match = re.search(r"/opaapi/lp/(\d+)/(\d+)(?:$|[/?])", path)
+    if match:
+        return match.group(2)
     return None
 
 
 def external_product_id(url: str) -> str:
-    parsed = urlsplit(url)
-    item = _item_id_from_path(parsed.path or "")
-    if not item:
-        params = {k.lower(): v for k, v in parse_qsl(parsed.query, keep_blank_values=False)}
-        item = params.get("itemid") or params.get("item_id")
+    _shop, item = _product_ids_from_url(url)
     if item and str(item).isdigit():
         return str(item)
     digest = hashlib.sha256(canonical_product_url(url).encode("utf-8")).hexdigest()[:24]

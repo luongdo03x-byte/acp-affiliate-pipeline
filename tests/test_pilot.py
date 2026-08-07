@@ -490,8 +490,24 @@ def test_shopee_safe_url():
     ])
     resolved = AffiliateUrlResolver(SafeHttpClient(session=session, dns_resolver=_public_dns)).resolve(
         "https://s.shopee.vn/abc")
-    check("follow redirect thủ công tới Shopee", resolved.product_url == "https://shopee.vn/product-i.1.2", resolved.product_url)
+    check("follow redirect thủ công tới Shopee", resolved.product_url == "https://shopee.vn/product/1/2", resolved.product_url)
     check("không dùng auto redirect", all(call[1].get("allow_redirects") is False for call in session.calls))
+
+    # Shopee affiliate links currently may land on an opaapi/lp URL carrying a
+    # short-lived credential_token.  The operator-facing product URL must be
+    # canonical and must never persist that token.
+    opaapi = _FakeSession([
+        _FakeHttpResponse(302, {"Location":
+            "https://shopee.vn/opaapi/lp/252198883/269450640062?__mobile__=1&credential_token=SECRET"}),
+        _FakeHttpResponse(200, {"Content-Type": "text/html; charset=utf-8"}, b"<html></html>"),
+    ])
+    resolved_opaapi = AffiliateUrlResolver(
+        SafeHttpClient(session=opaapi, dns_resolver=_public_dns)).resolve("https://s.shopee.vn/xyz")
+    check("opaapi được chuẩn hoá thành URL sản phẩm sạch",
+          resolved_opaapi.product_url == "https://shopee.vn/product/252198883/269450640062",
+          resolved_opaapi.product_url)
+    check("URL sản phẩm không giữ credential_token",
+          "credential_token" not in resolved_opaapi.product_url, resolved_opaapi.product_url)
 
     evil = _FakeSession([_FakeHttpResponse(302, {"Location": "https://evil.example/x"})])
     try:
@@ -533,6 +549,42 @@ def test_shopee_metadata():
     check("OpenGraph fallback tên", og.name == "Túi xách nữ test", og.name)
     check("OpenGraph fallback giá", og.current_price == 199000, og.current_price)
     check("metadata thiếu shop không bịa", og.shop is None, og.shop)
+
+    class _HtmlThenApi:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            self.calls.append((url, expected_content_prefix))
+            if "/api/v4/pdp/get_pc?" in url:
+                body = json.dumps({
+                    "error": None,
+                    "data": {
+                        "item": {
+                            "title": "Váy tự lấy từ Shopee",
+                            "image": "abc123imagehash",
+                        },
+                        "product_price": {
+                            "price": {"single_value": 28900000000},
+                            "price_before_discount": {"single_value": 45900000000},
+                        },
+                        "shop_detailed": {"name": "Shop tự động"},
+                    }
+                }).encode("utf-8")
+                return SafeHttpResponse(url, body, "application/json")
+            return SafeHttpResponse(url, b"<html><body></body></html>", "text/html")
+
+    auto_http = _HtmlThenApi()
+    auto = ProductMetadataResolver(auto_http).resolve(
+        "https://shopee.vn/product/252198883/269450640062")
+    check("metadata thiếu trong HTML thì thử JSON public",
+          any("/api/v4/pdp/get_pc?" in call[0] for call in auto_http.calls), auto_http.calls)
+    check("JSON public tự lấy tên", auto.name == "Váy tự lấy từ Shopee", auto.name)
+    check("JSON public chuẩn hoá giá Shopee", auto.current_price == 289000, auto.current_price)
+    check("JSON public đọc giá gốc", auto.original_price == 459000, auto.original_price)
+    check("JSON public dựng URL ảnh CDN",
+          auto.image_url == "https://down-vn.img.susercontent.com/file/abc123imagehash", auto.image_url)
+    check("JSON public đọc shop", auto.shop == "Shop tự động", auto.shop)
 
     confirmed = ConfirmedProductInput(
         affiliate_url="https://s.shopee.vn/abc",
