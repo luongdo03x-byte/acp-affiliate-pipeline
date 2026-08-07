@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Chọn sản phẩm{% endblock %}
+{% block content %}
+<h1>Chọn sản phẩm</h1>
+<p class="lede">Tạo bài từ một sản phẩm cụ thể. Bài luôn dừng ở màn hình duyệt — không có nút đăng ngay ở đây.</p>
+
+{% if err %}<div class="card" style="border-color:#E3C3C2;background:#FBF0EF;margin-bottom:18px">{{ err }}</div>{% endif %}
+
+<form method="get" class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+  <div style="flex:1;min-width:220px">
+    <div style="font-size:13.5px;margin-bottom:4px">Từ khoá</div>
+    <input name="q" value="{{ q }}" placeholder="máy xay, tai nghe, thảm yoga...">
+  </div>
+  <div style="width:170px">
+    <div style="font-size:13.5px;margin-bottom:4px">Nguồn</div>
+    <select name="nguon">
+      {% for s in ['', 'tiktokshop', 'shopee', 'mock'] %}
+      <option value="{{ s }}" {{ 'selected' if s == request.args.get('nguon','') }}>{{ s or 'mặc định' }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="primary" type="submit">Tìm</button>
+</form>
+
+{% if items %}
+<h2>{{ items|length }} sản phẩm từ nguồn {{ source_name }}</h2>
+<table>
+  <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th>
+    <th class="n">Đã bán</th><th style="width:96px"></th></tr></thead>
+  <tbody>
+  {% for p in items %}
+    <tr>
+      <td>{{ p.name }}<br><span class="dim" style="font-size:12px;font-family:var(--mono)">{{ p.external_product_id }}</span></td>
+      <td class="dim">{{ p.merchant }}</td>
+      <td class="n">{{ p.current_price|vnd }}</td>
+      <td class="n money">{{ p.commission_value|vnd }}</td>
+      <td class="n dim">{{ p.sold_count|num }}</td>
+      <td>
+        <form method="post" action="/sanpham/tao-bai">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="external_product_id" value="{{ p.external_product_id }}">
+          <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
+          <input type="hidden" name="q" value="{{ q }}">
+          <button type="submit">Tạo bài</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% elif not err %}
+<div class="empty">Không tìm thấy sản phẩm nào.</div>
+{% endif %}
+{% endblock %}

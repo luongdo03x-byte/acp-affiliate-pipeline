@@ -1,0 +1,56 @@
+{
+  "status": true,
+  "data": {
+    "products": [
+      {
+        "id": "1729384756102938475",
+        "title": "Máy xay cầm tay đa năng 3 lưỡi cối thủy tinh 600ml",
+        "detail_link": "https://vt.tiktok.com/EXAMPLE001/",
+        "main_image_url": "https://p16-oec.example.com/EXAMPLE001~800x800.jpeg",
+        "sales_price": { "minimum_amount": "289000", "maximum_amount": "289000", "currency": "VND" },
+        "original_price": { "minimum_amount": "459000", "maximum_amount": "459000", "currency": "VND" },
+        "commission": { "amount": "23120", "rate": "8", "currency": "VND" },
+        "units_sold": 12480,
+        "shop": { "id": "7000000000000000001", "name": "Nhà Bếp Thông Minh Official" },
+        "has_inventory": true,
+        "category": { "name": "Home Appliances" },
+        "rating": 4.8,
+        "review_count": 3120
+      },
+      {
+        "id": "1729384756102938476",
+        "title": "Bộ 6 hộp thủy tinh nắp khóa chịu nhiệt",
+        "detail_link": "https://vt.tiktok.com/EXAMPLE002/",
+        "main_image_url": "https://p16-oec.example.com/EXAMPLE002~800x800.jpeg",
+        "sales_price": { "minimum_amount": "199000", "currency": "VND" },
+        "original_price": { "minimum_amount": "199000", "currency": "VND" },
+        "commission": { "amount": "0", "rate": "0.06", "currency": "VND" },
+        "units_sold": 860,
+        "shop": { "name": "Glass House VN" },
+        "has_inventory": true,
+        "category": { "name": "Kitchenware" },
+        "rating": 4.6,
+        "review_count": 214
+      },
+      {
+        "id": "1729384756102938477",
+        "title": "Sản phẩm hết hàng dùng để test lọc",
+        "detail_link": "https://vt.tiktok.com/EXAMPLE003/",
+        "main_image_url": "https://p16-oec.example.com/EXAMPLE003~800x800.jpeg",
+        "sales_price": { "minimum_amount": "0", "currency": "VND" },
+        "commission": { "amount": "0", "rate": "0" },
+        "units_sold": 0,
+        "shop": { "name": "Shop Test" },
+        "has_inventory": false,
+        "rating": 3.2,
+        "review_count": 4
+      },
+      {
+        "id": "",
+        "title": "Bản ghi hỏng thiếu id, phải bị loại chứ không làm gãy cả trang",
+        "sales_price": { "minimum_amount": "150000" }
+      }
+    ],
+    "next_page_token": "REDACTED_NEXT_PAGE_TOKEN"
+  }
+}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Đăng nhập{% endblock %}
+{% block content %}
+<div style="max-width:360px;margin:8vh auto">
+  <h1>Đăng nhập</h1>
+  <p class="lede">Dashboard chứa dữ liệu vận hành và cho phép duyệt bài đăng.</p>
+  {% if err %}<div class="card" style="border-color:#E3C3C2;background:#FBF0EF;margin-bottom:16px">{{ err }}</div>{% endif %}
+  <form method="post" class="card">
+    <label style="display:block;font-size:13.5px;margin-bottom:6px">Mật khẩu</label>
+    <input type="password" name="password" autofocus autocomplete="current-password">
+    <button class="primary" type="submit" style="width:100%;margin-top:14px">Vào</button>
+  </form>
+</div>
+{% endblock %}

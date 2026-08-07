@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Chấm điểm — Sổ cái affiliate{% endblock %}
+{% block content %}
+<h1>Chấm điểm</h1>
+<p class="lede">Đổi trọng số rồi lưu để xem thứ hạng thay đổi ra sao. Mỗi lần lưu tạo một phiên bản mới, không ghi đè.</p>
+
+{% if saved %}<div class="card" style="border-color:#BFD6C9;background:#F1F7F3;margin-bottom:20px">
+  Đã lưu cấu hình phiên bản {{ saved }}. Lô sinh nội dung tiếp theo sẽ dùng cấu hình này.</div>{% endif %}
+
+<form method="post">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+<div class="grid2">
+  <div class="card">
+    <h2 style="margin-top:0">Trọng số</h2>
+    {% for key, label in [('commission','Hoa hồng tuyệt đối'),('category_cr','CR lịch sử của danh mục'),
+                          ('discount','Giảm giá thật so với trung vị 30 ngày'),('velocity','Tốc độ bán'),
+                          ('rating','Đánh giá có trọng số')] %}
+    <label style="display:block;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:4px">
+        <span>{{ label }}</span><span class="n">{{ '%.2f'|format(weights[key]) }}</span>
+      </div>
+      <input type="range" name="{{ key }}" min="0" max="1" step="0.05" value="{{ weights[key] }}"
+             oninput="this.parentNode.querySelector('.n').textContent=parseFloat(this.value).toFixed(2)">
+    </label>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Lọc cứng</h2>
+    <p class="note" style="margin-top:0">Áp trước khi chấm điểm. Sản phẩm không qua được thì không bao giờ lên bài, dù điểm cao đến đâu.</p>
+    {% for key, label, step in [('min_rating','Đánh giá tối thiểu','0.1'),
+                                ('min_review_count','Số lượt đánh giá tối thiểu','1'),
+                                ('min_commission_value','Hoa hồng tối thiểu (đồng)','1000'),
+                                ('cooldown_days','Không đăng lại trong (ngày)','1'),
+                                ('max_per_category_per_day','Tối đa mỗi danh mục / ngày','1')] %}
+    <label style="display:block;margin-bottom:12px">
+      <div style="font-size:13.5px;margin-bottom:4px">{{ label }}</div>
+      <input type="number" name="{{ key }}" step="{{ step }}" value="{{ filters[key] }}">
+    </label>
+    {% endfor %}
+    <p class="note" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--rule)">
+      Chủ đề kênh đặt riêng cho từng tài khoản tại <a href="/kenh">Kênh</a>.</p>
+
+    <div style="margin-top:14px">
+      <div style="font-size:13.5px;margin-bottom:6px">Danh mục bị chặn</div>
+      {% for c in filters.blocked_categories %}<span class="tag bad">{{ c }}</span> {% endfor %}
+      <p class="note">Nhóm hàng cần giấy phép quảng cáo riêng. Sửa trong <code>core/scoring.py</code>.</p>
+    </div>
+  </div>
+</div>
+<div style="margin:18px 0 6px"><button class="primary" type="submit">Lưu phiên bản mới</button></div>
+</form>
+
+<h2>Xem trước — {{ passed|length }} sản phẩm đứng đầu trên tổng {{ total }}</h2>
+<table>
+  <thead><tr><th>Sản phẩm</th><th>Danh mục</th><th class="n">Giá</th><th class="n">Hoa hồng</th>
+    <th class="n">Điểm</th><th>Cấu thành</th></tr></thead>
+  <tbody>
+  {% for s in passed %}
+    <tr>
+      <td>{{ s.product.name }}</td>
+      <td class="dim">{{ s.product.category_code }}</td>
+      <td class="n dim">{{ s.product.current_price|vnd }}</td>
+      <td class="n money">{{ s.product.commission_value|vnd }}</td>
+      <td class="n">{{ '%.3f'|format(s.score) }}</td>
+      <td style="font-size:12px" class="dim">
+        {% for k, v in s.breakdown.items() %}{% if v > 0.01 %}{{ k }} {{ '%.2f'|format(v) }}{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Bị loại</h2>
+<table>
+  <thead><tr><th>Sản phẩm</th><th>Lý do</th></tr></thead>
+  <tbody>
+  {% for s in rejected %}
+    <tr><td>{{ s.product.name }}</td><td class="dim" style="font-size:13px">{{ s.rejected|join('; ') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

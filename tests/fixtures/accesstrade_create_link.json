@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "data": {
+    "error_link": [],
+    "success_link": [
+      {
+        "aff_link": "https://tracking.accesstrade.vn/deep_link/REDACTED_CAMPAIGN/REDACTED_PUB?utm_campaign=gd2026&utm_content=01KZ8EXAMPLEPOSTID000&utm_medium=threads&utm_source=threads_main&sub1=01KZ8EXAMPLEPOSTID000&sub2=gd2026&sub3=A&sub4=threads_main&url=https%3A%2F%2Fvt.tiktok.com%2FEXAMPLE001%2F",
+        "first_link": null,
+        "short_link": "https://shorten.accesstrade.me/REDACTED01",
+        "url_origin": "https://vt.tiktok.com/EXAMPLE001/"
+      }
+    ],
+    "suspend_url": []
+  }
+}
