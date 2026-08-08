@@ -123,6 +123,9 @@ def generate(product, template_code: str, affiliate_link: str,
         highlight=_highlight(product),
         category=CATEGORY_LABELS.get(product["category_code"], product["category_code"]),
     )
+    # {social} rỗng khi sản phẩm chưa đủ lượt bán/đánh giá -- để lại khoảng trắng
+    # kép trong template. Gộp lại cho khỏi lộ chỗ điền-vào-chỗ-trống.
+    body = re.sub(r" {2,}", " ", body).strip()
     full = f"{hook_line}\n\n{body}\n\n{cta_line}\n{affiliate_link}"
     if _llm_fn:
         full = _llm_fn(_build_prompt(product, full))
