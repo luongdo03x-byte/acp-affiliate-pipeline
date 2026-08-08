@@ -128,7 +128,17 @@ def generate(product, template_code: str, affiliate_link: str,
     body = re.sub(r" {2,}", " ", body).strip()
     full = f"{hook_line}\n\n{body}\n\n{cta_line}\n{affiliate_link}"
     if _llm_fn:
-        full = _llm_fn(_build_prompt(product, full))
+        # LLM là lớp làm mượt tuỳ chọn, không phải nguồn tin cậy duy nhất -- lỗi
+        # mạng/hết quota không được làm hỏng việc tạo bài, và output phải còn
+        # nguyên affiliate link mới được chấp nhận (không chỉ dựa vào chỉ dẫn
+        # trong prompt). Không log nguyên exception vì có thể lộ chi tiết key.
+        try:
+            rewritten = _llm_fn(_build_prompt(product, full))
+        except Exception as e:
+            rewritten = None
+            print(f"  ! caption LLM lỗi ({type(e).__name__}), dùng bản nháp deterministic")
+        if rewritten and affiliate_link in rewritten:
+            full = rewritten
     return _fit(full, disclosure)
 
 
@@ -140,6 +150,8 @@ def _build_prompt(product, draft: str) -> str:
         "- KHÔNG viết như đã từng dùng sản phẩm. Không nói 'mình đã dùng', 'mình thấy'.\n"
         "- Không dùng từ tuyệt đối hoá: tốt nhất, số 1, duy nhất.\n"
         "- Không cam kết công dụng.\n"
+        "- Giọng người bình thường tình cờ thấy hay nên chia sẻ lại, không phải giọng quảng cáo trang trọng.\n"
+        "- Không dùng markdown (không **, không #, không gạch đầu dòng).\n"
         "- Giữ nguyên URL. Tối đa 380 ký tự.\n\n"
         f"Đoạn gốc:\n{draft}"
     )

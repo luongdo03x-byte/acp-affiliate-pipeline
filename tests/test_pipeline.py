@@ -99,6 +99,37 @@ def test_caption_tone():
           "người mua rồi" in content._social_proof(product_with_social).lower())
 
 
+def test_caption_llm_safety():
+    print("\nAn toàn khi bật LLM viết lại caption")
+    product = {"name": "Quần linen giả váy", "current_price": 100250,
+               "original_price": None, "sold_count": 0, "rating": None,
+               "review_count": 0, "category_code": "thoi-trang",
+               "description": ""}
+    link = "https://go.isclix.com/x?sub1=abc"
+
+    def _boom(prompt):
+        raise RuntimeError("giả lập Gemini lỗi mạng")
+
+    content.set_llm(_boom)
+    try:
+        caption = content.generate(product, "comparison", link, discount_pct=0.1)
+    finally:
+        content.set_llm(None)
+    check("LLM lỗi không làm hỏng generate()", link in caption)
+    check("LLM lỗi thì caption vẫn qua validate()", content.validate(caption) == [])
+
+    def _drop_link(prompt):
+        return "Caption không còn link gốc luôn, viết linh tinh."
+
+    content.set_llm(_drop_link)
+    try:
+        caption2 = content.generate(product, "comparison", link, discount_pct=0.1)
+    finally:
+        content.set_llm(None)
+    check("LLM làm mất link thì bị bỏ qua, dùng bản nháp deterministic",
+          link in caption2, caption2)
+
+
 def test_scoring():
     print("\nChấm điểm")
     conn = connect()
@@ -275,6 +306,7 @@ if __name__ == "__main__":
     test_crypto()
     test_content_guards()
     test_caption_tone()
+    test_caption_llm_safety()
     test_scoring()
     test_subid_roundtrip()
     test_conversion_dedup()
