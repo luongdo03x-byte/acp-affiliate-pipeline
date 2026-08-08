@@ -183,6 +183,15 @@ def test_factory():
           "MockThreads(" not in body and "MockAccessTrade(" not in body)
     check("server.py dùng factory.build_context", "factory.build_context()" in body)
 
+    os.environ.pop("ACP_CAPTION_LLM", None)
+    check("get_caption_llm() tắt mặc định (không set ACP_CAPTION_LLM)",
+          factory.get_caption_llm() is None)
+    os.environ["ACP_CAPTION_LLM"] = "gemini"
+    llm = factory.get_caption_llm()
+    check("get_caption_llm() trả về llm_gemini.rewrite khi bật",
+          llm is not None and llm.__name__ == "rewrite")
+    os.environ.pop("ACP_CAPTION_LLM", None)
+
 
 # --------------------------------------------------------- single product
 

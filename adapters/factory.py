@@ -46,9 +46,20 @@ def get_channel():
     return MockThreads(fail_rate=0.08, seed=7)
 
 
+def get_caption_llm():
+    """Trả về fn(prompt)->str cho content.set_llm(), hoặc None nếu tắt.
+    ACP_CAPTION_LLM=gemini bật viết lại caption bằng Gemini free tier."""
+    choice = (os.environ.get("ACP_CAPTION_LLM") or "").lower()
+    if choice == "gemini":
+        from ..core import llm_gemini
+        return llm_gemini.rewrite
+    return None
+
+
 def build_context(source_name: str = None) -> dict:
     """Ngữ cảnh truyền vào các job handler."""
-    from ..core import storage
+    from ..core import content, storage
+    content.set_llm(get_caption_llm())
     return {
         "source": get_source(source_name),
         "channel": get_channel(),
