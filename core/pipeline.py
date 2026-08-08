@@ -13,7 +13,7 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
-from . import attribution, content, imaging, niche, scoring, storage
+from . import attribution, content, imaging, niche, playbook, scoring, storage, valuepost
 from .db import audit, now, ulid
 from .jobs import enqueue, handler
 
@@ -79,13 +79,16 @@ def plan_content(conn, campaign_code: str, limit: int = 10, rng=None) -> list:
 
     created = []
     per_channel = max(1, limit // max(1, len(channels)))
+    hooks = playbook.hook_codes()
     for ch in channels:
         # Mỗi kênh có ngách riêng -> phải chấm điểm riêng, không dùng chung một
         # danh sách ứng viên rồi bốc kênh ngẫu nhiên như trước.
         nl = channel_niches(conn, ch["id"])
-        for item in scoring.score_candidates(conn, limit=per_channel, niches=nl):
+        for i, item in enumerate(scoring.score_candidates(conn, limit=per_channel, niches=nl)):
             tpl = rng.choice(list(templates))
-            variant = "A"
+            # Xoay vòng hook làm biến thể -- variant_code = mã hook, đo hiệu quả
+            # từng hook qua sub3 (xem attribution.encode_sub_ids).
+            variant = hooks[i % len(hooks)]
             job_id = enqueue(conn, "GENERATE_CONTENT", {
                 "product_id": item["product"]["id"], "channel_id": ch["id"],
                 "campaign_id": campaign["id"], "template_id": tpl["id"],
@@ -161,13 +164,17 @@ def upsert_one(conn, source, raw) -> str:
 
 def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: str,
                             channel_code: str = None, template_code: str = None,
-                            variant_code: str = "A") -> dict:
+                            variant_code: str = None, rng=None) -> dict:
     """Một sản phẩm cụ thể -> một bài PENDING_REVIEW. Không đăng.
 
     Bỏ qua chấm điểm vì người vận hành đã tự chọn sản phẩm. KHÔNG bỏ qua rào chắn
     nội dung -- caption vẫn phải qua validate() y hệt đường hàng loạt, và bài luôn
     dừng ở màn hình duyệt.
+
+    variant_code bỏ trống thì bốc một mã hook ngẫu nhiên (core/playbook.py) --
+    variant_code LUÔN là mã hook, dùng để sinh caption lẫn gắn vào sub3.
     """
+    rng = rng or random.Random()
     source = ctx["source"]
     raw = source.get_product(external_product_id) if hasattr(source, "get_product") else None
     if raw is None:
@@ -194,6 +201,7 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
     product_id = upsert_one(conn, source, raw)
     product = conn.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
 
+    variant_code = playbook.pick_hook(variant_code, rng=rng)
     post_id = ulid()
     subs = attribution.encode_sub_ids(post_id, campaign["code"], variant_code, channel["code"])
     link = source.create_tracking_link(product["product_url"], subs)
@@ -202,7 +210,8 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
     image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount, handle=channel["handle"])
     image_url = ctx.get("storage", storage.get_storage()).put(image_path)
 
-    caption = content.generate(product, template["code"], link, discount_pct=discount)
+    caption = content.generate(product, template["code"], link, discount_pct=discount,
+                                hook_code=variant_code, rng=rng)
     problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
 
     conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
@@ -222,6 +231,119 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
             "product_name": product["name"], "affiliate_link": link,
             "image_url": image_url, "caption": caption, "problems": problems,
             "status": "PENDING_REVIEW" if not problems else "DRAFT"}
+
+
+# ------------------------------------------------------------- bài giá trị
+
+def _median_30d(conn, category_code: str = None, niches: list = None):
+    """Trung vị giá 30 ngày qua -- dữ liệu cho hook/bài so sánh giá.
+
+    Ưu tiên category_code (khớp đúng, nhanh) nếu có; không thì lọc theo niches
+    bằng niche.match_reasons() trên toàn bộ lịch sử giá gần đây.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+    if category_code:
+        prices = [r[0] for r in conn.execute(
+            """SELECT h.price FROM product_price_history h
+               JOIN product pr ON pr.id = h.product_id
+               WHERE pr.category_code = ? AND h.observed_at >= ?""",
+            (category_code, since)).fetchall()]
+    else:
+        rows = conn.execute(
+            """SELECT h.price AS price, pr.* FROM product_price_history h
+               JOIN product pr ON pr.id = h.product_id
+               WHERE h.observed_at >= ?""", (since,)).fetchall()
+        prices = [r["price"] for r in rows if not niches or not niche.match_reasons(r, niches)]
+    return scoring.median(prices)
+
+
+def create_value_post(conn, campaign_code: str, channel_code: str, kind: str = None,
+                       rng=None) -> dict:
+    """Tạo một bài KHÔNG bán hàng cho một kênh (core/valuepost.py). Dừng ở
+    PENDING_REVIEW/DRAFT y hệt bài bán hàng -- vẫn phải qua duyệt tay."""
+    rng = rng or random.Random()
+    campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
+    if not campaign:
+        return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
+    channel = conn.execute("SELECT * FROM channel WHERE code=? AND status='ACTIVE'",
+                            (channel_code,)).fetchone()
+    if not channel:
+        return {"ok": False, "error": f"Kênh {channel_code} không tồn tại hoặc không hoạt động"}
+
+    nl = channel_niches(conn, channel["id"])
+    niche_code = rng.choice(nl) if nl else None
+    niche_name = niche.NICHES[niche_code]["name"] if niche_code else "sản phẩm đang theo dõi"
+    kind = kind or valuepost.pick_kind(rng)
+
+    median_price, discounted = None, None
+    if kind == "price_level":
+        median_price = _median_30d(conn, niches=[niche_code] if niche_code else None)
+    elif kind == "real_discount":
+        candidates = scoring.score_candidates(conn, limit=5, niches=nl)
+        discounted = [{"name": c["product"]["name"], "current_price": c["product"]["current_price"],
+                        "discount_pct": c["breakdown"]["giảm giá thật"]}
+                       for c in candidates if c["breakdown"]["giảm giá thật"] > 0]
+
+    caption = valuepost.build(kind, niche_code=niche_code, niche_name=niche_name,
+                               median_price=median_price, discounted_products=discounted)
+    if caption is None:
+        return {"ok": False, "error": f"Chưa đủ dữ liệu để tạo bài giá trị loại '{kind}' cho kênh {channel_code}"}
+
+    problems = content.validate(caption, disclosure=valuepost.DISCLOSURE_VALUE,
+                                 niches=nl, post_type="VALUE")
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
+                    variant_code, caption_body, disclosure_text, caption_final, sub_id_payload,
+                    score, post_type, status, reject_reason, created_at, updated_at)
+                    VALUES (?,NULL,?,?,NULL,?,?,?,?,NULL,NULL,'VALUE',?,?,?,?)""",
+                 (post_id, channel["id"], campaign["id"], kind, caption, valuepost.DISCLOSURE_VALUE,
+                  caption, "PENDING_REVIEW" if not problems else "DRAFT",
+                  "; ".join(problems) if problems else None, now(), now()))
+    audit(conn, "post", post_id, "created_value_post", actor="operator",
+          detail={"kind": kind, "channel": channel_code, "problems": problems})
+    return {"ok": True, "post_id": post_id, "kind": kind, "caption": caption, "problems": problems,
+            "status": "PENDING_REVIEW" if not problems else "DRAFT"}
+
+
+def post_mix(conn, ctx, campaign_code: str, channel_code: str = None, ratio: int = 3,
+             rng=None) -> dict:
+    """"Phương pháp 3 bài": cứ mỗi `ratio` bài thì có (ratio - 1) bài bán hàng và
+    1 bài giá trị, tính riêng cho từng kênh (hoặc một kênh chỉ định).
+
+    Bài bán hàng tạo qua job GENERATE_CONTENT như plan_content(); bài giá trị tạo
+    ngay lập tức qua create_value_post() vì không cần chấm điểm sản phẩm.
+    """
+    rng = rng or random.Random()
+    channels = conn.execute(
+        "SELECT * FROM channel WHERE code=? AND status='ACTIVE'" if channel_code
+        else "SELECT * FROM channel WHERE status='ACTIVE'",
+        (channel_code,) if channel_code else ()).fetchall()
+    campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
+    templates = conn.execute("SELECT * FROM caption_template WHERE is_active=1").fetchall()
+    if not channels or not campaign or not templates:
+        return {"sales_jobs": [], "value_posts": []}
+
+    hooks = playbook.hook_codes()
+    sales_jobs, value_posts = [], []
+    n_sales = max(0, ratio - 1)
+    for ch in channels:
+        nl = channel_niches(conn, ch["id"])
+        for i, item in enumerate(scoring.score_candidates(conn, limit=n_sales, niches=nl)):
+            tpl = rng.choice(list(templates))
+            variant = hooks[i % len(hooks)]
+            job_id = enqueue(conn, "GENERATE_CONTENT", {
+                "product_id": item["product"]["id"], "channel_id": ch["id"],
+                "campaign_id": campaign["id"], "template_id": tpl["id"],
+                "variant_code": variant, "score": item["score"],
+            }, priority=int(item["score"] * 100),
+               idempotency_key=f"gen:{item['product']['id']}:{variant}")
+            if job_id:
+                sales_jobs.append(job_id)
+
+        res = create_value_post(conn, campaign_code, ch["code"], rng=rng)
+        value_posts.append({"channel": ch["code"], **res})
+
+    return {"sales_jobs": sales_jobs, "value_posts": value_posts}
 
 
 # ------------------------------------------------------------------ chặng 3
@@ -244,7 +366,8 @@ def generate_content(conn, payload, ctx):
     # Đẩy lên nơi có URL công khai. Local thì chỉ ghép URL, S3/R2 thì upload thật.
     image_url = ctx.get("storage", storage.get_storage()).put(image_path)
 
-    caption = content.generate(product, template["code"], link, discount_pct=discount)
+    caption = content.generate(product, template["code"], link, discount_pct=discount,
+                                hook_code=payload["variant_code"])
     problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
     status = "PENDING_REVIEW" if not problems else "DRAFT"
 
@@ -266,7 +389,11 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
     caption = caption_override or post["caption_final"]
-    problems = content.validate(caption, niches=channel_niches(conn, post["channel_id"]))
+    # post_type phải đọc từ DB -- bỏ sót chỗ này thì bài giá trị (không link, không
+    # CTA) bị áp nhầm luật của bài bán hàng và KHÔNG BAO GIỜ duyệt được.
+    problems = content.validate(caption, disclosure=post["disclosure_text"],
+                                 niches=channel_niches(conn, post["channel_id"]),
+                                 post_type=post["post_type"])
     if problems:
         return {"ok": False, "error": "; ".join(problems)}
 

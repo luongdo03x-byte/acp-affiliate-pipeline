@@ -20,7 +20,7 @@ from acp.adapters.live import AT_BASE, AccessTradeSource  # noqa: E402
 from acp.adapters.mock import MockAccessTrade  # noqa: E402
 from acp.adapters.tiktokshop import AT_ROOT, AccessTradeTikTokShopSource  # noqa: E402
 from acp.core import crypto, niche, pipeline, scoring  # noqa: E402
-from acp.core import content  # noqa: E402
+from acp.core import content, playbook, valuepost  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -227,6 +227,73 @@ class _FakeStorage:
         return "https://cdn.example.com/" + os.path.basename(path)
 
 
+# --------------------------------------------------------- hook + CTA + mix
+
+def test_playbook_hooks_and_cta():
+    print("\nThư viện hook mở đầu + CTA")
+    check("có đúng 9 hook", len(playbook.HOOKS) == 9, len(playbook.HOOKS))
+    check("mỗi hook đều render được, không rỗng", all(
+        playbook.render_hook(code, {"name": "Sản phẩm test", "current_price": 100000,
+                                     "sold_count": 500, "rating": 4.8, "review_count": 200,
+                                     "category_code": "gia-dung"}, 0.15)
+        for code in playbook.hook_codes()))
+    check("pick_hook tôn trọng mã hợp lệ được truyền vào",
+          playbook.pick_hook("H1_GIAGIAM") == "H1_GIAGIAM")
+    check("pick_hook bỏ qua mã không hợp lệ, bốc ngẫu nhiên thay vì lỗi",
+          playbook.pick_hook("MA_KHONG_TON_TAI") in playbook.HOOKS)
+    check("có ít nhất 3 CTA trong thư viện", len(playbook.CTA_LIBRARY) >= 3)
+    check("một CTA thì không bị coi là nhiều CTA",
+          not playbook.contains_multiple_cta(f"...{playbook.CTA_LIBRARY[0]}..."))
+    check("hai CTA trong cùng caption thì bị chặn",
+          playbook.contains_multiple_cta(f"{playbook.CTA_LIBRARY[0]} {playbook.CTA_LIBRARY[1]}"))
+
+
+def test_content_post_type():
+    print("\ncontent.validate() theo post_type")
+    product = {"name": "Nồi chiên không dầu 5L", "current_price": 890000, "sold_count": 300,
+               "rating": 4.7, "review_count": 150, "category_code": "gia-dung", "description": "Dung tích 5L"}
+    caption = content.generate(product, "price_drop", "https://go.isclix.com/x", discount_pct=0.1,
+                                hook_code="H1_GIAGIAM")
+    check("caption bán hàng có hook, CTA, link, disclosure",
+          caption.startswith(playbook.render_hook("H1_GIAGIAM", product, 0.1)[:10])
+          and "https://go.isclix.com/x" in caption and content.DISCLOSURE_DEFAULT in caption)
+    check("bài bán hàng hợp lệ thì validate() rỗng",
+          content.validate(caption, post_type="SALES") == [], content.validate(caption, post_type="SALES"))
+
+    value_caption = valuepost.checklist_text("gia-dung", "Nhà cửa & gia dụng")
+    check("bài giá trị không có link vẫn qua validate() khi post_type=VALUE",
+          content.validate(value_caption, disclosure=valuepost.DISCLOSURE_VALUE,
+                            post_type="VALUE") == [])
+    check("cùng caption đó nhưng validate() như bài bán hàng thì bị chặn thiếu link/disclosure/CTA",
+          len(content.validate(value_caption, post_type="SALES")) >= 2)
+
+    two_cta = f"{playbook.CTA_LIBRARY[0]} {playbook.CTA_LIBRARY[1]} https://x.com {content.DISCLOSURE_DEFAULT}"
+    check("hai CTA trong bài bán hàng bị validate() chặn",
+          any("CTA" in p for p in content.validate(two_cta, post_type="SALES")))
+
+
+def test_hook_rotation_in_plan_content():
+    """limit chia đều cho MỌI kênh đang ACTIVE -- lúc test này chạy đã có nhiều kênh
+    từ test_niche_per_channel(), nên đặt limit lớn và chỉ soi job của kênh 'ch1' để
+    per_channel đủ chỗ xoay vòng qua nhiều hơn 1 hook."""
+    print("\nXoay vòng hook làm biến thể trong plan_content")
+    conn = connect()
+    ch1_id = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    factory.reset_cache()
+    ctx = factory.build_context("mock")
+    pipeline.ingest_datafeed(conn, ctx["source"], limit=120)
+    conn.execute("DELETE FROM job_queue")
+    n_channels = conn.execute("SELECT COUNT(*) FROM channel WHERE status='ACTIVE'").fetchone()[0]
+    created = pipeline.plan_content(conn, "gd2026", limit=6 * n_channels)
+    check("tạo được nhiều job", len(created) >= 3, len(created))
+    variants = [json.loads(r["payload"])["variant_code"] for r in conn.execute(
+        "SELECT payload FROM job_queue WHERE job_type='GENERATE_CONTENT' AND payload LIKE ?",
+        (f'%"channel_id": "{ch1_id}"%',)).fetchall()]
+    check("variant_code toàn là mã hook hợp lệ", all(v in playbook.HOOKS for v in variants), variants)
+    check("có xoay vòng, không phải một mã cố định", len(set(variants)) > 1, variants)
+    conn.close()
+
+
 # -------------------------------------------------------------- bảo mật web
 
 def test_web_security():
@@ -276,6 +343,90 @@ def test_web_security():
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY", "ACP_WEBHOOK_SECRET"):
         os.environ.pop(var, None)
+
+
+# --------------------------------------------------------- bài không bán hàng
+
+def test_value_posts():
+    """"Phương pháp 3 bài" (core/valuepost.py). test_web_security() đặt kênh 'ch1'
+    về NEEDS_REAUTH -- phải bật lại ACTIVE trước khi chạy, nếu không create_value_post
+    báo "kênh không hoạt động" là đúng nhưng không kiểm được đường thành công."""
+    print("\nBài không bán hàng (phương pháp 3 bài)")
+    conn = connect()
+    conn.execute("UPDATE channel SET status='ACTIVE' WHERE code='ch1'")
+    pipeline.set_channel_niches(conn, conn.execute(
+        "SELECT id FROM channel WHERE code='ch1'").fetchone()["id"], ["gia-dung"])
+
+    # checklist không cần dữ liệu giá -- phải luôn thành công.
+    res = pipeline.create_value_post(conn, "gd2026", "ch1", kind="checklist")
+    check("checklist tạo bài thành công", res["ok"], res.get("error"))
+    check("bài giá trị không có product_id", conn.execute(
+        "SELECT product_id FROM post WHERE id=?", (res["post_id"],)).fetchone()[0] is None)
+    check("post_type = VALUE", conn.execute(
+        "SELECT post_type FROM post WHERE id=?", (res["post_id"],)).fetchone()[0] == "VALUE")
+    check("checklist qua được validate() (không cần link/CTA)", res["problems"] == [], res["problems"])
+    check("checklist trạng thái PENDING_REVIEW", res["status"] == "PENDING_REVIEW")
+
+    # Hồi quy: approve_post() từng không đọc post_type từ DB nên áp nhầm luật
+    # "phải có link affiliate" của bài bán hàng lên bài giá trị -- duyệt trên web
+    # báo lỗi "Thiếu nhãn tiếp thị liên kết; Thiếu link affiliate" và KHÔNG BAO GIỜ
+    # lên lịch được. Bắt được lúc thao tác thật trên trình duyệt, không phải qua
+    # create_value_post() (hàm đó tự truyền post_type đúng nên không lộ lỗi này).
+    appr = pipeline.approve_post(conn, res["post_id"], actor="test")
+    check("duyệt được bài giá trị (không đòi link affiliate)", appr["ok"], appr.get("error"))
+    check("bài giá trị duyệt xong thì lên lịch", conn.execute(
+        "SELECT status FROM post WHERE id=?", (res["post_id"],)).fetchone()[0] == "SCHEDULED")
+
+    # Không đủ dữ liệu giá -> valuepost.build() phải trả None chứ không bịa số liệu.
+    # Kiểm ở tầng hàm thuần thay vì qua create_value_post(): tới lúc test này chạy,
+    # DB dùng chung đã có lịch sử giá từ các test ingest trước đó nên không còn
+    # "chưa có dữ liệu" thật để kiểm qua đường tích hợp.
+    check("valuepost.build('price_level') không có median thì trả None, không bịa số liệu",
+          valuepost.build("price_level", niche_name="x", median_price=None) is None)
+    check("valuepost.build('real_discount') không có món nào thì trả None",
+          valuepost.build("real_discount", niche_name="x", discounted_products=[]) is None)
+
+    # Seed lịch sử giá cho nhóm gia-dung rồi thử lại -- phải thành công và có số liệu thật.
+    pid = ulid()
+    conn.execute("""INSERT INTO product (id, source, merchant, external_product_id, name, description,
+                    current_price, original_price, commission_value, category_code, product_url, is_available,
+                    created_at, updated_at) VALUES (?,'mock','shop','ext1','Nồi test','',900000,1200000,
+                    50000,'gia-dung','https://x.test/p',1,?,?)""", (pid, now(), now()))
+    conn.execute("INSERT INTO product_price_history (product_id, price, observed_at) VALUES (?,?,?)",
+                 (pid, 1000000, now()))
+    res_price = pipeline.create_value_post(conn, "gd2026", "ch1", kind="price_level")
+    check("price_level có dữ liệu thì tạo bài thành công", res_price["ok"], res_price.get("error"))
+    check("caption price_level nêu con số", any(ch.isdigit() for ch in res_price["caption"]))
+
+    # kênh không tồn tại / campaign sai -> báo lỗi rõ, không ném exception.
+    bad = pipeline.create_value_post(conn, "gd2026", "khong-ton-tai", kind="checklist")
+    check("kênh không tồn tại thì báo lỗi rõ", bad["ok"] is False)
+
+    # post_mix: (ratio-1) job bán hàng + 1 bài giá trị, cho MỘT kênh chỉ định.
+    ctx = {"source": None, "channel": None, "storage": _FakeStorage()}
+    factory.reset_cache()
+    ctx = factory.build_context("mock")
+    pipeline.ingest_datafeed(conn, ctx["source"], limit=60)
+    before_jobs = conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='GENERATE_CONTENT'").fetchone()[0]
+    mix = pipeline.post_mix(conn, ctx, "gd2026", "ch1", ratio=3)
+    after_jobs = conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='GENERATE_CONTENT'").fetchone()[0]
+    check("post_mix tạo tối đa (ratio-1) job bán hàng cho kênh", after_jobs - before_jobs <= 2)
+    check("post_mix tạo đúng 1 bài giá trị cho kênh", len(mix["value_posts"]) == 1, mix["value_posts"])
+    check("post_mix báo cáo đúng kênh", mix["value_posts"][0]["channel"] == "ch1")
+
+    # /duyet phải LEFT JOIN product -- INNER JOIN sẽ giấu bài giá trị khỏi màn hình duyệt.
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    body = c.get("/duyet").get_data(as_text=True)
+    check("/duyet hiện được bài giá trị (không bị INNER JOIN product giấu đi)",
+          "Bài không bán hàng" in body or "bài giá trị" in body)
+    os.environ.pop("ACP_ADMIN_PASSWORD", None)
+
+    conn.close()
 
 
 def test_production_guard():
@@ -419,12 +570,108 @@ def test_migration_adds_column():
     c.close()
 
 
+def test_migration_rebuilds_post_table():
+    """Hồi quy: bảng post cũ có product_id NOT NULL + post_metrics/conversion có FK
+    trỏ vào post(id). migrate() phải dựng lại post KHÔNG làm hỏng FK của hai bảng
+    kia -- lỗi gốc là RENAME TABLE tự viết lại FK thành "post_old", rồi post_old
+    bị DROP thì FK trỏ vào một bảng không còn tồn tại.
+
+    Dùng db.connect() (không phải sqlite3.connect() thô) vì đây là đường thật của
+    ứng dụng -- isolation_level=None ảnh hưởng tới việc PRAGMA foreign_keys có áp
+    dụng lại được sau migrate() hay không.
+    """
+    print("\nDựng lại bảng post (bỏ NOT NULL trên product_id)")
+    import tempfile as _tf
+    old_db_path = db.DB_PATH
+    db.DB_PATH = os.path.join(_tf.mkdtemp(), "old_post.db")
+    c = db.connect()
+    c.executescript("""
+        CREATE TABLE product (id TEXT PRIMARY KEY);
+        CREATE TABLE channel (id TEXT PRIMARY KEY, code TEXT, daily_post_cap INTEGER);
+        CREATE TABLE campaign (id TEXT PRIMARY KEY);
+        CREATE TABLE caption_template (id TEXT PRIMARY KEY);
+        CREATE TABLE post (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES product(id),
+            channel_id TEXT NOT NULL REFERENCES channel(id),
+            campaign_id TEXT NOT NULL REFERENCES campaign(id),
+            caption_template_id TEXT, variant_code TEXT NOT NULL,
+            caption_body TEXT NOT NULL, disclosure_text TEXT NOT NULL,
+            caption_final TEXT NOT NULL, image_url_composited TEXT,
+            affiliate_link TEXT, sub_id_payload TEXT, score REAL,
+            status TEXT NOT NULL DEFAULT 'DRAFT', scheduled_at TEXT, published_at TEXT,
+            thread_id TEXT, reviewed_by TEXT, reviewed_at TEXT, reject_reason TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_post_status ON post(status, scheduled_at);
+        CREATE TABLE post_metrics (post_id TEXT PRIMARY KEY REFERENCES post(id), clicks INTEGER DEFAULT 0);
+        CREATE TABLE conversion (
+            id TEXT PRIMARY KEY, post_id TEXT REFERENCES post(id),
+            transaction_id TEXT NOT NULL, external_product_id TEXT NOT NULL,
+            sale_amount INTEGER NOT NULL, commission INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', converted_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE (transaction_id, external_product_id)
+        );
+    """)
+    c.execute("INSERT INTO product VALUES ('p1')")
+    c.execute("INSERT INTO channel VALUES ('c1','ch1', 9)")
+    c.execute("INSERT INTO campaign VALUES ('cm1')")
+    c.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                 disclosure_text, caption_final, status, created_at, updated_at)
+                 VALUES ('post1','p1','c1','cm1','A','body','disc','final','PUBLISHED',?,?)""", (now(), now()))
+    c.execute("INSERT INTO post_metrics (post_id, clicks) VALUES ('post1', 5)")
+    c.execute("""INSERT INTO conversion (id, post_id, transaction_id, external_product_id, sale_amount,
+                 commission, status, converted_at, updated_at)
+                 VALUES ('conv1','post1','tx1','p1',100000,10000,'approved',?,?)""", (now(), now()))
+
+    applied = db.migrate(c)
+    check("dựng lại post báo cáo trong applied", any("product_id" in a for a in applied), applied)
+
+    info = {r[1]: r for r in c.execute("PRAGMA table_info(post)").fetchall()}
+    check("product_id không còn NOT NULL", info["product_id"][3] == 0)
+    check("post_type có cột mới, mặc định SALES",
+          c.execute("SELECT post_type FROM post WHERE id='post1'").fetchone()[0] == "SALES")
+
+    old = c.execute("SELECT * FROM post WHERE id='post1'").fetchone()
+    check("bài cũ còn nguyên dữ liệu", old["caption_final"] == "final" and old["product_id"] == "p1")
+    joined = c.execute("""SELECT pm.clicks, cv.commission FROM post p
+                          JOIN post_metrics pm ON pm.post_id=p.id
+                          JOIN conversion cv ON cv.post_id=p.id WHERE p.id='post1'""").fetchone()
+    check("post_metrics/conversion vẫn JOIN được sau khi dựng lại bảng post",
+          joined is not None and joined["clicks"] == 5 and joined["commission"] == 10000)
+
+    for tbl in ("post_metrics", "conversion"):
+        sql = c.execute("SELECT sql FROM sqlite_master WHERE name=?", (tbl,)).fetchone()[0]
+        check(f"{tbl}.post_id vẫn tham chiếu 'post', không phải 'post_old'",
+              "post_old" not in sql and "REFERENCES post(" in sql, sql)
+
+    c.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                 disclosure_text, caption_final, post_type, status, created_at, updated_at)
+                 VALUES ('post2', NULL,'c1','cm1','H1','vbody','vdisc','vfinal','VALUE','PENDING_REVIEW',?,?)""",
+                (now(), now()))
+    check("product_id NULL được chấp nhận sau khi dựng lại bảng (bài giá trị)",
+          c.execute("SELECT product_id FROM post WHERE id='post2'").fetchone()[0] is None)
+
+    check("PRAGMA foreign_key_check sạch sau khi dựng lại bảng",
+          c.execute("PRAGMA foreign_key_check").fetchall() == [])
+    try:
+        c.execute("INSERT INTO post_metrics (post_id, clicks) VALUES ('khong-ton-tai', 0)")
+        check("FK vẫn được cưỡng chế sau khi dựng lại bảng (insert sai bị chặn)", False, "không bị chặn")
+    except Exception:
+        check("FK vẫn được cưỡng chế sau khi dựng lại bảng (insert sai bị chặn)", True)
+
+    check("chạy lại migrate() lần hai không dựng lại nữa", db.migrate(c) == [])
+    c.close()
+    db.DB_PATH = old_db_path
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
     test_niche_content_guard()
     test_niche_per_channel()
     test_migration_adds_column()
+    test_migration_rebuilds_post_table()
     test_no_double_version_prefix()
     test_tiktok_normalize()
     test_tiktok_search_filters()
@@ -432,7 +679,11 @@ if __name__ == "__main__":
     test_transaction_status_mapping()
     test_factory()
     test_single_product_flow()
+    test_playbook_hooks_and_cta()
+    test_content_post_type()
+    test_hook_rotation_in_plan_content()
     test_web_security()
+    test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
     test_production_guard()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:

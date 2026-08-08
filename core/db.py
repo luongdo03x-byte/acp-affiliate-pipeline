@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS caption_template (
 
 CREATE TABLE IF NOT EXISTS post (
     id                    TEXT PRIMARY KEY,
-    product_id            TEXT NOT NULL REFERENCES product(id),
+    product_id            TEXT REFERENCES product(id),  -- NULL cho bài không bán hàng (post_type='VALUE')
     channel_id            TEXT NOT NULL REFERENCES channel(id),
     campaign_id           TEXT NOT NULL REFERENCES campaign(id),
     caption_template_id   TEXT REFERENCES caption_template(id),
@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS post (
     affiliate_link        TEXT,
     sub_id_payload        TEXT,
     score                 REAL,
+    post_type             TEXT NOT NULL DEFAULT 'SALES',  -- SALES | VALUE (bài không bán hàng)
     status                TEXT NOT NULL DEFAULT 'DRAFT',
     scheduled_at          TEXT,
     published_at          TEXT,
@@ -233,17 +234,61 @@ def transaction(conn: sqlite3.Connection):
 MIGRATIONS = [
     # (bảng, cột, câu lệnh) -- chạy được nhiều lần, bỏ qua nếu cột đã có.
     ("channel", "niches", "ALTER TABLE channel ADD COLUMN niches TEXT NOT NULL DEFAULT '[]'"),
+    ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
 ]
 
 
+def _rebuild_post_table(conn) -> None:
+    """Dựng lại bảng post để bỏ NOT NULL trên product_id -- SQLite không bỏ được
+    ràng buộc này bằng ALTER TABLE. Giữ nguyên toàn bộ bản ghi cũ.
+
+    post_metrics và conversion có FK trỏ vào post(id). Theo đúng quy trình SQLite
+    khuyến nghị cho kiểu đổi schema này (sqlite.org/lang_altertable.html mục
+    "Making Other Kinds Of Table Schema Changes"):
+      - legacy_alter_table=ON để RENAME không tự viết lại FK của post_metrics/
+        conversion thành "post_old" (mặc định SQLite sẽ làm vậy, và sau khi
+        post_old bị DROP thì FK đó trỏ vào một bảng không còn tồn tại).
+      - foreign_keys=OFF để DROP TABLE post_old không bị chặn bởi chính FK mà
+        post_metrics/conversion đang giữ.
+    Bật lại cả hai ngay sau khi xong, kể cả khi có lỗi giữa chừng.
+
+    KHÔNG THỂ HOÀN TÁC: bảng cũ bị DROP ở cuối. Sao lưu var/acp.db trước khi gọi
+    init_db() lần đầu trên một CSDL đã có dữ liệu.
+    """
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("ALTER TABLE post RENAME TO post_old")
+        # Tạo lại bảng post đúng theo SCHEMA hiện hành (đã có product_id nullable).
+        post_ddl = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS post ("):]
+        post_ddl = post_ddl[:post_ddl.index(";") + 1]
+        conn.executescript(post_ddl)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(post_old)").fetchall()]
+        col_list = ", ".join(cols)
+        conn.execute(f"INSERT INTO post ({col_list}) SELECT {col_list} FROM post_old")
+        conn.execute("DROP TABLE post_old")  # cũng xoá luôn các index cũ (đi theo bảng khi RENAME)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_post_status ON post(status, scheduled_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_post_product ON post(product_id, published_at)")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+
+
 def migrate(conn) -> list:
-    """Nâng cấp schema cho CSDL đã tồn tại. Không xoá hay ghi đè dữ liệu."""
+    """Nâng cấp schema cho CSDL đã tồn tại. Không xoá hay ghi đè dữ liệu, trừ
+    _rebuild_post_table() -- xem cảnh báo trong docstring của hàm đó."""
     applied = []
     for table, column, sql in MIGRATIONS:
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if cols and column not in cols:
             conn.execute(sql)
             applied.append(f"{table}.{column}")
+
+    post_cols = conn.execute("PRAGMA table_info(post)").fetchall()
+    product_id_col = next((r for r in post_cols if r[1] == "product_id"), None)
+    if product_id_col and product_id_col[3]:  # notnull=1 -> bảng cũ, cần dựng lại
+        _rebuild_post_table(conn)
+        applied.append("post.product_id (bỏ NOT NULL)")
     return applied
 
 

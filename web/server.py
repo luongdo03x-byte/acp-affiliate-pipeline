@@ -205,19 +205,21 @@ def create_app():
     @app.route("/duyet")
     def review():
         conn = connect()
+        # LEFT JOIN -- bài không bán hàng (post_type='VALUE') không có product_id,
+        # INNER JOIN sẽ âm thầm giấu chúng khỏi màn hình duyệt.
         rows = [dict(r) for r in conn.execute("""
             SELECT p.*, pr.name AS product_name, pr.category_code, pr.current_price,
                    pr.commission_value, pr.rating, pr.review_count, pr.sold_count,
                    ch.handle AS channel_handle, t.name AS template_name
             FROM post p
-            JOIN product pr ON pr.id = p.product_id
+            LEFT JOIN product pr ON pr.id = p.product_id
             JOIN channel ch ON ch.id = p.channel_id
             LEFT JOIN caption_template t ON t.id = p.caption_template_id
             WHERE p.status IN ('PENDING_REVIEW', 'DRAFT')
             ORDER BY p.created_at DESC""").fetchall()]
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
-            FROM post p JOIN product pr ON pr.id = p.product_id
+            FROM post p LEFT JOIN product pr ON pr.id = p.product_id
             WHERE p.status IN ('SCHEDULED','PUBLISHED','REJECTED')
             ORDER BY p.updated_at DESC LIMIT 8""").fetchall()]
         conn.close()

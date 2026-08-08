@@ -17,22 +17,29 @@
 {% for p in posts %}
 <div class="card" style="margin-bottom:18px">
   <div style="display:flex;gap:20px;flex-wrap:wrap">
+    {% if p.image_url_composited %}
     <img src="{{ '/media/' ~ p.id ~ '.jpg' }}" alt="Ảnh đăng bài" width="188" height="188"
          style="border-radius:8px;border:1px solid var(--rule);object-fit:cover;flex:0 0 188px">
+    {% endif %}
 
     <div style="flex:1;min-width:320px">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
-        <strong style="font-family:var(--display);font-size:16px">{{ p.product_name }}</strong>
-        <span class="n" style="font-size:13px">điểm {{ '%.3f'|format(p.score or 0) }}</span>
+        <strong style="font-family:var(--display);font-size:16px">{{ p.product_name or "Bài không bán hàng" }}</strong>
+        {% if p.post_type == 'SALES' %}<span class="n" style="font-size:13px">điểm {{ '%.3f'|format(p.score or 0) }}</span>{% endif %}
       </div>
 
       <div style="margin:8px 0 12px;display:flex;gap:6px;flex-wrap:wrap">
+        {% if p.post_type == 'VALUE' %}
+        <span class="tag">bài giá trị</span>
+        <span class="tag">{{ p.variant_code }}</span>
+        {% else %}
         <span class="tag">{{ p.category_code }}</span>
         <span class="tag">{{ p.template_name }}</span>
-        <span class="tag">biến thể {{ p.variant_code }}</span>
-        <span class="tag">{{ p.channel_handle }}</span>
+        <span class="tag">hook {{ p.variant_code }}</span>
         <span class="tag warn">hoa hồng {{ p.commission_value|vnd }}</span>
         <span class="tag">{{ p.rating }}★ · {{ p.review_count|num }} đánh giá · bán {{ p.sold_count|num }}</span>
+        {% endif %}
+        <span class="tag">{{ p.channel_handle }}</span>
       </div>
 
       {% if p.status == 'DRAFT' and p.reject_reason %}
@@ -65,7 +72,7 @@
   <tbody>
   {% for r in recent %}
     <tr>
-      <td>{{ r.product_name }}</td>
+      <td>{{ r.product_name or "Bài không bán hàng" }}</td>
       <td><span class="tag {{ 'ok' if r.status=='PUBLISHED' else ('bad' if r.status=='REJECTED' else 'warn') }}">{{ r.status }}</span></td>
       <td class="dim n" style="text-align:left">{{ (r.published_at or r.scheduled_at or '')[:16]|replace('T',' ') }}</td>
     </tr>

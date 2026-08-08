@@ -10,6 +10,9 @@
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
     python3 run.py product <mã sp>      MỘT sản phẩm -> MỘT bài chờ duyệt
+    python3 run.py valuepost <kênh> [loại]   bài không bán hàng cho một kênh
+                                         loại: price_level | real_discount | checklist
+    python3 run.py mix [kênh]           phương pháp 3 bài -- trộn bán hàng + giá trị
     python3 run.py review               liệt kê bài đang chờ duyệt
     python3 run.py reconcile            chặng 6 -- kéo dữ liệu chuyển đổi về
     python3 run.py trace                soi vì sao chuyển đổi không quy kết được
@@ -113,16 +116,20 @@ def cmd_work():
 
 def cmd_review():
     conn = connect()
-    rows = conn.execute("""SELECT p.id, p.status, p.variant_code, pr.name, pr.category_code, p.score
-                           FROM post p JOIN product pr ON pr.id=p.product_id
-                           WHERE p.status IN ('PENDING_REVIEW','DRAFT') ORDER BY p.score DESC""").fetchall()
+    # LEFT JOIN -- bài không bán hàng (post_type='VALUE') không có product_id.
+    rows = conn.execute("""SELECT p.id, p.status, p.variant_code, p.post_type, pr.name, pr.category_code, p.score
+                           FROM post p LEFT JOIN product pr ON pr.id=p.product_id
+                           WHERE p.status IN ('PENDING_REVIEW','DRAFT')
+                           ORDER BY p.score IS NULL, p.score DESC""").fetchall()
     conn.close()
     if not rows:
         print("Không có bài nào chờ duyệt.")
         return
     print(f"{len(rows)} bài chờ duyệt:\n")
     for r in rows:
-        print(f"  [{r['status']:<14}] {r['id']}  {r['score']:.3f}  {r['name'][:52]}")
+        label = r["name"][:52] if r["name"] else f"[bài giá trị: {r['variant_code']}]"
+        score = f"{r['score']:.3f}" if r["score"] is not None else "  -  "
+        print(f"  [{r['status']:<14}] {r['id']}  {score}  {label}")
 
 
 def cmd_approve_all():
@@ -359,6 +366,41 @@ def cmd_search(query=None, source_name=None):
     print(f"\n  Tạo bài: python3 run.py product <mã sản phẩm>\n")
 
 
+def cmd_valuepost(channel_code=None, kind=None):
+    """Bài không bán hàng cho một kênh -- xem core/valuepost.py."""
+    if not channel_code:
+        print("Cách dùng: python3 run.py valuepost <mã kênh> [loại]")
+        print("  loại: price_level | real_discount | checklist  (bỏ trống thì bốc ngẫu nhiên)")
+        return
+    conn = connect()
+    res = pipeline.create_value_post(conn, CAMPAIGN_CODE, channel_code, kind=kind)
+    conn.close()
+    if not res["ok"]:
+        print(f"  ✗ {res['error']}")
+        return
+    print(f"\n  ✓ Đã tạo bài {res['post_id']} — loại {res['kind']} — trạng thái {res['status']}\n")
+    for line in res["caption"].split("\n"):
+        print(f"  {line}")
+    if res["problems"]:
+        print(f"\n  ⚠ Không đạt kiểm tra tự động: {'; '.join(res['problems'])}")
+    print(f"\n  Xem và duyệt tại: http://127.0.0.1:5000/duyet\n")
+
+
+def cmd_mix(channel_code=None):
+    """Phương pháp 3 bài: mỗi kênh -- 2 bài bán hàng chờ sinh nội dung + 1 bài giá trị."""
+    conn = connect()
+    ctx = _ctx()
+    res = pipeline.post_mix(conn, ctx, CAMPAIGN_CODE, channel_code)
+    conn.close()
+    print(f"\n  Đã tạo {len(res['sales_jobs'])} job sinh bài bán hàng -- chạy `run.py work` để xử lý.\n")
+    for vp in res["value_posts"]:
+        if vp["ok"]:
+            print(f"  ✓ {vp['channel']}: bài giá trị ({vp['kind']}) — {vp['status']}")
+        else:
+            print(f"  ✗ {vp['channel']}: {vp['error']}")
+    print()
+
+
 def cmd_report():
     conn = connect()
     f = attribution.funnel(conn)
@@ -462,6 +504,7 @@ COMMANDS = {
     "review": cmd_review, "approve-all": cmd_approve_all, "report": cmd_report,
     "reconcile": cmd_reconcile, "trace": cmd_trace, "doctor": cmd_doctor,
     "product": cmd_product, "search": cmd_search, "niche": cmd_niche,
+    "valuepost": cmd_valuepost, "mix": cmd_mix,
     "demo": cmd_demo, "serve": cmd_serve, "simulate": cmd_simulate_conversions,
     "genkey": lambda: print(crypto.generate_key()),
 }
@@ -472,7 +515,7 @@ if __name__ == "__main__":
         print(__doc__)
     elif cmd == "niche":
         cmd_niche(*sys.argv[2:])
-    elif cmd in ("product", "search"):
+    elif cmd in ("product", "search", "valuepost", "mix"):
         COMMANDS[cmd](*sys.argv[2:4])
     elif cmd == "approve" and len(sys.argv) > 2:
         c = connect(); print(pipeline.approve_post(c, sys.argv[2])); c.close()

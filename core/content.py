@@ -11,7 +11,7 @@ import random
 import re
 import unicodedata
 
-from . import niche
+from . import niche, playbook
 
 MAX_LEN = 500
 
@@ -40,19 +40,19 @@ TEMPLATES = {
     "price_drop": (
         "{name}\n\n"
         "Giá đang ở mức {price}, thấp hơn khoảng {discount}% so với mặt bằng 30 ngày qua. "
-        "{social}\n\n{link}"
+        "{social}"
     ),
     "spec_highlight": (
         "{name}\n\n"
-        "Đang bán {price}. {social} Thông tin từ trang bán: {highlight}.\n\n{link}"
+        "Đang bán {price}. {social} Thông tin từ trang bán: {highlight}."
     ),
     "deal_roundup": (
         "Lọc trong nhóm {category} hôm nay thì món này đáng chú ý nhất về giá:\n\n"
-        "{name} — {price}. {social}\n\n{link}"
+        "{name} — {price}. {social}"
     ),
     "comparison": (
         "Trong tầm giá {price_band} thì {name} là mẫu có số liệu đáng chú ý.\n\n"
-        "Đang bán {price}. {social}\n\n{link}"
+        "Đang bán {price}. {social}"
     ),
 }
 
@@ -102,9 +102,17 @@ CATEGORY_LABELS = {
 
 def generate(product, template_code: str, affiliate_link: str,
              discount_pct: float = 0.0, disclosure: str = DISCLOSURE_DEFAULT,
-             rng: random.Random = None) -> str:
-    """Sinh caption hoàn chỉnh đã gồm disclosure. Chưa validate."""
+             hook_code: str = None, rng: random.Random = None) -> str:
+    """Sinh caption hoàn chỉnh theo cấu trúc HOOK -> THÂN -> MỘT CTA -> DISCLOSURE.
+
+    hook_code chọn dòng mở đầu (core/playbook.py). Bỏ trống thì bốc ngẫu nhiên --
+    nhưng pipeline.plan_content() luôn truyền vào một mã cụ thể để xoay vòng hook
+    làm biến thể đo bằng sub3. Caption trả về CHƯA qua validate().
+    """
     rng = rng or random.Random()
+    hook_code = playbook.pick_hook(hook_code, rng=rng)
+    hook_line = playbook.render_hook(hook_code, product, discount_pct)
+    cta_line = playbook.pick_cta(rng=rng)
     social = _social_proof(product)
     body = TEMPLATES[template_code].format(
         name=product["name"][:120],
@@ -114,11 +122,11 @@ def generate(product, template_code: str, affiliate_link: str,
         social=social,
         highlight=_highlight(product),
         category=CATEGORY_LABELS.get(product["category_code"], product["category_code"]),
-        link=affiliate_link,
     )
+    full = f"{hook_line}\n\n{body}\n\n{cta_line}\n{affiliate_link}"
     if _llm_fn:
-        body = _llm_fn(_build_prompt(product, body))
-    return _fit(body, disclosure)
+        full = _llm_fn(_build_prompt(product, full))
+    return _fit(full, disclosure)
 
 
 def _build_prompt(product, draft: str) -> str:
@@ -148,21 +156,30 @@ def _fit(body: str, disclosure: str) -> str:
     return f"{head}\n\n{link_line}{tail}"
 
 
-def validate(caption: str, disclosure: str = DISCLOSURE_DEFAULT, niches=None) -> list:
+def validate(caption: str, disclosure: str = DISCLOSURE_DEFAULT, niches=None,
+             post_type: str = "SALES") -> list:
     """Trả về danh sách vi phạm. Rỗng nghĩa là được phép đưa vào hàng đợi duyệt.
 
     niches: danh sách mã chủ đề đang bật. Mỗi chủ đề có thể thêm cụm cấm riêng --
     mỹ phẩm là nhóm hàng quảng cáo có điều kiện nên cấm mọi khẳng định điều trị.
+
+    post_type: 'SALES' (mặc định) bắt buộc có nhãn tiếp thị liên kết + link + đúng
+    một CTA. 'VALUE' (bài không bán hàng, xem core/valuepost.py) không quảng cáo
+    sản phẩm cụ thể nên bỏ qua ba yêu cầu đó -- nhưng vẫn chịu mọi rào chắn nội
+    dung khác (không tuyệt đối hoá, không bịa trải nghiệm, không cam kết công dụng).
     """
     problems = []
     flat = unicodedata.normalize("NFC", caption).lower()
 
     if len(caption) > MAX_LEN:
         problems.append(f"Dài {len(caption)} ký tự, Threads chỉ cho {MAX_LEN}")
-    if disclosure.lower() not in flat:
-        problems.append("Thiếu nhãn tiếp thị liên kết")
-    if not re.search(r"https?://\S+", caption):
-        problems.append("Thiếu link affiliate")
+    if post_type == "SALES":
+        if disclosure.lower() not in flat:
+            problems.append("Thiếu nhãn tiếp thị liên kết")
+        if not re.search(r"https?://\S+", caption):
+            problems.append("Thiếu link affiliate")
+        if playbook.contains_multiple_cta(caption):
+            problems.append("Chứa nhiều hơn một lời kêu gọi hành động (CTA)")
 
     for phrase in BANNED_SUPERLATIVES:
         if phrase in flat:
