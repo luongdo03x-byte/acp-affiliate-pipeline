@@ -52,7 +52,7 @@
 
     <div class="product-confirm__visual">
       <div class="product-image-frame">
-        <img src="{{ metadata.image_url }}" alt="Ảnh sản phẩm Shopee" id="affiliate-image-preview"
+        <img src="{{ metadata.image_url or '' }}" alt="Ảnh sản phẩm Shopee" id="affiliate-image-preview"
              style="{{ '' if metadata.image_url else 'display:none' }}">
         <div class="image-placeholder" id="affiliate-image-placeholder"
              style="{{ 'display:none' if metadata.image_url else '' }}">Chưa có ảnh</div>
