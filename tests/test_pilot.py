@@ -289,6 +289,26 @@ def test_playbook_hooks_and_cta():
     check("hai CTA trong cùng caption thì bị chặn",
           playbook.contains_multiple_cta(f"{playbook.CTA_LIBRARY[0]} {playbook.CTA_LIBRARY[1]}"))
 
+    banned_phrases = ["trang bán ghi nhận", "có số liệu đáng chú ý"]
+    social_product = {"name": "Sản phẩm test", "current_price": 100000,
+                       "sold_count": 512, "rating": 4.8, "review_count": 200,
+                       "category_code": "gia-dung"}
+    no_social_product = {"name": "Sản phẩm test", "current_price": 100000,
+                          "sold_count": 0, "rating": None, "review_count": 0,
+                          "category_code": "gia-dung"}
+    for code in playbook.hook_codes():
+        for product in (social_product, no_social_product):
+            text = playbook.render_hook(code, product, 0.15)
+            low = text.lower()
+            check(f"hook {code} không còn giọng báo cáo số liệu",
+                  all(p not in low for p in banned_phrases), text)
+            check(f"hook {code} không bịa trải nghiệm sử dụng",
+                  content.validate(f"{text}\n\n{playbook.CTA_LIBRARY[0]}\nhttps://x.test/y\n\n"
+                                    f"{content.DISCLOSURE_DEFAULT}") == [],
+                  text)
+    check("H5 dùng số liệu kiểu 'người mua rồi' chứ không phải 'đã bán ... lượt'",
+          "người mua rồi" in playbook.render_hook("H5_XAHOI", social_product, 0).lower())
+
 
 def test_content_post_type():
     print("\ncontent.validate() theo post_type")

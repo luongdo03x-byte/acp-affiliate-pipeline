@@ -31,23 +31,24 @@ def _social_bits(product) -> str:
     reviews = _get(product, "review_count", 0) or 0
     bits = []
     if sold >= 100:
-        bits.append(f"đã bán {sold:,}".replace(",", ".") + " lượt")
+        bits.append(f"{sold:,}".replace(",", ".") + " người mua rồi")
     if rating and reviews >= 20:
-        bits.append(f"{rating:g}/5 từ {reviews:,} đánh giá".replace(",", "."))
+        bits.append(f"đánh giá {rating:g}/5")
     return ", ".join(bits)
 
 
 def _h_gia_giam(product, discount_pct):
     pct = max(1, round((discount_pct or 0) * 100))
-    return f"Đang bán {_fmt_vnd(_get(product, 'current_price', 0))}, thấp hơn khoảng {pct}% so với mặt bằng gần đây."
+    return (f"Giá đang treo {_fmt_vnd(_get(product, 'current_price', 0))}, mềm hơn tầm {pct}% "
+            "so với bình thường -- thấy hời nên để lại đây.")
 
 
 def _h_so_sanh(product, discount_pct):
-    return "So với mấy món cùng tầm giá thì đây là cái có số liệu đáng chú ý hơn."
+    return "So mấy món cùng tầm giá thì cái này có vẻ đáng tiền hơn hẳn."
 
 
 def _h_khan_hiem(product, discount_pct):
-    return "Xem qua thì thấy số lượng không nhiều, nhóm nào cần thì cân nhắc sớm."
+    return "Nhìn số lượng còn lại thì chắc không trụ lâu, ai cần thì cân nhắc sớm nhé."
 
 
 def _h_cau_hoi(product, discount_pct):
@@ -57,16 +58,16 @@ def _h_cau_hoi(product, discount_pct):
 def _h_xa_hoi(product, discount_pct):
     bits = _social_bits(product)
     if bits:
-        return f"Trang bán ghi nhận {bits} -- để ý thấy nên chia sẻ lại."
-    return "Lướt thấy món này, số liệu trên trang bán khá ổn nên chia sẻ lại."
+        return f"Thấy {bits}, để lại đây cho ai đang cần."
+    return "Lướt thấy món này trông ổn, để lại đây cho ai quan tâm."
 
 
 def _h_hang_moi(product, discount_pct):
-    return "Mới để ý thấy món này trong danh mục, thông tin cơ bản như sau."
+    return "Mới thấy món này, để lại thông tin cơ bản cho ai đang cần."
 
 
 def _h_tiet_kiem(product, discount_pct):
-    return "Tính ra mua đúng lúc này thì đỡ được một khoản, để lại thông tin cho ai cần."
+    return "Mua đúng lúc này thì đỡ được một khoản, để lại thông tin cho ai cần."
 
 
 def _h_canh_bao(product, discount_pct):
@@ -74,7 +75,7 @@ def _h_canh_bao(product, discount_pct):
 
 
 def _h_truc_tiep(product, discount_pct):
-    return f"{_get(product, 'name', '')[:100]} -- {_fmt_vnd(_get(product, 'current_price', 0))}."
+    return f"{_get(product, 'name', '')[:100]} — đang có giá {_fmt_vnd(_get(product, 'current_price', 0))}."
 
 
 # Mã hook giữ nguyên vĩnh viễn một khi đã dùng để đo -- đổi mã là mất lịch sử
