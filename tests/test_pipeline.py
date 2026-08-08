@@ -75,6 +75,30 @@ def test_content_guards():
     conn.close()
 
 
+def test_caption_tone():
+    print("\nGiọng văn caption (phát hiện & chia sẻ)")
+    banned_phrases = ["trang bán ghi nhận", "có số liệu đáng chú ý",
+                       "thông tin từ trang bán"]
+    product_no_social = {"name": "Quần linen giả váy chất đũi tơ", "current_price": 100250,
+                          "original_price": None, "sold_count": 0, "rating": None,
+                          "review_count": 0, "category_code": "thoi-trang",
+                          "description": "Chất đũi tơ, thiết kế cạp nhúm."}
+    product_with_social = dict(product_no_social, sold_count=512, rating=4.8, review_count=200)
+    for code in content.TEMPLATES:
+        for product in (product_no_social, product_with_social):
+            caption = content.generate(product, code, "https://go.isclix.com/x?sub1=abc",
+                                        discount_pct=0.1, hook_code="H4_CAUHOI")
+            low = caption.lower()
+            check(f"template {code} không còn giọng báo cáo số liệu",
+                  all(p not in low for p in banned_phrases), caption)
+            check(f"template {code} không để câu giá đứng riêng một đoạn",
+                  "\n\nđang bán" not in low, caption)
+            check(f"template {code} qua được validate()",
+                  content.validate(caption) == [], content.validate(caption))
+    check("_social_proof dùng 'người mua rồi' chứ không phải 'đã bán ... lượt'",
+          "người mua rồi" in content._social_proof(product_with_social).lower())
+
+
 def test_scoring():
     print("\nChấm điểm")
     conn = connect()
@@ -250,6 +274,7 @@ if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
     test_content_guards()
+    test_caption_tone()
     test_scoring()
     test_subid_roundtrip()
     test_conversion_dedup()

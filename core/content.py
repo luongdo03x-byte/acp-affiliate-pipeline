@@ -39,20 +39,20 @@ EFFICACY_CLAIMS = [
 TEMPLATES = {
     "price_drop": (
         "{name}\n\n"
-        "Giá đang ở mức {price}, thấp hơn khoảng {discount}% so với mặt bằng 30 ngày qua. "
+        "Giá hiện {price}, mềm hơn khoảng {discount}% so với 30 ngày qua. "
         "{social}"
     ),
     "spec_highlight": (
         "{name}\n\n"
-        "Đang bán {price}. {social} Thông tin từ trang bán: {highlight}."
+        "Giá {price}. {social} Bên bán mô tả: {highlight}."
     ),
     "deal_roundup": (
-        "Lọc trong nhóm {category} hôm nay thì món này đáng chú ý nhất về giá:\n\n"
+        "Lướt nhóm {category} hôm nay thấy món này giá khá hời:\n\n"
         "{name} — {price}. {social}"
     ),
     "comparison": (
-        "Trong tầm giá {price_band} thì {name} là mẫu có số liệu đáng chú ý.\n\n"
-        "Đang bán {price}. {social}"
+        "Trong tầm giá {price_band}, {name} là món khá ổn — giá đang {price}. "
+        "{social}"
     ),
 }
 
@@ -79,10 +79,10 @@ def _social_proof(product) -> str:
     sold, rating, reviews = product["sold_count"] or 0, product["rating"] or 0, product["review_count"] or 0
     bits = []
     if sold >= 100:
-        bits.append(f"đã bán {sold:,}".replace(",", ".") + " lượt")
+        bits.append(f"{sold:,}".replace(",", ".") + " người mua rồi")
     if rating and reviews >= 20:
-        bits.append(f"{rating:g}/5 từ {reviews:,} đánh giá".replace(",", "."))
-    return ("Trang bán ghi nhận " + ", ".join(bits) + ".") if bits else ""
+        bits.append(f"đánh giá {rating:g}/5")
+    return ("Cũng " + ", ".join(bits) + ".") if bits else ""
 
 
 def _highlight(product) -> str:
