@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "ACP Shopee Helper",
+  "version": "1.0.0",
+  "description": "Đọc tên/giá/ảnh sản phẩm Shopee đã hiển thị trong tab của bạn và gửi về ACP đang chạy trên máy bạn (localhost). Không đọc cookie, không tự động hoá thao tác trên Shopee, không gửi dữ liệu ra ngoài máy bạn.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "https://shopee.vn/*",
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ACP Shopee Helper — bấm khi đang xem trang sản phẩm Shopee"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1:5000/*", "http://localhost:5000/*"],
+      "js": ["content_acp.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

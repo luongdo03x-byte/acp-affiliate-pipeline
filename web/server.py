@@ -19,15 +19,19 @@ from flask import (Flask, abort, jsonify, redirect, render_template, request,
 from ..adapters import factory
 from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
-    ProductMetadata, ResolvedAffiliateUrl,
+    ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
-from ..core import attribution, jobs, pipeline, scoring, storage
+from ..core import attribution, helper_pairing, jobs, pipeline, scoring, storage
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
 
 # Đường không cần đăng nhập. Media phải mở vì Meta tự tải ảnh về khi publish.
-PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz")
+# /api/helper/ cũng public VÌ SAO: ACP Shopee Helper (Chrome extension) không
+# mang session cookie của người vận hành -- nó tự bảo vệ bằng token một lần
+# dùng + chỉ nhận request từ loopback (xem core/helper_pairing.py và route
+# helper_submit() bên dưới), không phải bằng đăng nhập.
+PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz", "/api/helper/")
 
 
 def _fmt_vnd(v):
@@ -149,11 +153,13 @@ def create_app():
     def _render_affiliate(*, affiliate_url="", resolved=None, metadata=None,
                           err=None, warning=None, selected_channel=None, status=200):
         pending, channels = _product_common_context()
+        meta = metadata or ProductMetadata()
         return render_template(
             "products.html", page="san-pham", mode="affiliate", items=[], q="", err=err,
             source_name="manual_shopee", pending_review=pending, channels=channels,
             affiliate_url=affiliate_url, resolved=resolved,
-            metadata=metadata or ProductMetadata(), metadata_warning=warning,
+            metadata=meta, metadata_warning=warning,
+            metadata_state=metadata_state(meta) if resolved else None,
             selected_channel=selected_channel,
         ), status
 
@@ -305,6 +311,54 @@ def create_app():
                 affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
                 selected_channel=channel_code, err=res.get("error") or "Không thể tạo bài nháp.", status=400)
         return redirect(url_for("review"))
+
+    # --------------------------------------------- ACP Shopee Helper (Chrome)
+
+    @app.route("/sanpham/affiliate/helper/token", methods=["POST"])
+    def helper_issue_token():
+        """Gọi từ trang /sanpham (đã đăng nhập, có CSRF) khi bấm
+        'Mở Shopee & lấy thông tin'. Token gắn với ĐÚNG product_url đang xác
+        nhận -- xem core/helper_pairing.py."""
+        product_url = request.form.get("product_url", "").strip()
+        if not product_url:
+            abort(400)
+        return jsonify(helper_pairing.issue(product_url))
+
+    @app.route("/sanpham/affiliate/helper/status")
+    def helper_status():
+        """Trang /sanpham poll định kỳ để lấy dữ liệu extension vừa gửi."""
+        token = request.args.get("token", "")
+        result = helper_pairing.poll(token)
+        if result is None:
+            return jsonify(status="expired"), 404
+        return jsonify(result)
+
+    @app.route("/api/helper/shopee-product", methods=["POST"])
+    def helper_submit():
+        """ACP Shopee Helper (Chrome extension) gọi sau khi đọc DOM trang Shopee
+        đã render trong tab của người dùng. KHÔNG đăng nhập (extension không có
+        session của người vận hành) -- tự bảo vệ bằng:
+          1. Chỉ nhận request từ loopback (127.0.0.1/::1).
+          2. Token một lần dùng, gắn đúng product_url, hết hạn sau 5 phút.
+          3. Route này KHÔNG bật CORS nên một trang web bất kỳ không tự POST
+             tới đây được qua fetch() của trình duyệt.
+        """
+        if request.remote_addr not in ("127.0.0.1", "::1"):
+            abort(403)
+        payload = request.get_json(silent=True) or {}
+        token = str(payload.get("token") or "")
+        product_url = str(payload.get("product_url") or "")
+        metadata = payload.get("metadata") or {}
+        if not token or not product_url or not isinstance(metadata, dict):
+            abort(400)
+        # Chỉ giữ lại đúng 5 trường được phép -- extension không được nhồi
+        # thêm trường lạ (vd cookie/token) vào payload.
+        clean = {k: metadata.get(k) for k in ("name", "current_price", "original_price",
+                                               "image_url", "shop")}
+        ok = helper_pairing.submit(token, product_url, clean)
+        if not ok:
+            abort(410)  # token sai/hết hạn/đã dùng/product_url không khớp
+        return jsonify(ok=True)
 
     # ------------------------------------------------------------- kênh
 

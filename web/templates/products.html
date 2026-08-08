@@ -16,7 +16,13 @@
 </div>
 
 {% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
-{% if metadata_warning %}<div class="alert alert--warning"><strong>Cần kiểm tra thủ công.</strong><span>{{ metadata_warning }}</span></div>{% endif %}
+{% if metadata_state == 'AUTO_COMPLETE' %}
+<div class="alert alert--success"><strong>✓ Đã tự lấy thông tin.</strong><span>Kiểm tra lại rồi tạo bài.</span></div>
+{% elif metadata_state == 'AUTO_PARTIAL' %}
+<div class="alert alert--warning"><strong>⚠ Còn thiếu một phần thông tin.</strong><span>{{ metadata_warning or "Kiểm tra và điền nốt các trường còn trống, hoặc dùng Chrome Helper bên dưới." }}</span></div>
+{% elif metadata_state == 'BROWSER_HELPER_REQUIRED' %}
+<div class="alert alert--warning"><strong>Shopee yêu cầu xác minh trình duyệt.</strong><span>Không tự lấy được thông tin từ server. Bấm "Mở Shopee & lấy thông tin" bên dưới, hoặc nhập tay.</span></div>
+{% endif %}
 
 {% if mode == 'affiliate' %}
   {% if not resolved %}
@@ -46,13 +52,27 @@
 
     <div class="product-confirm__visual">
       <div class="product-image-frame">
-        {% if metadata.image_url %}
-          <img src="{{ metadata.image_url }}" alt="Ảnh sản phẩm Shopee" id="affiliate-image-preview">
-        {% else %}
-          <div class="image-placeholder">Chưa có ảnh</div>
-        {% endif %}
+        <img src="{{ metadata.image_url }}" alt="Ảnh sản phẩm Shopee" id="affiliate-image-preview"
+             style="{{ '' if metadata.image_url else 'display:none' }}">
+        <div class="image-placeholder" id="affiliate-image-placeholder"
+             style="{{ 'display:none' if metadata.image_url else '' }}">Chưa có ảnh</div>
       </div>
       <span class="status-badge status-badge--accent">Shopee Direct</span>
+
+      {% if metadata_state and metadata_state != 'AUTO_COMPLETE' %}
+      <div class="helper-box">
+        <button type="button" class="btn btn--ghost btn--wide" id="helper-open-btn"
+                data-product-url="{{ resolved.product_url }}">
+          Mở Shopee &amp; lấy thông tin
+        </button>
+        <p class="note" id="helper-status-note">
+          Mở trang sản phẩm trong tab mới. Cần cài <em>ACP Shopee Helper</em>
+          (xem <code>tools/chrome_helper/README.md</code>), xem trang bình thường
+          rồi bấm biểu tượng extension để gửi thông tin về đây.
+        </p>
+      </div>
+      {% endif %}
+
       <div class="link-readout">
         <span>Link sản phẩm</span>
         <code title="{{ resolved.product_url }}">{{ resolved.product_url }}</code>
@@ -108,6 +128,92 @@
       </div>
     </div>
   </form>
+  <script>
+  (function () {
+    var btn = document.getElementById("helper-open-btn");
+    if (!btn) return;
+    var note = document.getElementById("helper-status-note");
+    var noteDefault = note.textContent;
+    var csrf = document.querySelector('input[name="_csrf"]').value;
+    var polling = null;
+
+    function setNote(text) { note.textContent = text; }
+
+    function fillForm(meta) {
+      var map = { name: "name", current_price: "current_price", original_price: "original_price",
+                  shop: "shop", image_url: "image_url" };
+      Object.keys(map).forEach(function (key) {
+        var el = document.getElementById(map[key]);
+        if (el && meta[key] !== null && meta[key] !== undefined && meta[key] !== "") {
+          el.value = meta[key];
+        }
+      });
+      if (meta.image_url) {
+        var img = document.getElementById("affiliate-image-preview");
+        var ph = document.getElementById("affiliate-image-placeholder");
+        img.src = meta.image_url;
+        img.style.display = "";
+        if (ph) ph.style.display = "none";
+      }
+    }
+
+    function stopPolling() {
+      if (polling) { clearInterval(polling); polling = null; }
+    }
+
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      setNote("Đang mở trang Shopee...");
+      fetch("/sanpham/affiliate/helper/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "product_url=" + encodeURIComponent(btn.dataset.productUrl) + "&_csrf=" + encodeURIComponent(csrf),
+      }).then(function (r) {
+        if (!r.ok) throw new Error("token");
+        return r.json();
+      }).then(function (data) {
+        window.open(btn.dataset.productUrl, "_blank", "noopener");
+        // Đăng token lên trang cho ACP Shopee Helper (content script) đọc.
+        var meta = document.querySelector('meta[name="acp-helper-pairing"]');
+        if (!meta) {
+          meta = document.createElement("meta");
+          meta.name = "acp-helper-pairing";
+          document.head.appendChild(meta);
+        }
+        meta.content = JSON.stringify({ token: data.token, product_url: btn.dataset.productUrl });
+        window.dispatchEvent(new CustomEvent("acp:helper-token"));
+
+        setNote("Đã mở tab Shopee. Xem trang bình thường rồi bấm biểu tượng ACP Shopee Helper để gửi thông tin về đây. Đang chờ...");
+        var deadline = Date.now() + data.expires_in * 1000;
+        polling = setInterval(function () {
+          if (Date.now() > deadline) {
+            stopPolling();
+            setNote("Hết thời gian chờ. Bấm lại nút nếu cần thử tiếp, hoặc nhập tay bên dưới.");
+            btn.disabled = false;
+            return;
+          }
+          fetch("/sanpham/affiliate/helper/status?token=" + encodeURIComponent(data.token))
+            .then(function (r) { return r.ok ? r.json() : { status: "expired" }; })
+            .then(function (s) {
+              if (s.status === "ready") {
+                stopPolling();
+                fillForm(s.metadata);
+                setNote("✓ Đã nhận thông tin từ Chrome. Kiểm tra lại rồi tạo bài.");
+                btn.disabled = false;
+              } else if (s.status === "expired") {
+                stopPolling();
+                setNote("Hết thời gian chờ. Bấm lại nút nếu cần thử tiếp, hoặc nhập tay bên dưới.");
+                btn.disabled = false;
+              }
+            });
+        }, 1500);
+      }).catch(function () {
+        setNote(noteDefault);
+        btn.disabled = false;
+      });
+    });
+  })();
+  </script>
   {% endif %}
 {% else %}
   <form method="get" class="card search-panel">

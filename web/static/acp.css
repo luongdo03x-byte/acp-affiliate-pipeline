@@ -260,6 +260,8 @@ select { color-scheme: dark; }
 .link-readout { margin-top: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: rgba(2,8,23,.2); }
 .link-readout span { display: block; margin-bottom: 4px; color: var(--text-faint); font-size: 9px; text-transform: uppercase; letter-spacing: .09em; }
 .link-readout code { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 10px; }
+.helper-box { margin-top: 10px; padding: 10px; border: 1px dashed var(--border); border-radius: 9px; background: rgba(139,92,246,.06); }
+.helper-box .note { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-faint); }
 .product-confirm__form { min-width: 0; }
 
 .review-list { display: grid; gap: 15px; }

@@ -896,6 +896,114 @@ def test_shopee_edge_hardening():
         check("chặn URL ảnh trả HTML", True)
 
 
+# --------------------------------------------------- ACP Shopee Helper (Chrome)
+
+def test_shopee_helper_pairing():
+    print("\nPairing ACP Shopee Helper")
+    from acp.core import helper_pairing
+    from acp.adapters.shopee_affiliate import (
+        ProductMetadata, metadata_state, AUTO_COMPLETE, AUTO_PARTIAL, BROWSER_HELPER_REQUIRED,
+    )
+
+    check("đủ tên/giá/ảnh -> AUTO_COMPLETE",
+          metadata_state(ProductMetadata(name="x", current_price=1, image_url="y")) == AUTO_COMPLETE)
+    check("thiếu ảnh -> AUTO_PARTIAL",
+          metadata_state(ProductMetadata(name="x", current_price=1)) == AUTO_PARTIAL)
+    check("trống hết -> BROWSER_HELPER_REQUIRED",
+          metadata_state(ProductMetadata()) == BROWSER_HELPER_REQUIRED)
+
+    # --- module thuần, không qua HTTP ---
+    helper_pairing.reset()
+    issued = helper_pairing.issue("https://shopee.vn/product/1/2")
+    check("issue() trả token + TTL", bool(issued.get("token")) and issued.get("expires_in") == 300)
+
+    check("poll() trước khi nộp -> pending",
+          helper_pairing.poll(issued["token"]) == {"status": "pending"})
+
+    check("submit() sai product_url bị từ chối",
+          helper_pairing.submit(issued["token"], "https://shopee.vn/product/9/9", {"name": "x"}) is False)
+    check("submit() đúng token + product_url thành công",
+          helper_pairing.submit(issued["token"], "https://shopee.vn/product/1/2",
+                                 {"name": "Váy test", "current_price": 199000}) is True)
+    check("submit() lần hai với token đã dùng bị từ chối (một lần dùng)",
+          helper_pairing.submit(issued["token"], "https://shopee.vn/product/1/2", {"name": "y"}) is False)
+
+    polled = helper_pairing.poll(issued["token"])
+    check("poll() sau khi nộp -> ready kèm đúng metadata",
+          polled == {"status": "ready", "metadata": {"name": "Váy test", "current_price": 199000}}, polled)
+    check("poll() token lạ -> None", helper_pairing.poll("khong-ton-tai") is None)
+
+    # TTL: token hết hạn thì poll() không còn thấy.
+    helper_pairing.reset()
+    expired = helper_pairing.issue("https://shopee.vn/product/3/4")
+    helper_pairing._tokens[expired["token"]]["created_at"] -= (helper_pairing.TTL_SECONDS + 1)
+    check("token hết hạn thì poll() trả None", helper_pairing.poll(expired["token"]) is None)
+
+    # --- qua HTTP, đúng đường thật operator dùng ---
+    helper_pairing.reset()
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    check("token-issue chưa đăng nhập bị chặn",
+          c.post("/sanpham/affiliate/helper/token", data={"product_url": "x"}).status_code == 302)
+    check("helper/status chưa đăng nhập bị chặn",
+          c.get("/sanpham/affiliate/helper/status?token=x").status_code == 302)
+
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    home = c.get("/duyet").get_data(as_text=True)
+    csrf = home.split('name="_csrf" value="')[1].split('"')[0]
+
+    r = c.post("/sanpham/affiliate/helper/token",
+               data={"product_url": "https://shopee.vn/product/5/6", "_csrf": csrf})
+    check("token-issue đã đăng nhập trả 200 + token", r.status_code == 200 and r.get_json().get("token"))
+    token = r.get_json()["token"]
+
+    r = c.get(f"/sanpham/affiliate/helper/status?token={token}")
+    check("helper/status trả pending trước khi extension gửi", r.get_json() == {"status": "pending"})
+
+    # Endpoint extension gọi -- KHÔNG cần đăng nhập, chỉ cần loopback + token đúng.
+    bad_origin = c.post(
+        "/api/helper/shopee-product",
+        json={"token": token, "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"})
+    check("request không phải từ loopback bị chặn (403)", bad_origin.status_code == 403, bad_origin.status_code)
+
+    bad_token = c.post(
+        "/api/helper/shopee-product",
+        json={"token": "sai-token", "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    check("token sai bị chặn (410)", bad_token.status_code == 410, bad_token.status_code)
+
+    ok = c.post(
+        "/api/helper/shopee-product",
+        json={"token": token, "product_url": "https://shopee.vn/product/5/6",
+              "metadata": {"name": "Đầm hoa", "current_price": 259000, "image_url": "https://img.example/a.jpg",
+                           "shop": "Shop A", "cookie": "khong-duoc-nhan-truong-la"}},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    check("extension nộp đúng token/product_url thành công (200)", ok.status_code == 200, ok.status_code)
+
+    r = c.get(f"/sanpham/affiliate/helper/status?token={token}")
+    body = r.get_json()
+    check("helper/status trả ready sau khi extension gửi", body.get("status") == "ready", body)
+    check("không nhận trường lạ ngoài 5 trường cho phép (không có 'cookie')",
+          "cookie" not in body.get("metadata", {}), body)
+    check("giữ đúng 5 trường metadata cho phép",
+          body.get("metadata") == {"name": "Đầm hoa", "current_price": 259000,
+                                    "image_url": "https://img.example/a.jpg", "shop": "Shop A",
+                                    "original_price": None}, body)
+
+    reused = c.post(
+        "/api/helper/shopee-product",
+        json={"token": token, "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "lan hai"}},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    check("nộp lại token đã dùng bị chặn (410)", reused.status_code == 410, reused.status_code)
+
+    os.environ.pop("ACP_ADMIN_PASSWORD", None)
+
+
 def test_production_guard():
     print("\nChặn cấu hình thiếu an toàn ở production")
     os.environ["ACP_ENV"] = "production"
@@ -1156,6 +1264,7 @@ if __name__ == "__main__":
     test_shopee_web_contract_source()
     test_dark_premium_template_contract()
     test_shopee_edge_hardening()
+    test_shopee_helper_pairing()
     test_web_security()
     test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
     test_production_guard()

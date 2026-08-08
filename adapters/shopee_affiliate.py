@@ -232,6 +232,25 @@ def _has_core_metadata(meta: ProductMetadata) -> bool:
     return bool(meta.name and meta.current_price and meta.image_url)
 
 
+# Bốn cột mốc bàn giao ở docs/... roadmap. BROWSER_HELPER_REQUIRED và
+# MANUAL_REQUIRED không tách bằng lý do lỗi (CAPTCHA vs mạng) vì UI xử lý như
+# nhau ở cả hai trường hợp -- người vận hành luôn có thể bấm nút mở Chrome
+# Helper HOẶC tự gõ tay, form không khoá theo trạng thái.
+AUTO_COMPLETE = "AUTO_COMPLETE"
+AUTO_PARTIAL = "AUTO_PARTIAL"
+BROWSER_HELPER_REQUIRED = "BROWSER_HELPER_REQUIRED"
+
+
+def metadata_state(meta: ProductMetadata) -> str:
+    """Trạng thái đọc metadata tự động, quyết định UI hiển thị badge nào."""
+    have = sum(1 for v in (meta.name, meta.current_price, meta.image_url) if v)
+    if have == 3:
+        return AUTO_COMPLETE
+    if have > 0:
+        return AUTO_PARTIAL
+    return BROWSER_HELPER_REQUIRED
+
+
 class ProductMetadataResolver:
     def __init__(self, http=None):
         self.http = http or SafeHttpClient()
