@@ -17,7 +17,11 @@ from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
 from ..adapters import factory
-from ..core import attribution, jobs, pipeline, scoring
+from ..adapters.shopee_affiliate import (
+    AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
+    ProductMetadata, ResolvedAffiliateUrl,
+)
+from ..core import attribution, jobs, pipeline, scoring, storage
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -59,6 +63,9 @@ def create_app():
 
     app.config["AUTH_ENABLED"] = bool(admin_password)
     app.config["LIVE"] = factory.is_live()
+    # Test seam + provider boundary: manual Shopee must never be obtained through
+    # the ACCESSTRADE source factory.
+    app.config["SHOPEE_SOURCE_FACTORY"] = ManualShopeeSource
 
     # ------------------------------------------------------------ xác thực
 
@@ -130,9 +137,33 @@ def create_app():
 
     # -------------------------------------------------------- chọn sản phẩm
 
+    def _product_common_context():
+        conn = connect()
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        channels = [dict(r) for r in conn.execute(
+            "SELECT code, handle FROM channel WHERE status='ACTIVE' ORDER BY code").fetchall()]
+        conn.close()
+        return pending, channels
+
+    def _render_affiliate(*, affiliate_url="", resolved=None, metadata=None,
+                          err=None, warning=None, selected_channel=None, status=200):
+        pending, channels = _product_common_context()
+        return render_template(
+            "products.html", page="san-pham", mode="affiliate", items=[], q="", err=err,
+            source_name="manual_shopee", pending_review=pending, channels=channels,
+            affiliate_url=affiliate_url, resolved=resolved,
+            metadata=metadata or ProductMetadata(), metadata_warning=warning,
+            selected_channel=selected_channel,
+        ), status
+
     @app.route("/sanpham")
     def products():
-        """Tìm sản phẩm trong nguồn và tạo bài. Cố ý KHÔNG có nút đăng ngay."""
+        """Tìm sản phẩm hoặc nhập link affiliate. Không có hành vi publish."""
+        mode = request.args.get("mode", "search")
+        if mode == "affiliate":
+            return _render_affiliate(affiliate_url=request.args.get("affiliate_url", ""))
+
         q = request.args.get("q", "").strip()
         source_name = request.args.get("nguon") or None
         items, err = [], request.args.get("err")
@@ -144,13 +175,12 @@ def create_app():
                 err = err or f"Nguồn {src.name} không hỗ trợ tìm kiếm."
         except Exception as e:
             err = err or str(e)
-        conn = connect()
-        pending = conn.execute(
-            "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
-        conn.close()
-        return render_template("products.html", page="san-pham", items=items, q=q, err=err,
-                               source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
-                               pending_review=pending)
+        pending, channels = _product_common_context()
+        return render_template(
+            "products.html", page="san-pham", mode="search", items=items, q=q, err=err,
+            source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
+            pending_review=pending, channels=channels, resolved=None,
+            metadata=ProductMetadata(), affiliate_url="")
 
     @app.route("/sanpham/tao-bai", methods=["POST"])
     def create_from_product():
@@ -170,6 +200,110 @@ def create_app():
         conn.close()
         if not res.get("ok"):
             return redirect(url_for("products", q=q, err=res.get("error")))
+        return redirect(url_for("review"))
+
+    @app.route("/sanpham/affiliate/resolve", methods=["POST"])
+    def resolve_affiliate_product():
+        affiliate_url = request.form.get("affiliate_url", "").strip()
+        source = app.config["SHOPEE_SOURCE_FACTORY"]()
+        try:
+            resolved = source.resolve(affiliate_url)
+        except AffiliateImportError as exc:
+            return _render_affiliate(affiliate_url=affiliate_url, err=str(exc), status=400)
+
+        warning = None
+        try:
+            metadata = source.metadata(resolved.product_url)
+        except AffiliateImportError:
+            metadata = ProductMetadata()
+            warning = "Không tự lấy đủ thông tin sản phẩm. Hãy kiểm tra và nhập bổ sung trước khi tạo bài."
+        if not any((metadata.name, metadata.current_price, metadata.image_url, metadata.shop)):
+            warning = warning or "Trang Shopee không cung cấp metadata đọc được. Hãy nhập thông tin sản phẩm thủ công."
+        return _render_affiliate(
+            affiliate_url=affiliate_url, resolved=resolved, metadata=metadata, warning=warning)
+
+    @app.route("/sanpham/affiliate/create", methods=["POST"])
+    def create_affiliate_product():
+        affiliate_url = request.form.get("affiliate_url", "").strip()
+        product_url = request.form.get("product_url", "").strip()
+        name = request.form.get("name", "").strip()
+        image_url = request.form.get("image_url", "").strip()
+        shop = request.form.get("shop", "").strip() or None
+        channel_code = request.form.get("channel_code", "").strip()
+
+        def _positive_int(value):
+            text = str(value or "").strip().replace(" ", "")
+            if not text:
+                return None
+            # Form is VND integer. Dots/commas are accepted as grouping separators.
+            text = text.replace(".", "").replace(",", "")
+            try:
+                value = int(text)
+            except ValueError:
+                return None
+            return value if value > 0 else None
+
+        price = _positive_int(request.form.get("current_price"))
+        original_price = _positive_int(request.form.get("original_price"))
+        source = app.config["SHOPEE_SOURCE_FACTORY"]()
+        resolved = ResolvedAffiliateUrl(affiliate_url=affiliate_url, product_url=product_url)
+        metadata = ProductMetadata(
+            name=name or None, current_price=price, original_price=original_price,
+            image_url=image_url or None, shop=shop)
+
+        missing = []
+        if not name:
+            missing.append("tên sản phẩm")
+        if not price:
+            missing.append("giá lớn hơn 0")
+        if not image_url:
+            missing.append("URL ảnh")
+        if not channel_code:
+            missing.append("kênh Threads")
+        if missing:
+            return _render_affiliate(
+                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
+                selected_channel=channel_code,
+                err="Thiếu hoặc không hợp lệ: " + ", ".join(missing), status=400)
+
+        conn = connect()
+        channel = conn.execute(
+            "SELECT code FROM channel WHERE code=? AND status='ACTIVE'", (channel_code,)).fetchone()
+        if not channel:
+            conn.close()
+            return _render_affiliate(
+                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
+                selected_channel=channel_code, err="Kênh Threads không tồn tại hoặc không hoạt động.", status=400)
+
+        try:
+            source.validate_confirmed_urls(affiliate_url, product_url)
+            confirmed = ConfirmedProductInput(
+                affiliate_url=affiliate_url, product_url=product_url, name=name,
+                current_price=price, original_price=original_price,
+                image_url=image_url, shop=shop)
+            raw = source.prepare_product(confirmed, pipeline.MEDIA_DIR)
+            # Important provider boundary: do not call factory.build_context() here.
+            res = pipeline.create_post_from_manual_affiliate_product(
+                conn, {"storage": storage.get_storage()}, source, raw,
+                affiliate_url=affiliate_url,
+                campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
+                channel_code=channel_code)
+        except AffiliateImportError as exc:
+            conn.close()
+            return _render_affiliate(
+                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
+                selected_channel=channel_code, err=str(exc), status=400)
+        except Exception:
+            conn.close()
+            return _render_affiliate(
+                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
+                selected_channel=channel_code,
+                err="Không thể tạo bài nháp. Kiểm tra dữ liệu và thử lại.", status=500)
+        conn.close()
+        if not res.get("ok"):
+            return _render_affiliate(
+                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
+                selected_channel=channel_code, err=res.get("error") or "Không thể tạo bài nháp.", status=400)
         return redirect(url_for("review"))
 
     # ------------------------------------------------------------- kênh

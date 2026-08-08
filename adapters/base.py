@@ -25,6 +25,7 @@ class RawProduct:
     review_count: int = 0
     sold_count: int = 0
     image_url_original: Optional[str] = None
+    image_path_local: Optional[str] = None
 
 
 @dataclass

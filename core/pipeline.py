@@ -35,11 +35,12 @@ def ingest_datafeed(conn, source, category=None, limit=200) -> dict:
             pid = row["id"]
             conn.execute("""UPDATE product SET name=?, description=?, current_price=?, original_price=?,
                             commission_value=?, commission_rate=?, category_code=?, rating=?, review_count=?,
-                            sold_count=?, image_url_original=?, product_url=?, is_available=1,
+                            sold_count=?, image_url_original=?, image_path_local=?, product_url=?, is_available=1,
                             last_seen_at=?, updated_at=? WHERE id=?""",
                          (raw.name, raw.description, raw.current_price, raw.original_price,
                           raw.commission_value, raw.commission_rate, raw.category_code, raw.rating,
-                          raw.review_count, raw.sold_count, raw.image_url_original, raw.product_url,
+                          raw.review_count, raw.sold_count, raw.image_url_original,
+                          getattr(raw, "image_path_local", None), raw.product_url,
                           now(), now(), pid))
             stats["updated"] += 1
             if row["current_price"] != raw.current_price:
@@ -48,13 +49,14 @@ def ingest_datafeed(conn, source, category=None, limit=200) -> dict:
             pid = ulid()
             conn.execute("""INSERT INTO product (id, source, merchant, external_product_id, name, description,
                             current_price, original_price, commission_value, commission_rate, category_code,
-                            rating, review_count, sold_count, image_url_original, product_url, is_available,
+                            rating, review_count, sold_count, image_url_original, image_path_local, product_url, is_available,
                             last_seen_at, created_at, updated_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
                          (pid, source.name, raw.merchant, raw.external_product_id, raw.name, raw.description,
                           raw.current_price, raw.original_price, raw.commission_value, raw.commission_rate,
                           raw.category_code, raw.rating, raw.review_count, raw.sold_count,
-                          raw.image_url_original, raw.product_url, now(), now(), now()))
+                          raw.image_url_original, getattr(raw, "image_path_local", None), raw.product_url,
+                          now(), now(), now()))
             stats["inserted"] += 1
         conn.execute("INSERT INTO product_price_history (product_id, price, observed_at) VALUES (?,?,?)",
                      (pid, raw.current_price, now()))
@@ -136,52 +138,49 @@ def upsert_one(conn, source, raw) -> str:
     row = conn.execute(
         "SELECT id FROM product WHERE source=? AND merchant=? AND external_product_id=?",
         (source.name, raw.merchant, raw.external_product_id)).fetchone()
+    local_image = getattr(raw, "image_path_local", None)
     if row:
         pid = row["id"]
         conn.execute("""UPDATE product SET name=?, description=?, current_price=?, original_price=?,
                         commission_value=?, commission_rate=?, category_code=?, rating=?, review_count=?,
-                        sold_count=?, image_url_original=?, product_url=?, is_available=1,
+                        sold_count=?, image_url_original=?, image_path_local=?, product_url=?, is_available=1,
                         last_seen_at=?, updated_at=? WHERE id=?""",
                      (raw.name, raw.description, raw.current_price, raw.original_price,
                       raw.commission_value, raw.commission_rate, raw.category_code, raw.rating,
-                      raw.review_count, raw.sold_count, raw.image_url_original, raw.product_url,
-                      now(), now(), pid))
+                      raw.review_count, raw.sold_count, raw.image_url_original, local_image,
+                      raw.product_url, now(), now(), pid))
     else:
         pid = ulid()
         conn.execute("""INSERT INTO product (id, source, merchant, external_product_id, name, description,
                         current_price, original_price, commission_value, commission_rate, category_code,
-                        rating, review_count, sold_count, image_url_original, product_url, is_available,
-                        last_seen_at, created_at, updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+                        rating, review_count, sold_count, image_url_original, image_path_local, product_url,
+                        is_available, last_seen_at, created_at, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)""",
                      (pid, source.name, raw.merchant, raw.external_product_id, raw.name, raw.description,
                       raw.current_price, raw.original_price, raw.commission_value, raw.commission_rate,
                       raw.category_code, raw.rating, raw.review_count, raw.sold_count,
-                      raw.image_url_original, raw.product_url, now(), now(), now()))
+                      raw.image_url_original, local_image, raw.product_url, now(), now(), now()))
     conn.execute("INSERT INTO product_price_history (product_id, price, observed_at) VALUES (?,?,?)",
                  (pid, raw.current_price, now()))
     return pid
 
 
-def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: str,
-                            channel_code: str = None, template_code: str = None,
-                            variant_code: str = None, rng=None) -> dict:
-    """Một sản phẩm cụ thể -> một bài PENDING_REVIEW. Không đăng.
-
-    Bỏ qua chấm điểm vì người vận hành đã tự chọn sản phẩm. KHÔNG bỏ qua rào chắn
-    nội dung -- caption vẫn phải qua validate() y hệt đường hàng loạt, và bài luôn
-    dừng ở màn hình duyệt.
+def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
+                                  channel_code: str = None, template_code: str = None,
+                                  variant_code: str = None, rng=None,
+                                  prebuilt_affiliate_link: str = None,
+                                  attribution_payload: dict = None,
+                                  audit_action: str = "created_single") -> dict:
+    """Lõi dùng chung cho mọi đường tạo-một-bài-thủ-công: chọn sản phẩm từ nguồn
+    (create_post_for_product) hoặc dán link Shopee kèm metadata đã xác nhận
+    (create_post_from_manual_affiliate_product). KHÔNG bỏ qua rào chắn nội dung --
+    caption vẫn phải qua validate() y hệt đường hàng loạt, và bài luôn dừng ở
+    màn hình duyệt.
 
     variant_code bỏ trống thì bốc một mã hook ngẫu nhiên (core/playbook.py) --
     variant_code LUÔN là mã hook, dùng để sinh caption lẫn gắn vào sub3.
     """
     rng = rng or random.Random()
-    source = ctx["source"]
-    raw = source.get_product(external_product_id) if hasattr(source, "get_product") else None
-    if raw is None:
-        return {"ok": False, "error": f"Không tìm thấy sản phẩm {external_product_id} trong nguồn {source.name}"}
-    if not raw.product_url:
-        return {"ok": False, "error": "Sản phẩm không có product_url, không tạo được tracking link"}
-
     campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
     if not campaign:
         return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
@@ -203,8 +202,16 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
 
     variant_code = playbook.pick_hook(variant_code, rng=rng)
     post_id = ulid()
-    subs = attribution.encode_sub_ids(post_id, campaign["code"], variant_code, channel["code"])
-    link = source.create_tracking_link(product["product_url"], subs)
+    if prebuilt_affiliate_link is None:
+        stored_attribution = attribution.encode_sub_ids(
+            post_id, campaign["code"], variant_code, channel["code"])
+        link = source.create_tracking_link(product["product_url"], stored_attribution)
+    else:
+        link = prebuilt_affiliate_link
+        stored_attribution = attribution_payload or {
+            "provider": "shopee_direct",
+            "link_mode": "prebuilt",
+        }
 
     discount = scoring.real_discount_depth(conn, product_id, product["current_price"])
     image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount, handle=channel["handle"])
@@ -213,6 +220,7 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
     caption = content.generate(product, template["code"], link, discount_pct=discount,
                                 hook_code=variant_code, rng=rng)
     problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
+    status = "PENDING_REVIEW" if not problems else "DRAFT"
 
     conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
                     variant_code, caption_body, disclosure_text, caption_final, image_url_composited,
@@ -220,17 +228,53 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (post_id, product_id, channel["id"], campaign["id"], template["id"],
                   variant_code, caption, content.DISCLOSURE_DEFAULT, caption,
-                  image_url, link, str(subs), None,
-                  "PENDING_REVIEW" if not problems else "DRAFT",
-                  "; ".join(problems) if problems else None, now(), now()))
-    audit(conn, "post", post_id, "created_single", actor="operator",
-          detail={"source": source.name, "external_product_id": external_product_id,
+                  image_url, link, json.dumps(stored_attribution, ensure_ascii=False, sort_keys=True), None,
+                  status, "; ".join(problems) if problems else None, now(), now()))
+    audit(conn, "post", post_id, audit_action, actor="operator",
+          detail={"source": source.name, "external_product_id": raw.external_product_id,
                   "template": template["code"], "problems": problems})
 
     return {"ok": True, "post_id": post_id, "product_id": product_id,
             "product_name": product["name"], "affiliate_link": link,
             "image_url": image_url, "caption": caption, "problems": problems,
-            "status": "PENDING_REVIEW" if not problems else "DRAFT"}
+            "status": status}
+
+
+def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: str,
+                            channel_code: str = None, template_code: str = None,
+                            variant_code: str = None, rng=None) -> dict:
+    """Một sản phẩm cụ thể (chọn qua nguồn/affiliate network) -> một bài
+    PENDING_REVIEW. Không đăng. Bỏ qua chấm điểm vì người vận hành đã tự chọn
+    sản phẩm."""
+    source = ctx["source"]
+    raw = source.get_product(external_product_id) if hasattr(source, "get_product") else None
+    if raw is None:
+        return {"ok": False, "error": f"Không tìm thấy sản phẩm {external_product_id} trong nguồn {source.name}"}
+    if not raw.product_url:
+        return {"ok": False, "error": "Sản phẩm không có product_url, không tạo được tracking link"}
+    return _create_post_from_raw_product(
+        conn, ctx, source, raw, campaign_code,
+        channel_code=channel_code, template_code=template_code,
+        variant_code=variant_code, rng=rng)
+
+
+def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_url: str,
+                                               campaign_code: str, channel_code: str = None,
+                                               template_code: str = None,
+                                               variant_code: str = None, rng=None) -> dict:
+    """Tạo bài review từ sản phẩm Shopee + affiliate URL có sẵn (dán link, không
+    cần tự tạo tracking link); không publish."""
+    if not affiliate_url or not affiliate_url.startswith(("http://", "https://")):
+        return {"ok": False, "error": "Thiếu link affiliate hợp lệ"}
+    if not raw.name or raw.current_price <= 0 or not raw.image_url_original:
+        return {"ok": False, "error": "Thiếu tên, giá hoặc ảnh sản phẩm"}
+    return _create_post_from_raw_product(
+        conn, ctx, source, raw, campaign_code,
+        channel_code=channel_code, template_code=template_code,
+        variant_code=variant_code, rng=rng,
+        prebuilt_affiliate_link=affiliate_url,
+        attribution_payload={"provider": "shopee_direct", "link_mode": "prebuilt"},
+        audit_action="created_manual_shopee")
 
 
 # ------------------------------------------------------------- bài giá trị

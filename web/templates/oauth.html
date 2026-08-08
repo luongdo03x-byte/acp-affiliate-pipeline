@@ -1,26 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Kết nối Threads{% endblock %}
+{% block title %}Kết nối Threads — ACP{% endblock %}
 {% block content %}
-<h1>Kết nối Threads</h1>
-{% if err %}
-<div class="card" style="border-color:#E3C3C2;background:#FBF0EF">
-  <strong>Meta trả về lỗi.</strong><div style="margin-top:4px">{{ err }}</div>
-</div>
-{% elif code %}
-<p class="lede">Đã nhận mã uỷ quyền. Mã chỉ sống vài phút — đổi lấy token ngay.</p>
-<div class="card">
-  <div class="k" style="font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)">Mã uỷ quyền</div>
-  <textarea rows="3" readonly onclick="this.select()" style="font-family:var(--mono);font-size:12.5px;margin-top:6px">{{ code }}</textarea>
-  <p class="note">Chạy lệnh sau trong terminal, thay các giá trị trong ngoặc nhọn:</p>
-  <textarea rows="7" readonly onclick="this.select()" style="font-family:var(--mono);font-size:12px">curl -X POST https://graph.threads.net/oauth/access_token \
-  -F client_id=&lt;APP_ID&gt; \
-  -F client_secret=&lt;APP_SECRET&gt; \
-  -F grant_type=authorization_code \
-  -F redirect_uri=&lt;REDIRECT_URI đã khai trên Meta&gt; \
-  -F code={{ code }}</textarea>
-  <p class="note">App secret cố ý không nằm trong tiến trình web — đây là thao tác thiết lập chỉ làm một lần.</p>
-</div>
-{% else %}
-<div class="empty">Không có mã uỷ quyền trên URL.</div>
-{% endif %}
+<div class="page-header"><div><div class="eyebrow">OAuth setup</div><h1>Kết nối Threads</h1><p class="lede">Xử lý callback OAuth cho tài khoản Threads.</p></div></div>
+{% if err %}<div class="alert alert--error"><strong>Meta trả về lỗi.</strong><span>{{ err }}</span></div>
+{% elif code %}<div class="card card--elevated"><div class="field"><label>Mã uỷ quyền</label><textarea rows="3" readonly onclick="this.select()">{{ code }}</textarea></div><p class="note">Đổi mã lấy token trong terminal. App secret không được đặt trong tiến trình web.</p></div>
+{% else %}<div class="empty-state">Không có mã uỷ quyền trên URL.</div>{% endif %}
 {% endblock %}

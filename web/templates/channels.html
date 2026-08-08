@@ -1,49 +1,28 @@
 {% extends "base.html" %}
-{% block title %}Kênh — Sổ cái affiliate{% endblock %}
+{% block title %}Kênh — ACP{% endblock %}
 {% block content %}
-<h1>Kênh</h1>
-<p class="lede">Mỗi kênh chọn nhóm sản phẩm riêng. Đổi bất cứ lúc nào — bài đã đăng không bị ảnh hưởng, chỉ lô sinh nội dung tiếp theo dùng cấu hình mới.</p>
-
-{% if saved %}<div class="card" style="border-color:#BFD6C9;background:#F1F7F3;margin-bottom:18px">
-  Đã cập nhật nhóm sản phẩm cho {{ saved }}.</div>{% endif %}
-
-{% for c in channels %}
-<div class="card" style="margin-bottom:18px">
-  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-    <div>
-      <strong style="font-family:var(--display);font-size:16px">{{ c.handle }}</strong>
-      <span class="dim" style="font-size:12.5px;font-family:var(--mono);margin-left:8px">{{ c.code }}</span>
-    </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">
-      <span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span>
-      <span class="tag">{{ c.pool|num }} sản phẩm hợp lệ</span>
-      <span class="tag">đã đăng {{ c.published|num }}</span>
-      <span class="tag">trần {{ c.daily_post_cap }}/ngày</span>
-    </div>
-  </div>
-
-  <form method="post">
-    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-    <input type="hidden" name="channel_id" value="{{ c.id }}">
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px">
-      {% for code, n in all_niches.items() %}
-      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13.5px;
-                    border:1px solid var(--rule);border-radius:8px;padding:9px 11px;cursor:pointer">
-        <input type="checkbox" name="niches" value="{{ code }}" style="width:auto;margin-top:3px"
-               {{ 'checked' if code in c.niches }}>
-        <span>{{ n.name }}
-          {% if n.extra_banned_phrases %}<br><span class="dim" style="font-size:11.5px">nhóm có điều kiện · +{{ n.extra_banned_phrases|length }} cụm cấm</span>{% endif %}
-        </span>
-      </label>
-      {% endfor %}
-    </div>
-    <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <span class="note" style="margin:0">Không tích ô nào = kênh nhận mọi danh mục.</span>
-      <button class="primary" type="submit">Lưu cho {{ c.handle }}</button>
-    </div>
-  </form>
+<div class="page-header">
+  <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Mỗi tài khoản Threads có thể nhận một nhóm sản phẩm riêng. Thay đổi chỉ áp dụng cho lô nội dung sau.</p></div>
 </div>
+{% if saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>Đã cập nhật nhóm sản phẩm cho {{ saved }}.</span></div>{% endif %}
+<div class="channel-list">
+{% for c in channels %}
+<section class="card channel-card">
+  <div class="channel-card__head">
+    <div><div class="channel-card__title">{{ c.handle }}</div><span class="mono-sub">{{ c.code }}</span></div>
+    <div class="channel-meta"><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span><span class="tag">{{ c.pool|num }} hợp lệ</span><span class="tag">đã đăng {{ c.published|num }}</span><span class="tag">trần {{ c.daily_post_cap }}/ngày</span></div>
+  </div>
+  <form method="post">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}"><input type="hidden" name="channel_id" value="{{ c.id }}">
+    <div class="niche-grid">
+    {% for code, n in all_niches.items() %}
+      <label class="niche-tile"><input type="checkbox" name="niches" value="{{ code }}" {{ 'checked' if code in c.niches }}><span>{{ n.name }}{% if n.extra_banned_phrases %}<small>nhóm có điều kiện · +{{ n.extra_banned_phrases|length }} cụm cấm</small>{% endif %}</span></label>
+    {% endfor %}
+    </div>
+    <div class="channel-card__foot"><span class="note">Không chọn ô nào = kênh nhận mọi danh mục.</span><button class="btn btn--primary" type="submit">Lưu cho {{ c.handle }}</button></div>
+  </form>
+</section>
 {% endfor %}
-
-{% if not channels %}<div class="empty">Chưa có kênh nào. Chạy <code>python3 run.py init</code>.</div>{% endif %}
+</div>
+{% if not channels %}<div class="empty-state">Chưa có kênh nào.</div>{% endif %}
 {% endblock %}

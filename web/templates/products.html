@@ -1,54 +1,165 @@
 {% extends "base.html" %}
-{% block title %}Chọn sản phẩm{% endblock %}
+{% block title %}Sản phẩm — ACP{% endblock %}
 {% block content %}
-<h1>Chọn sản phẩm</h1>
-<p class="lede">Tạo bài từ một sản phẩm cụ thể. Bài luôn dừng ở màn hình duyệt — không có nút đăng ngay ở đây.</p>
-
-{% if err %}<div class="card" style="border-color:#E3C3C2;background:#FBF0EF;margin-bottom:18px">{{ err }}</div>{% endif %}
-
-<form method="get" class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-  <div style="flex:1;min-width:220px">
-    <div style="font-size:13.5px;margin-bottom:4px">Từ khoá</div>
-    <input name="q" value="{{ q }}" placeholder="máy xay, tai nghe, thảm yoga...">
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Product workspace</div>
+    <h1>Sản phẩm</h1>
+    <p class="lede">Tìm sản phẩm từ nguồn hiện có hoặc tạo bài từ link affiliate Shopee đã có sẵn.</p>
   </div>
-  <div style="width:170px">
-    <div style="font-size:13.5px;margin-bottom:4px">Nguồn</div>
-    <select name="nguon">
-      {% for s in ['', 'tiktokshop', 'shopee', 'mock'] %}
-      <option value="{{ s }}" {{ 'selected' if s == request.args.get('nguon','') }}>{{ s or 'mặc định' }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <button class="primary" type="submit">Tìm</button>
-</form>
+  <a class="btn btn--ghost" href="/duyet">Chờ duyệt{% if pending_review %} · {{ pending_review }}{% endif %}</a>
+</div>
 
-{% if items %}
-<h2>{{ items|length }} sản phẩm từ nguồn {{ source_name }}</h2>
-<table>
-  <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th>
-    <th class="n">Đã bán</th><th style="width:96px"></th></tr></thead>
-  <tbody>
-  {% for p in items %}
-    <tr>
-      <td>{{ p.name }}<br><span class="dim" style="font-size:12px;font-family:var(--mono)">{{ p.external_product_id }}</span></td>
-      <td class="dim">{{ p.merchant }}</td>
-      <td class="n">{{ p.current_price|vnd }}</td>
-      <td class="n money">{{ p.commission_value|vnd }}</td>
-      <td class="n dim">{{ p.sold_count|num }}</td>
-      <td>
-        <form method="post" action="/sanpham/tao-bai">
-          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-          <input type="hidden" name="external_product_id" value="{{ p.external_product_id }}">
-          <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
-          <input type="hidden" name="q" value="{{ q }}">
-          <button type="submit">Tạo bài</button>
-        </form>
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% elif not err %}
-<div class="empty">Không tìm thấy sản phẩm nào.</div>
+<div class="tabs" role="navigation" aria-label="Chế độ sản phẩm">
+  <a class="tab {{ 'tab--active' if mode != 'affiliate' }}" href="{{ url_for('products', mode='search') }}">Tìm sản phẩm</a>
+  <a class="tab {{ 'tab--active' if mode == 'affiliate' }}" href="{{ url_for('products', mode='affiliate') }}">Nhập link affiliate</a>
+</div>
+
+{% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
+{% if metadata_warning %}<div class="alert alert--warning"><strong>Cần kiểm tra thủ công.</strong><span>{{ metadata_warning }}</span></div>{% endif %}
+
+{% if mode == 'affiliate' %}
+  {% if not resolved %}
+  <section class="card card--elevated affiliate-entry">
+    <div class="section-heading">
+      <div>
+        <span class="status-badge status-badge--accent">Shopee Direct</span>
+        <h2>Nhập link affiliate Shopee</h2>
+        <p class="note">Dùng link affiliate bạn đã có. ACP không gọi ACCESSTRADE để tạo lại tracking link.</p>
+      </div>
+    </div>
+    <form method="post" action="/sanpham/affiliate/resolve" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <div class="field field--grow">
+        <label for="affiliate_url">Link affiliate Shopee</label>
+        <input id="affiliate_url" name="affiliate_url" value="{{ affiliate_url or '' }}"
+               placeholder="https://s.shopee.vn/..." inputmode="url" autocomplete="off" required>
+      </div>
+      <button class="btn btn--primary" type="submit">Phân tích link</button>
+    </form>
+  </section>
+  {% else %}
+  <form method="post" action="/sanpham/affiliate/create" class="card card--elevated product-confirm">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="affiliate_url" value="{{ resolved.affiliate_url }}">
+    <input type="hidden" name="product_url" value="{{ resolved.product_url }}">
+
+    <div class="product-confirm__visual">
+      <div class="product-image-frame">
+        {% if metadata.image_url %}
+          <img src="{{ metadata.image_url }}" alt="Ảnh sản phẩm Shopee" id="affiliate-image-preview">
+        {% else %}
+          <div class="image-placeholder">Chưa có ảnh</div>
+        {% endif %}
+      </div>
+      <span class="status-badge status-badge--accent">Shopee Direct</span>
+      <div class="link-readout">
+        <span>Link sản phẩm</span>
+        <code title="{{ resolved.product_url }}">{{ resolved.product_url }}</code>
+      </div>
+      <div class="link-readout">
+        <span>Affiliate link</span>
+        <code title="{{ resolved.affiliate_url }}">{{ resolved.affiliate_url }}</code>
+      </div>
+    </div>
+
+    <div class="product-confirm__form">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow">Xác nhận metadata</div>
+          <h2>Kiểm tra trước khi tạo bài</h2>
+          <p class="note">Bạn có thể sửa dữ liệu ACP tự đọc được. Affiliate link được giữ nguyên.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field field--full">
+          <label for="name">Tên sản phẩm</label>
+          <input id="name" name="name" value="{{ metadata.name or '' }}" required>
+        </div>
+        <div class="field">
+          <label for="current_price">Giá hiện tại (VND)</label>
+          <input id="current_price" name="current_price" inputmode="numeric" value="{{ metadata.current_price or '' }}" required>
+        </div>
+        <div class="field">
+          <label for="original_price">Giá gốc (tuỳ chọn)</label>
+          <input id="original_price" name="original_price" inputmode="numeric" value="{{ metadata.original_price or '' }}">
+        </div>
+        <div class="field field--full">
+          <label for="shop">Shop (tuỳ chọn)</label>
+          <input id="shop" name="shop" value="{{ metadata.shop or '' }}">
+        </div>
+        <div class="field field--full">
+          <label for="image_url">URL ảnh sản phẩm</label>
+          <input id="image_url" name="image_url" inputmode="url" value="{{ metadata.image_url or '' }}" required>
+        </div>
+        <div class="field field--full">
+          <label for="channel_code">Kênh Threads</label>
+          <select id="channel_code" name="channel_code" required>
+            <option value="">Chọn kênh...</option>
+            {% for ch in channels %}
+            <option value="{{ ch.code }}" {{ 'selected' if selected_channel == ch.code }}>{{ ch.handle }} · {{ ch.code }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <a class="btn btn--ghost" href="{{ url_for('products', mode='affiliate') }}">Dùng link khác</a>
+        <button class="btn btn--primary" type="submit">Tạo bài nháp</button>
+      </div>
+    </div>
+  </form>
+  {% endif %}
+{% else %}
+  <form method="get" class="card search-panel">
+    <input type="hidden" name="mode" value="search">
+    <div class="field field--grow">
+      <label for="q">Từ khoá</label>
+      <input id="q" name="q" value="{{ q }}" placeholder="máy xay, tai nghe, thảm yoga...">
+    </div>
+    <div class="field search-panel__source">
+      <label for="nguon">Nguồn</label>
+      <select id="nguon" name="nguon">
+        {% for s in ['', 'tiktokshop', 'shopee', 'mock'] %}
+        <option value="{{ s }}" {{ 'selected' if s == request.args.get('nguon','') }}>{{ s or 'mặc định' }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn--primary" type="submit">Tìm sản phẩm</button>
+  </form>
+
+  {% if items %}
+  <div class="section-heading section-heading--spaced">
+    <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
+  </div>
+  <div class="table-card">
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Đã bán</th><th></th></tr></thead>
+        <tbody>
+        {% for p in items %}
+          <tr>
+            <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span></td>
+            <td class="dim">{{ p.merchant }}</td>
+            <td class="n">{{ p.current_price|vnd }}</td>
+            <td class="n money">{{ p.commission_value|vnd }}</td>
+            <td class="n dim">{{ p.sold_count|num }}</td>
+            <td class="table-action">
+              <form method="post" action="/sanpham/tao-bai">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                <input type="hidden" name="external_product_id" value="{{ p.external_product_id }}">
+                <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
+                <input type="hidden" name="q" value="{{ q }}">
+                <button class="btn btn--small" type="submit">Tạo bài</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% elif not err %}
+  <div class="empty-state">Không tìm thấy sản phẩm nào.</div>
+  {% endif %}
 {% endif %}
 {% endblock %}

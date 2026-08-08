@@ -157,3 +157,57 @@ main sạch
 ```
 
 Agent không được tự publish Threads thật, tự đổi `ACP_ADAPTER=live`, hoặc force-push `main`.
+
+## 9. Pilot một link affiliate Shopee có sẵn
+
+Luồng operator chuẩn:
+
+```text
+./manage.sh start
+→ mở /sanpham
+→ chọn "Nhập link affiliate"
+→ dán một link affiliate Shopee có sẵn
+→ bấm "Phân tích link"
+→ kiểm tra/chỉnh metadata
+→ chọn đúng kênh Threads
+→ bấm "Tạo bài nháp"
+→ mở /duyet
+```
+
+Ở `/duyet`, kiểm tra:
+
+- ảnh đúng sản phẩm;
+- tên và giá đúng;
+- caption có disclosure và không bịa trải nghiệm;
+- affiliate link đúng link đã nhập;
+- trạng thái là `PENDING_REVIEW` hoặc `DRAFT` nếu validator báo lỗi;
+- chưa có `thread_id` và chưa có hành vi publish.
+
+Luồng Shopee direct không tạo tracking link qua ACCESSTRADE và không tự gắn `sub1=post_id`. Vì vậy không được coi conversion là đã quy kết chính xác tới từng post nếu provider Shopee không trả một identifier tương ứng.
+
+### Kiểm thử trước pilot thật
+
+```bash
+cd ~/Downloads/ACP
+./manage.sh test
+```
+
+`manage.sh test` phải chạy ở mock mode. Automated verification không được publish Threads thật.
+
+Sau khi test pass, chỉ tạo **một** bài từ link Shopee để xem ở `/duyet`. Việc duyệt/publish bài thật là một bước riêng do operator chủ động thực hiện.
+
+## 10. Dark Premium UI
+
+Giao diện quản trị dùng stylesheet chung `web/static/acp.css`. Khi kiểm tra sau nâng cấp, mở tối thiểu:
+
+```text
+/
+/sanpham?mode=search
+/sanpham?mode=affiliate
+/duyet
+/kenh
+/vanhanh
+/chamdiem
+```
+
+Kiểm tra thêm trên cửa sổ hẹp/mobile để chắc chắn sidebar, form Shopee, bảng và review card không vỡ layout. Thay đổi UI không phải lý do để bật adapter live hoặc publish thử tự động.

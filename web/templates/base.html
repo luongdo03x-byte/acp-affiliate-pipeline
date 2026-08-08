@@ -3,113 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Sổ cái affiliate{% endblock %}</title>
+<meta name="theme-color" content="#07111F">
+<title>{% block title %}ACP — Affiliate Content Pipeline{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600&family=Inter:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-:root{
-  --ink:#16283A; --paper:#F4F5F2; --card:#FFFFFF; --signal:#A8571E; --verified:#2F6A4F;
-  --muted:#5A6875; --rule:#E0E4DF; --alert:#97302E; --rail:#12202F;
-  --display:"Bricolage Grotesque",Georgia,serif; --body:"Inter",system-ui,sans-serif;
-  --mono:"IBM Plex Mono",ui-monospace,monospace;
-}
-*{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.6}
-a{color:inherit}
-.shell{display:flex;min-height:100vh}
-
-/* ---- thanh điều hướng trái ---- */
-.rail{width:212px;flex:0 0 212px;background:var(--rail);color:#C6D0D9;padding:26px 0;position:sticky;top:0;height:100vh}
-.rail .mark{font-family:var(--display);font-size:17px;font-weight:600;color:#fff;padding:0 22px 4px;letter-spacing:-.01em}
-.rail .sub{font-family:var(--mono);font-size:10.5px;color:#6E8296;padding:0 22px 26px;letter-spacing:.08em;text-transform:uppercase}
-.rail a{display:block;padding:9px 22px;text-decoration:none;font-size:14px;border-left:3px solid transparent}
-.rail a:hover{background:#1A2C3E;color:#fff}
-.rail a.on{background:#1A2C3E;color:#fff;border-left-color:var(--signal)}
-.rail .badge{float:right;font-family:var(--mono);font-size:11px;background:var(--signal);color:#fff;
-  border-radius:9px;padding:1px 7px;line-height:1.5}
-.rail .foot{position:absolute;bottom:22px;left:22px;right:22px;font-family:var(--mono);font-size:10.5px;color:#546A80}
-
-/* ---- vùng nội dung ---- */
-main{flex:1;padding:32px 40px 64px;max-width:1180px}
-h1{font-family:var(--display);font-size:27px;font-weight:600;margin:0 0 3px;letter-spacing:-.015em}
-.lede{color:var(--muted);font-size:14px;margin:0 0 26px}
-h2{font-family:var(--display);font-size:16px;font-weight:600;margin:34px 0 12px}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:18px 20px}
-
-/* ---- dải phễu tiền: phần tử chữ ký của giao diện ---- */
-.chain{display:flex;align-items:stretch;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
-.chain .step{flex:1;padding:17px 20px;border-right:1px solid var(--rule);position:relative}
-.chain .step:last-child{border-right:0}
-.chain .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
-.chain .v{font-family:var(--mono);font-size:25px;font-weight:500;margin-top:5px;letter-spacing:-.02em}
-.chain .step.money .v{color:var(--signal)}
-.chain .rate{position:absolute;right:-1px;bottom:14px;transform:translateX(50%);z-index:2;
-  font-family:var(--mono);font-size:10.5px;background:var(--paper);border:1px solid var(--rule);
-  border-radius:9px;padding:1px 7px;color:var(--muted);white-space:nowrap}
-
-/* ---- bảng ---- */
-table{width:100%;border-collapse:collapse;font-size:14px}
-th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
-  color:var(--muted);font-weight:400;padding:0 10px 8px;border-bottom:1px solid var(--rule)}
-td{padding:9px 10px;border-bottom:1px solid #EFF1EE;vertical-align:top}
-tr:last-child td{border-bottom:0}
-.n{font-family:var(--mono);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-.money{color:var(--signal);font-weight:500}
-.dim{color:var(--muted)}
-
-/* ---- thanh tỷ lệ trong bảng ---- */
-.bar{height:5px;background:#EDEFEB;border-radius:3px;overflow:hidden;min-width:52px}
-.bar i{display:block;height:100%;background:var(--signal);border-radius:3px}
-
-/* ---- nhãn trạng thái ---- */
-.tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:9px;
-  border:1px solid var(--rule);color:var(--muted);white-space:nowrap;display:inline-block}
-.tag.ok{color:var(--verified);border-color:#BFD6C9;background:#F1F7F3}
-.tag.warn{color:var(--signal);border-color:#E6CDB6;background:#FBF4ED}
-.tag.bad{color:var(--alert);border-color:#E3C3C2;background:#FBF0EF}
-
-/* ---- nút ---- */
-button,.btn{font-family:var(--body);font-size:13.5px;border-radius:7px;padding:7px 15px;cursor:pointer;
-  border:1px solid var(--rule);background:var(--card);color:var(--ink);text-decoration:none;display:inline-block}
-button:hover,.btn:hover{border-color:#C8CEC6}
-button.primary{background:var(--ink);border-color:var(--ink);color:#fff}
-button.primary:hover{background:#0E1E2E}
-button.ghost{background:transparent;color:var(--muted)}
-input,textarea,select{font-family:var(--body);font-size:14px;border:1px solid var(--rule);border-radius:7px;
-  padding:8px 10px;width:100%;background:var(--card);color:var(--ink)}
-textarea{font-family:var(--body);line-height:1.55;resize:vertical}
-input[type=range]{padding:0;accent-color:var(--signal)}
-:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
-
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.empty{color:var(--muted);font-size:14px;padding:22px;text-align:center;border:1px dashed var(--rule);border-radius:10px}
-.note{font-size:13px;color:var(--muted);margin-top:8px}
-@media (max-width:900px){.shell{flex-direction:column}.rail{width:100%;height:auto;position:static}
-  main{padding:24px 18px 48px}.grid2{grid-template-columns:1fr}.chain{flex-wrap:wrap}.chain .step{min-width:50%}}
-</style>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='acp.css') }}">
 </head>
 <body>
-<div class="shell">
-<nav class="rail">
-  <div class="mark">Sổ cái affiliate</div>
-  <div class="sub">Shopee → Threads</div>
-  <a href="/" class="{{ 'on' if page=='doanh-thu' }}">Doanh thu</a>
-  <a href="/kenh" class="{{ 'on' if page=='kenh' }}">Kênh</a>
-  <a href="/sanpham" class="{{ 'on' if page=='san-pham' }}">Chọn sản phẩm</a>
-  <a href="/duyet" class="{{ 'on' if page=='duyet' }}">Chờ duyệt{% if pending_review %}<span class="badge">{{ pending_review }}</span>{% endif %}</a>
-  <a href="/vanhanh" class="{{ 'on' if page=='van-hanh' }}">Vận hành</a>
-  <a href="/chamdiem" class="{{ 'on' if page=='cham-diem' }}">Chấm điểm</a>
-  <div class="foot">adapter: {{ 'LIVE' if config.get('LIVE') else 'giả lập' }}
-    {% if auth_enabled %}<form method="post" action="/dangxuat" style="margin-top:8px">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-      <button class="ghost" style="padding:3px 9px;font-size:12px">Đăng xuất</button>
-    </form>{% endif %}
-  </div>
-</nav>
-<main>
-{% block content %}{% endblock %}
-</main>
+{% if page == 'dang-nhap' %}
+  <main class="login-page">{% block login_content %}{% endblock %}</main>
+{% else %}
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="ACP tổng quan">
+      <span class="brand-mark">ACP</span>
+      <span class="brand-copy"><strong>Affiliate Pipeline</strong><span>Operations console</span></span>
+    </a>
+    <div class="nav-section-label">Workspace</div>
+    <nav class="nav-list" aria-label="Điều hướng chính">
+      <a href="/" class="nav-item {{ 'nav-item--active' if page=='doanh-thu' }}"><span class="nav-icon">⌂</span><span class="nav-label">Tổng quan</span></a>
+      <a href="/sanpham" class="nav-item {{ 'nav-item--active' if page=='san-pham' }}"><span class="nav-icon">◇</span><span class="nav-label">Sản phẩm</span></a>
+      <a href="/kenh" class="nav-item {{ 'nav-item--active' if page=='kenh' }}"><span class="nav-icon">◎</span><span class="nav-label">Kênh</span></a>
+      <a href="/duyet" class="nav-item {{ 'nav-item--active' if page=='duyet' }}"><span class="nav-icon">✓</span><span class="nav-label">Chờ duyệt</span>{% if pending_review|default(0) %}<span class="nav-count">{{ pending_review }}</span>{% endif %}</a>
+      <a href="/vanhanh" class="nav-item {{ 'nav-item--active' if page=='van-hanh' }}"><span class="nav-icon">↻</span><span class="nav-label">Vận hành</span></a>
+      <a href="/chamdiem" class="nav-item {{ 'nav-item--active' if page=='cham-diem' }}"><span class="nav-icon">⌁</span><span class="nav-label">Chấm điểm</span></a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="runtime-state"><span class="runtime-label"><i class="runtime-dot"></i> Hệ thống</span><strong>{{ 'LIVE' if config.get('LIVE') else 'MOCK' }}</strong></div>
+      {% if auth_enabled %}
+      <form class="logout-form" method="post" action="/dangxuat">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--ghost btn--wide" type="submit">Đăng xuất</button>
+      </form>
+      {% endif %}
+    </div>
+  </aside>
+  <div class="app-main"><main class="app-content">{% block content %}{% endblock %}</main></div>
 </div>
+{% endif %}
 </body>
 </html>

@@ -1,86 +1,54 @@
 {% extends "base.html" %}
-{% block title %}Doanh thu — Sổ cái affiliate{% endblock %}
+{% block title %}Tổng quan — ACP{% endblock %}
 
 {% macro epc_table(rows, head) %}
   {% if rows %}
-  {% set top = rows[0].epc if rows[0].epc else 1 %}
-  <table>
-    <thead><tr><th>{{ head }}</th><th class="n">Bài</th><th class="n">Click</th>
-      <th class="n">Đơn</th><th class="n">Hoa hồng</th><th class="n">EPC</th><th style="width:76px"></th></tr></thead>
+  {% set top_epc = rows[0].epc if rows[0].epc else 1 %}
+  <div class="table-card"><div class="table-scroll"><table class="data-table">
+    <thead><tr><th>{{ head }}</th><th class="n">Bài</th><th class="n">Click</th><th class="n">Đơn</th><th class="n">Hoa hồng</th><th class="n">EPC</th><th></th></tr></thead>
     <tbody>
     {% for r in rows %}
       <tr>
-        <td>{{ r.label }}</td>
-        <td class="n dim">{{ r.posts|num }}</td>
-        <td class="n dim">{{ r.clicks|num }}</td>
-        <td class="n dim">{{ r.orders|num }}</td>
-        <td class="n money">{{ r.commission|vnd }}</td>
-        <td class="n">{{ r.epc|vnd }}</td>
-        <td><div class="bar"><i style="width:{{ (r.epc / top * 100)|round(0) if top else 0 }}%"></i></div></td>
+        <td><strong>{{ r.label }}</strong></td>
+        <td class="n dim">{{ r.posts|num }}</td><td class="n dim">{{ r.clicks|num }}</td><td class="n dim">{{ r.orders|num }}</td>
+        <td class="n money">{{ r.commission|vnd }}</td><td class="n">{{ r.epc|vnd }}</td>
+        <td><div class="bar"><i style="width:{{ (r.epc / top_epc * 100)|round(0) if top_epc else 0 }}%"></i></div></td>
       </tr>
     {% endfor %}
     </tbody>
-  </table>
-  {% else %}<div class="empty">Chưa có dữ liệu chuyển đổi.</div>{% endif %}
+  </table></div></div>
+  {% else %}<div class="empty-state">Chưa có dữ liệu chuyển đổi.</div>{% endif %}
 {% endmacro %}
 
 {% block content %}
-<h1>Doanh thu</h1>
-<p class="lede">Chỉ tính hoa hồng đã được duyệt. Phần đang chờ duyệt hiển thị riêng vì chưa chắc thành tiền.</p>
-
-<div class="chain">
-  <div class="step">
-    <div class="k">Bài đã đăng</div><div class="v">{{ funnel.posts|num }}</div>
-    <span class="rate">{{ funnel.post_click_rate }}% có click</span>
-  </div>
-  <div class="step">
-    <div class="k">Lượt xem</div><div class="v">{{ funnel.views|num }}</div>
-    <span class="rate">CTR {{ funnel.ctr }}%</span>
-  </div>
-  <div class="step">
-    <div class="k">Click</div><div class="v">{{ funnel.clicks|num }}</div>
-    <span class="rate">CR {{ funnel.cr }}%</span>
-  </div>
-  <div class="step">
-    <div class="k">Đơn được duyệt</div><div class="v">{{ funnel.orders|num }}</div>
-    <span class="rate">EPC {{ funnel.epc|vnd }}</span>
-  </div>
-  <div class="step money">
-    <div class="k">Hoa hồng</div><div class="v">{{ funnel.commission|vnd }}</div>
-  </div>
+<div class="page-header">
+  <div><div class="eyebrow">Performance overview</div><h1>Tổng quan</h1><p class="lede">Theo dõi phễu nội dung → click → đơn và hoa hồng đã được duyệt.</p></div>
+  <a class="btn btn--ghost" href="/vanhanh">Xem vận hành</a>
 </div>
-<p class="note">Đang chờ đối soát: {{ funnel.pending|vnd }} — sẽ chuyển sang duyệt hoặc bị từ chối sau khi sàn xác nhận đơn.</p>
+
+<div class="kpi-grid">
+  <div class="kpi-card"><div class="kpi-label">Bài đã đăng</div><div class="kpi-value">{{ funnel.posts|num }}</div><div class="kpi-meta">{{ funnel.post_click_rate }}% có click</div></div>
+  <div class="kpi-card"><div class="kpi-label">Lượt xem</div><div class="kpi-value">{{ funnel.views|num }}</div><div class="kpi-meta">CTR {{ funnel.ctr }}%</div></div>
+  <div class="kpi-card"><div class="kpi-label">Click</div><div class="kpi-value">{{ funnel.clicks|num }}</div><div class="kpi-meta">CR {{ funnel.cr }}%</div></div>
+  <div class="kpi-card"><div class="kpi-label">Đơn được duyệt</div><div class="kpi-value">{{ funnel.orders|num }}</div><div class="kpi-meta">EPC {{ funnel.epc|vnd }}</div></div>
+  <div class="kpi-card kpi-card--accent kpi-card--success"><div class="kpi-label">Hoa hồng</div><div class="kpi-value">{{ funnel.commission|vnd }}</div><div class="kpi-meta">Chờ đối soát {{ funnel.pending|vnd }}</div></div>
+</div>
 
 <div class="grid2">
-  <div><h2>Theo danh mục</h2>{{ epc_table(by_category, "Danh mục") }}</div>
-  <div><h2>Theo template caption</h2>{{ epc_table(by_template, "Template") }}</div>
-</div>
-<div class="grid2">
-  <div><h2>Theo kênh</h2>{{ epc_table(by_channel, "Kênh") }}</div>
-  <div><h2>Theo biến thể A/B</h2>{{ epc_table(by_variant, "Biến thể") }}
-    <p class="note">Cần tối thiểu khoảng 200 click mỗi biến thể mới đủ mẫu để kết luận. Dưới ngưỡng đó thì chênh lệch chỉ là nhiễu.</p>
-  </div>
+  <section class="panel card"><div class="panel-header"><h2>Theo danh mục</h2><span class="status-badge">EPC</span></div>{{ epc_table(by_category, "Danh mục") }}</section>
+  <section class="panel card"><div class="panel-header"><h2>Theo template caption</h2><span class="status-badge">EPC</span></div>{{ epc_table(by_template, "Template") }}</section>
+  <section class="panel card"><div class="panel-header"><h2>Theo kênh</h2><span class="status-badge">EPC</span></div>{{ epc_table(by_channel, "Kênh") }}</section>
+  <section class="panel card"><div class="panel-header"><h2>Theo biến thể A/B</h2><span class="status-badge">Experiment</span></div>{{ epc_table(by_variant, "Biến thể") }}<p class="note">Khoảng 200 click mỗi biến thể trở lên mới đủ mẫu để đọc chênh lệch đáng tin cậy.</p></section>
 </div>
 
-<h2>Bài đăng theo hoa hồng</h2>
+<div class="section-heading section-heading--spaced"><div><h2>Bài đăng theo hoa hồng</h2><p class="note">Các bài đóng góp nhiều commission nhất.</p></div></div>
 {% if top %}
-<table>
-  <thead><tr><th style="width:52px"></th><th>Sản phẩm</th><th>Danh mục</th><th class="n">Xem</th>
-    <th class="n">Click</th><th class="n">Đơn</th><th class="n">Hoa hồng</th></tr></thead>
-  <tbody>
-  {% for p in top %}
-    <tr>
-      <td>{% if p.image_path_local %}<img src="/media/{{ p.id }}.jpg" alt="" width="40" height="40"
-          style="border-radius:6px;object-fit:cover;border:1px solid var(--rule)">{% endif %}</td>
-      <td>{{ p.product_name }}<br><span class="dim" style="font-size:12.5px">biến thể {{ p.variant_code }}</span></td>
-      <td class="dim">{{ p.category_code }}</td>
-      <td class="n dim">{{ p.views|num }}</td>
-      <td class="n dim">{{ p.clicks|num }}</td>
-      <td class="n dim">{{ p.orders|num }}</td>
-      <td class="n money">{{ p.commission|vnd }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% else %}<div class="empty">Chưa có bài nào được đăng. Chạy <code>python3 run.py demo</code> để nạp dữ liệu mẫu.</div>{% endif %}
+<div class="table-card"><div class="table-scroll"><table class="data-table">
+  <thead><tr><th>Sản phẩm</th><th>Danh mục</th><th class="n">Xem</th><th class="n">Click</th><th class="n">Đơn</th><th class="n">Hoa hồng</th></tr></thead>
+  <tbody>{% for p in top %}<tr>
+    <td><strong>{{ p.product_name }}</strong><span class="mono-sub">biến thể {{ p.variant_code }}</span></td>
+    <td class="dim">{{ p.category_code }}</td><td class="n dim">{{ p.views|num }}</td><td class="n dim">{{ p.clicks|num }}</td><td class="n dim">{{ p.orders|num }}</td><td class="n money">{{ p.commission|vnd }}</td>
+  </tr>{% endfor %}</tbody>
+</table></div></div>
+{% else %}<div class="empty-state">Chưa có bài nào được đăng.</div>{% endif %}
 {% endblock %}
