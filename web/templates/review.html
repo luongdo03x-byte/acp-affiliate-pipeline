@@ -13,7 +13,10 @@
 {% for p in posts %}
 <article class="review-card">
   {% if p.image_url_composited %}
-  <img class="review-card__image" src="{{ '/media/' ~ p.id ~ '.jpg' }}" alt="Ảnh đăng bài">
+  {# File thật được lưu theo tên do core/imaging.py đặt (hiện là product_id, có
+     thể đổi trong tương lai) -- lấy basename từ chính giá trị đã lưu thay vì đoán
+     lại từ post.id, để tránh lệch tên như hồi khớp post.id với file product_id. #}
+  <img class="review-card__image" src="{{ '/media/' ~ p.image_url_composited.rsplit('/', 1)[-1] }}" alt="Ảnh đăng bài">
   {% endif %}
   <div>
     <div class="review-card__head">

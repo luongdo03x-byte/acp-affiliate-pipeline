@@ -340,6 +340,12 @@ def test_hook_rotation_in_plan_content():
 
 def test_web_security():
     print("\nBảo mật web")
+    # Lưu lại giá trị gốc (nếu có, ví dụ ACP_SECRET_KEY nạp sẵn từ .env.local khi
+    # chạy qua manage.sh test) để khôi phục đúng ở cuối hàm -- pop() thẳng tay sẽ
+    # xoá luôn cấu hình thật, làm test_value_posts() chạy sau bị thiếu ACP_SECRET_KEY
+    # khi ACP_ENV=production (create_app() đòi khoá này, xem web/server.py).
+    _saved_env = {k: os.environ.get(k) for k in
+                  ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY", "ACP_WEBHOOK_SECRET")}
     os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
     os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
     os.environ["ACP_WEBHOOK_SECRET"] = "khoa-webhook"
@@ -485,8 +491,11 @@ def test_web_security():
     conn.close()
     check("kênh chuyển sang NEEDS_REAUTH", st == "NEEDS_REAUTH", st)
 
-    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY", "ACP_WEBHOOK_SECRET"):
-        os.environ.pop(var, None)
+    for var, original in _saved_env.items():
+        if original is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = original
 
 
 # --------------------------------------------------------- bài không bán hàng
