@@ -25,7 +25,10 @@ def rewrite(prompt: str) -> str:
     client = _client()
     if client is None:
         raise RuntimeError("ACP_GEMINI_API_KEY chưa được đặt")
-    model = os.environ.get("ACP_GEMINI_MODEL", "gemini-2.5-flash")
+    # "gemini-flash-latest" là alias Google tự trỏ vào bản flash hiện hành --
+    # tránh phải sửa code mỗi khi Google khoá một model cụ thể cho tài khoản
+    # mới (đã gặp với gemini-2.5-flash lúc build tính năng này).
+    model = os.environ.get("ACP_GEMINI_MODEL", "gemini-flash-latest")
     response = client.models.generate_content(model=model, contents=prompt)
     text = (response.text or "").strip()
     if not text:
