@@ -220,12 +220,12 @@ run_release_tests() {
     load_env_from "$release"
     (
         cd "$parent"
-        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" -m acp.tests.test_pipeline
-        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" -m acp.tests.test_pilot
+        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= "$release/.venv/bin/python" -m acp.tests.test_pipeline
+        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= "$release/.venv/bin/python" -m acp.tests.test_pilot
     )
     (
         cd "$release"
-        ACP_ADAPTER=mock ACP_SOURCE=mock "$release/.venv/bin/python" run.py doctor
+        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= "$release/.venv/bin/python" run.py doctor
     )
 }
 
