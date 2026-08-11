@@ -117,6 +117,7 @@ class ProductService:
     def __init__(self, conn, client):
         self.conn = conn
         self.client = client
+        self._lock_lease = None
 
     def sync(self, *, title_keywords=None, sort_field="RECOMMENDED", max_pages=None):
         """Fetch bounded V2 pages, upsert the provider catalog, then refresh ranking."""
@@ -153,21 +154,23 @@ class ProductService:
 
     def _acquire_lock(self):
         lock_timeout = env_int("ACP_PRODUCT_SYNC_LOCK_SECONDS", 600)
+        lease = f"{now()}|{ulid()}"
         with transaction(self.conn):
             existing = self.conn.execute(
                 "SELECT locked_at FROM product_sync_lock WHERE name=?", (LOCK_NAME,)).fetchone()
             if existing and self._lock_is_fresh(existing["locked_at"], lock_timeout):
                 raise SyncAlreadyRunning()
             if existing:
-                self.conn.execute("UPDATE product_sync_lock SET locked_at=? WHERE name=?", (now(), LOCK_NAME))
+                self.conn.execute("UPDATE product_sync_lock SET locked_at=? WHERE name=?", (lease, LOCK_NAME))
             else:
                 self.conn.execute("INSERT INTO product_sync_lock (name, locked_at) VALUES (?, ?)",
-                                  (LOCK_NAME, now()))
+                                  (LOCK_NAME, lease))
+        self._lock_lease = lease
 
     @staticmethod
     def _lock_is_fresh(locked_at, timeout):
         try:
-            locked = datetime.fromisoformat(locked_at)
+            locked = datetime.fromisoformat(str(locked_at).split("|", 1)[0])
             if locked.tzinfo is None:
                 locked = locked.replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
@@ -175,8 +178,12 @@ class ProductService:
         return locked >= datetime.now(timezone.utc) - timedelta(seconds=max(0, timeout))
 
     def _release_lock(self):
+        if not self._lock_lease:
+            return
         with transaction(self.conn):
-            self.conn.execute("DELETE FROM product_sync_lock WHERE name=?", (LOCK_NAME,))
+            self.conn.execute("DELETE FROM product_sync_lock WHERE name=? AND locked_at=?",
+                              (LOCK_NAME, self._lock_lease))
+        self._lock_lease = None
 
     def _upsert(self, product, result):
         if not product.external_product_id:

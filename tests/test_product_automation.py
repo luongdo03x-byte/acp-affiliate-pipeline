@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -650,6 +650,28 @@ def test_sync_lock_rejects_fresh_lock_and_releases_after_error():
         conn.close()
 
 
+def test_stale_lock_owner_cannot_release_new_owner_lease():
+    """A stale owner finishing late must not remove the lock taken over by a new sync."""
+    from acp.core.products import LOCK_NAME, ProductService
+
+    conn = _catalog_conn()
+    try:
+        old_owner = ProductService(conn, _ProductClient())
+        new_owner = ProductService(conn, _ProductClient())
+        old_owner._acquire_lock()
+        conn.execute("UPDATE product_sync_lock SET locked_at=? WHERE name=?", (
+            (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(timespec="seconds"), LOCK_NAME))
+        new_owner._acquire_lock()
+        new_lease = conn.execute("SELECT locked_at FROM product_sync_lock WHERE name=?", (LOCK_NAME,)).fetchone()[0]
+
+        old_owner._release_lock()
+
+        assert conn.execute("SELECT locked_at FROM product_sync_lock WHERE name=?", (LOCK_NAME,)).fetchone()[0] == new_lease
+        new_owner._release_lock()
+    finally:
+        conn.close()
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
@@ -671,7 +693,8 @@ def main():
                           test_local_search_filters_and_sorts_catalog_rows,
                           test_product_filters_parse_catalog_request_values,
                           test_sync_retries_recommended_once_when_commission_sort_is_rejected,
-                          test_sync_lock_rejects_fresh_lock_and_releases_after_error]}
+                          test_sync_lock_rejects_fresh_lock_and_releases_after_error,
+                          test_stale_lock_owner_cannot_release_new_owner_lease]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:
