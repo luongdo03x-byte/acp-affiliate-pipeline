@@ -458,6 +458,46 @@ class _ProductClient:
         return self.pages.pop(0) if self.pages else ([], None)
 
 
+class _CatalogPipelineClient(_ProductClient):
+    """External link boundary used by catalog-post pipeline tests."""
+
+    def __init__(self, *, error=None):
+        super().__init__()
+        self.error = error
+        self.link_calls = []
+        self.last_body = None
+
+    def create_product_link(self, detail_link, *, post_id, external_product_id):
+        from acp.adapters.accesstrade_client import LinkResult
+
+        self.last_body = {"detail_link": detail_link, "sub1": post_id,
+                          "external_product_id": external_product_id}
+        self.link_calls.append(self.last_body)
+        if self.error:
+            raise self.error
+        return LinkResult(full_url="https://tracking.example/post",
+                          short_url="https://short.example/post")
+
+
+class _CatalogStorage:
+    def put(self, local_path):
+        return "https://media.example/" + os.path.basename(local_path)
+
+
+class _PublishingChannel:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = 0
+
+    def publish(self, channel, caption, image_url):
+        from acp.adapters.base import PublishResult
+
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return PublishResult("thread-catalog-1", "2026-08-11T12:00:00+00:00")
+
+
 def _catalog_conn():
     conn = sqlite3.connect(":memory:", isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -485,6 +525,146 @@ def _insert_catalog_product(conn, *, product_id, external_id, name="Product", sh
                   "ACCESSTRADE_TIKTOK", shop, detail_link, price_min, commission_rate_percent,
                   commission_amount, units_sold, has_inventory, affiliate_status, last_posted_at,
                   timestamp, last_seen_at, timestamp))
+
+
+def _catalog_pipeline_conn():
+    from acp.core.db import now
+
+    conn = _catalog_conn()
+    conn.execute("INSERT INTO campaign (id, code, name, created_at) VALUES (?,?,?,?)",
+                 ("campaign-1", "gd2026", "Catalog campaign", now()))
+    conn.execute("INSERT INTO caption_template (id, code, name, body) VALUES (?,?,?,?)",
+                 ("template-1", "price_drop", "Price drop", "price_drop"))
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, daily_post_cap,
+                                           min_gap_minutes, created_at)
+                    VALUES (?,?, 'threads', ?, 'ACTIVE', 12, 90, ?)""",
+                 ("channel-1", "ch1", "@catalog", now()))
+    _insert_catalog_product(conn, product_id="catalog-product", external_id="external-42",
+                            name="Nồi chiên Catalog", detail_link="https://detail.example/product")
+    return conn
+
+
+def test_catalog_product_creates_fresh_per_post_link_and_pending_review():
+    """Reusing an operator's product-only link would attribute sales to no post."""
+    from acp.core import pipeline
+    import tempfile
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        client.create_product_link("https://detail.example/product", post_id="product:external-42",
+                                   external_product_id="external-42")
+        conn.execute("""UPDATE product SET affiliate_url=?, affiliate_short_url=?,
+                        affiliate_link_status='PRODUCT_ONLY' WHERE id='catalog-product'""",
+                     ("https://tracking.example/product-only", "https://short.example/product-only"))
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                "catalog-product", "gd2026", "ch1")
+
+        post = conn.execute("SELECT * FROM post WHERE id=?", (result["post_id"],)).fetchone()
+        product = conn.execute("SELECT * FROM product WHERE id='catalog-product'").fetchone()
+        assert result["status"] == "PENDING_REVIEW"
+        assert post["affiliate_link"] == "https://short.example/post"
+        assert post["affiliate_link"] != "https://short.example/product-only"
+        assert "https://detail.example/product" not in post["caption_final"]
+        assert client.last_body["sub1"] == post["id"]
+        assert len(client.link_calls) == 2
+        assert client.link_calls[0]["sub1"] == "product:external-42"
+        assert product["affiliate_url"] == "https://tracking.example/post"
+        assert product["affiliate_short_url"] == "https://short.example/post"
+        assert product["affiliate_link_status"] == "READY"
+        assert conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0] == 0
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
+def test_catalog_link_failure_stops_before_caption_or_post_generation():
+    """Falling back to a catalog detail URL would publish untracked content."""
+    from acp.adapters.base import PublishError
+    from acp.core import pipeline
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient(error=PublishError("provider token=secret-value"))
+    try:
+        result = pipeline.create_post_for_catalog_product(
+            conn, {"product_client": client, "storage": _CatalogStorage()},
+            "catalog-product", "gd2026", "ch1")
+
+        product = conn.execute("SELECT * FROM product WHERE id='catalog-product'").fetchone()
+        assert not result["ok"]
+        assert conn.execute("SELECT COUNT(*) FROM post").fetchone()[0] == 0
+        assert product["affiliate_link_status"] == "FAILED"
+        assert "secret-value" not in product["affiliate_link_error"]
+    finally:
+        conn.close()
+
+
+def test_catalog_product_publish_updates_post_metadata_once_after_success():
+    """A retried publish after a successful post must not double-increment product history."""
+    from acp.core import pipeline
+    import tempfile
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            created = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                "catalog-product", "gd2026", "ch1")
+        assert pipeline.approve_post(conn, created["post_id"])["ok"]
+
+        channel = _PublishingChannel()
+        pipeline.publish_post(conn, {"post_id": created["post_id"], "channel_id": "channel-1"},
+                              {"channel": channel})
+        pipeline.publish_post(conn, {"post_id": created["post_id"], "channel_id": "channel-1"},
+                              {"channel": channel})
+
+        product = conn.execute("SELECT last_posted_at, post_count FROM product WHERE id='catalog-product'").fetchone()
+        assert product["last_posted_at"] == "2026-08-11T12:00:00+00:00"
+        assert product["post_count"] == 1
+        assert channel.calls == 1
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
+def test_catalog_product_publish_failure_leaves_post_metadata_unchanged():
+    """Failed channel publishes must not trigger catalog cooldown or inflate post counts."""
+    from acp.adapters.base import PublishError
+    from acp.core import pipeline
+    import tempfile
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            created = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                "catalog-product", "gd2026", "ch1")
+        assert pipeline.approve_post(conn, created["post_id"])["ok"]
+        try:
+            pipeline.publish_post(
+                conn, {"post_id": created["post_id"], "channel_id": "channel-1"},
+                {"channel": _PublishingChannel(error=PublishError("network failed"))})
+        except PublishError:
+            pass
+        else:
+            raise AssertionError("Expected PublishError")
+
+        product = conn.execute("SELECT last_posted_at, post_count FROM product WHERE id='catalog-product'").fetchone()
+        assert product["last_posted_at"] is None
+        assert product["post_count"] == 0
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
 
 
 def test_sync_paginates_and_upserts_without_duplicate():
@@ -694,7 +874,11 @@ def main():
                           test_product_filters_parse_catalog_request_values,
                           test_sync_retries_recommended_once_when_commission_sort_is_rejected,
                           test_sync_lock_rejects_fresh_lock_and_releases_after_error,
-                          test_stale_lock_owner_cannot_release_new_owner_lease]}
+                          test_stale_lock_owner_cannot_release_new_owner_lease],
+              "pipeline": [test_catalog_product_creates_fresh_per_post_link_and_pending_review,
+                           test_catalog_link_failure_stops_before_caption_or_post_generation,
+                           test_catalog_product_publish_updates_post_metadata_once_after_success,
+                           test_catalog_product_publish_failure_leaves_post_metadata_unchanged]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:

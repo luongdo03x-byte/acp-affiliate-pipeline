@@ -13,9 +13,10 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
-from . import attribution, content, imaging, niche, playbook, scoring, storage, valuepost
+from . import attribution, content, crypto, imaging, niche, playbook, scoring, storage, valuepost
 from .db import audit, now, ulid
 from .jobs import enqueue, handler
+from .products import PROVIDER as CATALOG_PROVIDER, ProductService
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "var", "media")
 
@@ -277,6 +278,124 @@ def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_
         audit_action="created_manual_shopee")
 
 
+def _catalog_post_context(conn, campaign_code: str, channel_code: str = None):
+    """Resolve the existing review-post prerequisites before requesting a link."""
+    campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
+    if not campaign:
+        return None, {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
+    channel = conn.execute(
+        "SELECT * FROM channel WHERE code=? AND status='ACTIVE'" if channel_code
+        else "SELECT * FROM channel WHERE status='ACTIVE' ORDER BY code LIMIT 1",
+        (channel_code,) if channel_code else ()).fetchone()
+    if not channel:
+        return None, {"ok": False, "error": "Không có kênh nào đang hoạt động"}
+    template = conn.execute("SELECT * FROM caption_template WHERE is_active=1 ORDER BY code LIMIT 1").fetchone()
+    if not template:
+        return None, {"ok": False, "error": "Không có template caption nào đang bật"}
+    return (campaign, channel, template), None
+
+
+def _set_catalog_link_state(conn, product_id: str, status: str, error: str = None) -> None:
+    """Store a safe, operator-visible link state without persisting provider details."""
+    conn.execute("""UPDATE product SET affiliate_link_status=?, affiliate_link_error=?, updated_at=?
+                    WHERE id=? AND provider=?""",
+                 (status, error, now(), product_id, CATALOG_PROVIDER))
+
+
+def _redacted_link_error(error: Exception) -> str:
+    # Provider responses can carry request context. The state only needs to say that
+    # link creation failed; details remain out of the catalog database and audit log.
+    return crypto.redact(str(error))
+
+
+def _create_post_from_catalog_product(conn, ctx, product, post_id: str, link,
+                                      campaign_code: str, channel_code: str = None) -> dict:
+    """Create a review post from a catalog row using a link bound to ``post_id``."""
+    post_context, error = _catalog_post_context(conn, campaign_code, channel_code)
+    if error:
+        return error
+    campaign, channel, template = post_context
+
+    full_url = getattr(link, "full_url", None)
+    short_url = getattr(link, "short_url", None)
+    affiliate_url = short_url or full_url
+    if not affiliate_url:
+        return {"ok": False, "error": "Không thể tạo link affiliate cho sản phẩm"}
+
+    discount = scoring.real_discount_depth(conn, product["id"], product["current_price"])
+    image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount, handle=channel["handle"])
+    image_url = ctx.get("storage", storage.get_storage()).put(image_path)
+    variant_code = playbook.pick_hook()
+    caption = content.generate(product, template["code"], affiliate_url, discount_pct=discount,
+                               hook_code=variant_code)
+    problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
+    status = "PENDING_REVIEW" if not problems else "DRAFT"
+    attribution_payload = {
+        "provider": "accesstrade_product",
+        "link_mode": "post_specific",
+        "sub1": post_id,
+        "external_product_id": product["external_product_id"],
+    }
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
+                    variant_code, caption_body, disclosure_text, caption_final, image_url_composited,
+                    affiliate_link, sub_id_payload, score, status, reject_reason, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], template["id"],
+                  variant_code, caption, content.DISCLOSURE_DEFAULT, caption, image_url, affiliate_url,
+                  json.dumps(attribution_payload, ensure_ascii=False, sort_keys=True), product["score"],
+                  status, "; ".join(problems) if problems else None, now(), now()))
+    audit(conn, "post", post_id, "created_catalog_product", actor="operator",
+          detail={"external_product_id": product["external_product_id"],
+                  "template": template["code"], "problems": problems})
+    return {"ok": True, "post_id": post_id, "product_id": product["id"],
+            "product_name": product["name"], "affiliate_link": affiliate_url,
+            "image_url": image_url, "caption": caption, "problems": problems, "status": status}
+
+
+def create_post_for_catalog_product(conn, ctx, product_id: str, campaign_code: str,
+                                    channel_code: str = None) -> dict:
+    """Create one catalog-backed review post with a newly allocated, per-post link.
+
+    A copied product-card link deliberately uses ``product:<external_product_id>``
+    as sub1. It is never read here: every content post obtains a fresh link tied to
+    a real post id before media or caption generation begins.
+    """
+    product = ProductService(conn, ctx["product_client"]).get(product_id)
+    if not product:
+        return {"ok": False, "error": "Không tìm thấy sản phẩm trong catalog"}
+    if not product["has_inventory"] or not product["detail_link"]:
+        _set_catalog_link_state(conn, product_id, "UNAVAILABLE")
+        return {"ok": False, "error": "Sản phẩm không đủ điều kiện tạo nội dung"}
+
+    post_context, error = _catalog_post_context(conn, campaign_code, channel_code)
+    if error:
+        return error
+    del post_context  # Preflight completes before making the externally visible link request.
+
+    post_id = ulid()
+    _set_catalog_link_state(conn, product_id, "CREATING")
+    try:
+        link = ctx["product_client"].create_product_link(
+            product["detail_link"], post_id=post_id,
+            external_product_id=product["external_product_id"])
+        full_url = getattr(link, "full_url", None)
+        short_url = getattr(link, "short_url", None)
+        if not (full_url or short_url):
+            raise ValueError("empty product link")
+    except Exception as error:
+        _set_catalog_link_state(conn, product_id, "FAILED", _redacted_link_error(error))
+        return {"ok": False, "error": "Không thể tạo link affiliate cho sản phẩm"}
+
+    linked_at = now()
+    conn.execute("""UPDATE product
+                    SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='READY',
+                        affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
+                    WHERE id=? AND provider=?""",
+                 (full_url or short_url, short_url, linked_at, linked_at, product_id, CATALOG_PROVIDER))
+    return _create_post_from_catalog_product(conn, ctx, product, post_id, link,
+                                             campaign_code, channel_code)
+
+
 # ------------------------------------------------------------- bài giá trị
 
 def _median_30d(conn, category_code: str = None, niches: list = None):
@@ -490,6 +609,13 @@ def _next_slot(conn, channel_id: str) -> str:
 
 # ------------------------------------------------------------------ chặng 5
 
+def mark_product_posted(conn, product_id: str, published_at: str) -> None:
+    """Record a completed catalog publish for ranking and repost cooldowns."""
+    conn.execute("""UPDATE product
+                    SET last_posted_at=?, post_count=COALESCE(post_count, 0)+1, updated_at=?
+                    WHERE id=? AND provider=?""",
+                 (published_at, now(), product_id, CATALOG_PROVIDER))
+
 @handler("PUBLISH_POST")
 def publish_post(conn, payload, ctx):
     post = conn.execute("SELECT * FROM post WHERE id=?", (payload["post_id"],)).fetchone()
@@ -515,6 +641,8 @@ def publish_post(conn, payload, ctx):
     result = ctx["channel"].publish(channel, post["caption_final"], post["image_url_composited"])
     conn.execute("UPDATE post SET status='PUBLISHED', thread_id=?, published_at=?, updated_at=? WHERE id=?",
                  (result.external_post_id, result.published_at, now(), post["id"]))
+    if post["product_id"]:
+        mark_product_posted(conn, post["product_id"], result.published_at)
     audit(conn, "post", post["id"], "published", detail={"thread_id": result.external_post_id})
     enqueue(conn, "FETCH_INSIGHTS", {"post_id": post["id"], "channel_id": channel["id"]},
             run_after=(datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds"),
