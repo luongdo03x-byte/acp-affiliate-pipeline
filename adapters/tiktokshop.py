@@ -10,34 +10,15 @@ không lặp lại lỗi ghép thành /v1/v1/... như đã từng xảy ra.
 import os
 from typing import Optional
 
-import requests
-
-from .base import ContentSource, RawProduct, PublishError, RateLimitError
-from .live import TokenBucket
+from .accesstrade_client import AccessTradeClient, normalize_accesstrade_product
+from .base import ContentSource, RawProduct, PublishError
 
 AT_ROOT = os.environ.get("AT_ROOT", "https://api.accesstrade.vn")
 
 # Đường tạo link TikTok Shop. Người vận hành đã gọi thành công nhưng response
 # chưa được lưu lại, nên để cấu hình được và có đường dự phòng chung.
-TIKTOK_LINK_PATH = os.environ.get("AT_TIKTOK_LINK_PATH", "/v1/product_link/create")
-
-
-def _amount(node, default=0) -> int:
-    """Giá TikTok Shop trả về dạng object có minimum_amount, đôi khi là chuỗi."""
-    if node is None:
-        return default
-    if isinstance(node, (int, float)):
-        return int(node)
-    if isinstance(node, str):
-        try:
-            return int(float(node))
-        except ValueError:
-            return default
-    if isinstance(node, dict):
-        for key in ("minimum_amount", "min_amount", "amount", "value"):
-            if node.get(key) is not None:
-                return _amount(node[key], default)
-    return default
+# Compatibility contract: the client owns calls to "/v2/tiktokshop_product_feeds".
+PRODUCT_FEED_PATH = "/v2/tiktokshop_product_feeds"
 
 
 def _rate(node) -> Optional[float]:
@@ -59,31 +40,14 @@ class AccessTradeTikTokShopSource(ContentSource):
     name = "accesstrade_tiktokshop"
     merchant_default = "tiktokshop"
 
-    def __init__(self, access_key: str = None, campaign_id: str = None):
+    def __init__(self, access_key: str = None, campaign_id: str = None, client=None):
         self.access_key = access_key or os.environ.get("AT_ACCESS_KEY", "")
         self.campaign_id = campaign_id or os.environ.get("AT_TIKTOK_CAMPAIGN_ID") \
             or os.environ.get("AT_CAMPAIGN_ID", "")
-        self.bucket = TokenBucket(rate=30, per_seconds=60)
-        self.session = requests.Session()
-        self.session.headers["Authorization"] = f"Token {self.access_key}"
-
-    # ------------------------------------------------------------------ HTTP
-
-    def _get(self, path: str, **params):
-        self.bucket.take()
-        r = self.session.get(f"{AT_ROOT}{path}", params=params, timeout=30)
-        if r.status_code == 429:
-            raise RateLimitError("Accesstrade trả 429")
-        r.raise_for_status()
-        return r.json()
-
-    def _post(self, path: str, body: dict):
-        self.bucket.take()
-        r = self.session.post(f"{AT_ROOT}{path}", json=body, timeout=30)
-        if r.status_code == 429:
-            raise RateLimitError("Accesstrade trả 429")
-        r.raise_for_status()
-        return r.json()
+        self.client = client or AccessTradeClient(
+            base_url=os.environ.get("ACCESSTRADE_API_BASE_URL") or AT_ROOT,
+            token=self.access_key or os.environ.get("ACCESSTRADE_API_TOKEN", ""),
+        )
 
     # ------------------------------------------------------- chuẩn hoá dữ liệu
 
@@ -93,10 +57,11 @@ class AccessTradeTikTokShopSource(ContentSource):
 
         Tách thành classmethod để test được bằng fixture mà không cần mạng.
         """
-        price = _amount(raw.get("sales_price"))
-        original = _amount(raw.get("original_price"), price) or price
+        normalized = normalize_accesstrade_product(raw)
+        price = normalized.price_min or 0
+        original = normalized.original_price_min or price
+        commission_value = normalized.commission_amount or 0
         commission_node = raw.get("commission") or {}
-        commission_value = _amount(commission_node)
         rate = _rate(commission_node.get("rate") if isinstance(commission_node, dict) else None) \
             or _rate(raw.get("commission_rate"))
         if not commission_value and rate:
@@ -104,10 +69,9 @@ class AccessTradeTikTokShopSource(ContentSource):
         if not rate and commission_value and price:
             rate = round(commission_value / price, 4)
 
-        shop = raw.get("shop") or {}
         return RawProduct(
-            external_product_id=str(raw.get("id") or raw.get("product_id") or ""),
-            name=(raw.get("title") or raw.get("name") or "").strip(),
+            external_product_id=normalized.external_product_id,
+            name=normalized.title,
             description=(raw.get("description") or "").strip(),
             current_price=price,
             original_price=original,
@@ -116,10 +80,10 @@ class AccessTradeTikTokShopSource(ContentSource):
             category_code=cls._category(raw),
             rating=float(raw["rating"]) if raw.get("rating") else None,
             review_count=int(raw.get("review_count") or 0),
-            sold_count=int(raw.get("units_sold") or raw.get("sold_count") or 0),
-            image_url_original=raw.get("main_image_url") or raw.get("image_url"),
-            product_url=raw.get("detail_link") or raw.get("product_url") or "",
-            merchant=(shop.get("name") if isinstance(shop, dict) else None) or cls.merchant_default,
+            sold_count=normalized.units_sold or 0,
+            image_url_original=normalized.main_image_url,
+            product_url=normalized.detail_link or "",
+            merchant=normalized.shop_name or cls.merchant_default,
         )
 
     @staticmethod
@@ -135,17 +99,8 @@ class AccessTradeTikTokShopSource(ContentSource):
 
     def search_products(self, query: str = None, limit: int = 20, cursor: str = None):
         """Trả về (danh sách RawProduct, next_page_token)."""
-        params = {"limit": min(limit, 50)}
-        if query:
-            params["keyword"] = query
-        if cursor:
-            params["page_token"] = cursor
-        if self.campaign_id:
-            params["campaign_id"] = self.campaign_id
-
-        data = self._get("/v2/tiktokshop_product_feeds", **params)
-        payload = data.get("data") or {}
-        rows = payload.get("products") or []
+        rows, next_page_token = self.client.search_products(
+            limit=limit, title_keywords=query, page_token=cursor)
         out = []
         for r in rows:
             try:
@@ -154,7 +109,7 @@ class AccessTradeTikTokShopSource(ContentSource):
                 continue  # một sản phẩm hỏng không được làm gãy cả trang
             if p.external_product_id and p.name and p.current_price > 0:
                 out.append(p)
-        return out[:limit], payload.get("next_page_token")
+        return out[:limit], next_page_token
 
     def get_product(self, external_product_id: str) -> Optional[RawProduct]:
         """Tìm đúng một sản phẩm. Feed v2 không có endpoint theo id nên duyệt trang.
@@ -186,21 +141,8 @@ class AccessTradeTikTokShopSource(ContentSource):
 
     def create_tracking_link(self, product_url: str, sub_ids: dict) -> str:
         """Gắn post_id vào cả utm_content lẫn sub1 -- xem attribution.extract_post_id."""
-        body = {
-            "campaign_id": self.campaign_id,
-            "urls": [product_url],
-            "url_enc": True,
-            "utm_source": sub_ids.get("sub4", ""),
-            "utm_medium": "threads",
-            "utm_campaign": sub_ids.get("sub2", ""),
-            "utm_content": sub_ids.get("sub1", ""),
-            "sub1": sub_ids.get("sub1", ""),
-            "sub2": sub_ids.get("sub2", ""),
-            "sub3": sub_ids.get("sub3", ""),
-            "sub4": sub_ids.get("sub4", ""),
-        }
-        data = self._post(TIKTOK_LINK_PATH, body)
-        return self.parse_link_response(data)
+        link = self.client.create_tracking_link(product_url, sub_ids)
+        return link.short_url or link.full_url
 
     @staticmethod
     def parse_link_response(data: dict) -> str:
@@ -221,5 +163,5 @@ class AccessTradeTikTokShopSource(ContentSource):
         params = {"since": since, "limit": 200}
         if until:
             params["until"] = until
-        data = self._get("/v1/transactions", **params)
+        data = self.client._request("GET", "/v1/transactions", params=params)
         return [AccessTradeSource._normalize_transaction(t) for t in (data.get("data") or [])]

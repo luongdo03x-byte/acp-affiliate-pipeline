@@ -59,9 +59,11 @@ def get_caption_llm():
 def build_context(source_name: str = None) -> dict:
     """Ngữ cảnh truyền vào các job handler."""
     from ..core import content, storage
+    from .accesstrade_client import AccessTradeClient
     content.set_llm(get_caption_llm())
     return {
         "source": get_source(source_name),
+        "product_client": AccessTradeClient.from_env(),
         "channel": get_channel(),
         "storage": storage.get_storage(),
     }
