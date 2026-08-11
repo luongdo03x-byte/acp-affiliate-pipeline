@@ -324,8 +324,13 @@ def migrate(conn) -> list:
             applied.append(f"{table}.{column}")
 
     product_cols = {r[1] for r in conn.execute("PRAGMA table_info(product)").fetchall()}
-    if {"provider", "source"} <= product_cols:
-        conn.execute("UPDATE product SET provider=COALESCE(provider, 'LEGACY_' || source)")
+    if {"provider", "source", "merchant"} <= product_cols:
+        conn.execute("""UPDATE product
+                        SET provider=COALESCE(
+                            provider,
+                            'LEGACY_' || length(source) || ':' || source || ':' ||
+                            length(merchant) || ':' || merchant
+                        )""")
     if {"first_seen_at", "created_at"} <= product_cols:
         conn.execute("UPDATE product SET first_seen_at=COALESCE(first_seen_at, created_at)")
     if {"provider", "external_product_id"} <= product_cols:

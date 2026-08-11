@@ -125,7 +125,7 @@ def test_migration_preserves_existing_product_and_backfills_provider():
                 row = migrated.execute(
                     "SELECT provider, first_seen_at, name FROM product WHERE id = 'product-1'"
                 ).fetchone()
-                assert row["provider"] == "LEGACY_legacy-feed"
+                assert row["provider"] == "LEGACY_11:legacy-feed:11:Legacy Shop"
                 assert row["first_seen_at"] == created_at
                 assert row["name"] == "Legacy product"
                 assert migrated.execute("SELECT caption_final FROM post WHERE id = 'post-1'").fetchone()[0] == "Legacy caption"
@@ -136,9 +136,69 @@ def test_migration_preserves_existing_product_and_backfills_provider():
             db.DB_PATH = previous_db_path
 
 
+def test_migration_distinguishes_duplicate_legacy_external_ids_by_merchant():
+    created_at = "2026-08-11T10:00:00+00:00"
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "duplicate-legacy.db")
+        try:
+            conn = sqlite3.connect(db.DB_PATH)
+            try:
+                conn.executescript("""
+                    CREATE TABLE product (
+                        id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        merchant TEXT NOT NULL,
+                        external_product_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        current_price INTEGER NOT NULL,
+                        commission_value INTEGER NOT NULL,
+                        category_code TEXT NOT NULL,
+                        product_url TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (source, merchant, external_product_id)
+                    );
+                """)
+                conn.executemany(
+                    """INSERT INTO product (
+                        id, source, merchant, external_product_id, name, current_price,
+                        commission_value, category_code, product_url, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        ("product-1", "legacy-feed", "First Shop", "shared-id", "First product",
+                         100000, 10000, "home", "https://example.test/first", created_at, created_at),
+                        ("product-2", "legacy-feed", "Second Shop", "shared-id", "Second product",
+                         200000, 20000, "home", "https://example.test/second", created_at, created_at),
+                    ],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            db.init_db()
+            db.init_db()
+            migrated = db.connect()
+            try:
+                rows = migrated.execute(
+                    "SELECT id, provider, name FROM product WHERE external_product_id = 'shared-id' ORDER BY id"
+                ).fetchall()
+                assert [(row["id"], row["provider"], row["name"]) for row in rows] == [
+                    ("product-1", "LEGACY_11:legacy-feed:10:First Shop", "First product"),
+                    ("product-2", "LEGACY_11:legacy-feed:11:Second Shop", "Second product"),
+                ]
+                indexes = {row[1] for row in migrated.execute("PRAGMA index_list(product)")}
+                assert "idx_product_provider_external" in indexes
+            finally:
+                migrated.close()
+        finally:
+            db.DB_PATH = previous_db_path
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
-                            test_migration_preserves_existing_product_and_backfills_provider]}
+                            test_migration_preserves_existing_product_and_backfills_provider,
+                            test_migration_distinguishes_duplicate_legacy_external_ids_by_merchant]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:
