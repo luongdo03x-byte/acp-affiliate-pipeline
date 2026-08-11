@@ -428,7 +428,12 @@ def generate_content(conn, payload, ctx):
 
 # ------------------------------------------------------------------ chặng 4
 
-def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None) -> dict:
+def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
+                  scheduled_at: str = None) -> dict:
+    """scheduled_at: giờ đăng do operator tự chọn (ISO 8601, có timezone). Bỏ
+    trống thì tự động chọn slot gần nhất như trước (_next_slot()). Không tự
+    quy đổi timezone ở đây -- gọi từ web/server.py đã quy đổi giờ địa phương
+    của operator sang UTC trước khi truyền vào."""
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
@@ -441,7 +446,14 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     if problems:
         return {"ok": False, "error": "; ".join(problems)}
 
-    scheduled = _next_slot(conn, post["channel_id"])
+    if scheduled_at:
+        try:
+            datetime.fromisoformat(scheduled_at)
+        except ValueError:
+            return {"ok": False, "error": "Giờ đăng không hợp lệ"}
+        scheduled = scheduled_at
+    else:
+        scheduled = _next_slot(conn, post["channel_id"])
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
                  (caption, scheduled, actor, now(), now(), post_id))

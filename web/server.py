@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
@@ -426,8 +427,24 @@ def create_app():
     def review_action(post_id, action):
         conn = connect()
         if action == "approve":
+            scheduled_at = None
+            raw_time = request.form.get("scheduled_at", "").strip()
+            if raw_time:
+                # <input type="datetime-local"> trả về giờ theo múi giờ TRÌNH
+                # DUYỆT của operator, không có offset. ACP vận hành cho thị
+                # trường VN nên quy ước đó là giờ Việt Nam (UTC+7, không có
+                # DST) rồi quy đổi sang UTC trước khi lưu -- mọi giờ khác
+                # trong hệ thống (scheduled_at, published_at) đều là UTC.
+                try:
+                    local_dt = datetime.fromisoformat(raw_time)
+                    scheduled_at = (local_dt - timedelta(hours=7)).replace(
+                        tzinfo=timezone.utc).isoformat(timespec="seconds")
+                except ValueError:
+                    conn.close()
+                    return redirect(url_for("review", err="Giờ đăng không hợp lệ"))
             res = pipeline.approve_post(conn, post_id, actor="operator",
-                                        caption_override=request.form.get("caption") or None)
+                                        caption_override=request.form.get("caption") or None,
+                                        scheduled_at=scheduled_at)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
         else:

@@ -528,6 +528,20 @@ def test_web_security():
           conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0] == 0)
     conn.close()
 
+    # Chọn giờ đăng thủ công qua form /duyet -- input datetime-local không có
+    # offset, quy ước là giờ VN (UTC+7) rồi quy đổi sang UTC trước khi lưu.
+    approve_resp = c.post(f"/duyet/{manual['id']}/approve",
+                           data={"_csrf": csrf, "scheduled_at": "2026-12-25T17:00"})
+    check("duyệt qua web với giờ tuỳ chỉnh redirect về /duyet không lỗi",
+          approve_resp.status_code == 302 and "err=" not in (approve_resp.location or ""),
+          getattr(approve_resp, "location", ""))
+    conn = connect()
+    scheduled_row = conn.execute("SELECT scheduled_at FROM post WHERE id=?", (manual["id"],)).fetchone()
+    conn.close()
+    check("web quy đổi đúng giờ VN (UTC+7) sang UTC khi lưu",
+          scheduled_row["scheduled_at"] == "2026-12-25T10:00:00+00:00",
+          scheduled_row["scheduled_at"] if scheduled_row else None)
+
     check("POST thiếu CSRF bị chặn",
           c.post("/vanhanh/work", data={}).status_code == 400)
 

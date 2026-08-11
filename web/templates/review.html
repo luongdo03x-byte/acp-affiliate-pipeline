@@ -37,6 +37,7 @@
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <div class="field"><label for="caption-{{ p.id }}">Caption</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
+      <div class="field"><label for="scheduled-{{ p.id }}">Giờ đăng (bỏ trống thì tự chọn slot gần nhất)</label><input type="datetime-local" id="scheduled-{{ p.id }}" name="scheduled_at"></div>
       <div class="review-actions"><span class="dim mono">{{ p.caption_final|length }}/500 ký tự</span><div class="review-actions__buttons"><button class="btn btn--danger" type="submit" formaction="/duyet/{{ p.id }}/reject">Bỏ qua</button><button class="btn btn--primary" type="submit">Duyệt & lên lịch</button></div></div>
     </form>
   </div>

@@ -273,6 +273,32 @@ def test_idempotency_and_double_post():
     conn.close()
 
 
+def test_approve_post_custom_schedule():
+    print("\nChọn giờ đăng thủ công lúc duyệt")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=3, rng=random.Random(2))
+    check("có bài để test", len(ids) > 0)
+    ch = MockThreads(seed=2)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    check("có bài chờ duyệt để test giờ tuỳ chỉnh", post is not None)
+
+    custom_time = "2026-12-25T10:00:00+00:00"
+    res = pipeline.approve_post(conn, post["id"], scheduled_at=custom_time)
+    check("duyệt với giờ tuỳ chỉnh thành công", res["ok"], res.get("error"))
+    check("dùng đúng giờ đã chọn, không tự tính slot", res["scheduled_at"] == custom_time)
+    row = conn.execute("SELECT scheduled_at FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("giờ đã lưu vào DB đúng như đã chọn", row["scheduled_at"] == custom_time)
+
+    job = conn.execute("SELECT run_after FROM job_queue WHERE idempotency_key=?",
+                        (f"pub:{post['id']}",)).fetchone()
+    check("job publish cũng dùng đúng giờ đã chọn", job["run_after"] == custom_time)
+
+    check("giờ sai định dạng bị từ chối, không lưu bậy",
+          pipeline.approve_post(conn, post["id"], scheduled_at="không phải ngày giờ")["ok"] is False)
+    conn.close()
+
+
 def test_daily_cap():
     print("\nTrần đăng bài theo ngày")
     conn = connect()
@@ -336,6 +362,7 @@ if __name__ == "__main__":
     test_conversion_dedup()
     test_job_retry_semantics()
     test_idempotency_and_double_post()
+    test_approve_post_custom_schedule()
     test_daily_cap()
     test_db_constraints()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
