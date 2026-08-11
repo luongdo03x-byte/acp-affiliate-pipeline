@@ -1216,6 +1216,155 @@ def test_auto_prepare_failure_is_redacted_and_returns_nonzero():
                 setattr(run, name, value)
 
 
+@contextlib.contextmanager
+def _catalog_web_app(*, require_auth=False):
+    """Create an isolated catalog-backed web client without touching production data."""
+    from acp.web import server
+
+    previous_db_path = db.DB_PATH
+    previous_password = os.environ.get("ACP_ADMIN_PASSWORD")
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "catalog-web.db")
+        if require_auth:
+            os.environ["ACP_ADMIN_PASSWORD"] = "catalog-password"
+        else:
+            os.environ.pop("ACP_ADMIN_PASSWORD", None)
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                conn.execute("INSERT INTO campaign (id, code, name, created_at) VALUES (?,?,?,?)",
+                             ("campaign-web", "gd2026", "Catalog web", db.now()))
+                conn.execute("INSERT INTO caption_template (id, code, name, body) VALUES (?,?,?,?)",
+                             ("template-web", "price_drop", "Price drop", "price_drop"))
+                conn.execute("""INSERT INTO channel (id, code, platform, handle, status,
+                                                       daily_post_cap, min_gap_minutes, created_at)
+                                VALUES (?,?, 'threads', ?, 'ACTIVE', 12, 90, ?)""",
+                             ("channel-web", "ch1", "@catalog-web", db.now()))
+                _insert_catalog_product(
+                    conn, product_id="catalog-web-product", external_id="external-web-product",
+                    name="Váy test", shop="Shop test", price_min=125000,
+                    commission_amount=12500, commission_rate_percent=10, units_sold=25)
+            finally:
+                conn.close()
+            app = server.create_app()
+            app.config["TESTING"] = True
+            app.logger.disabled = True
+            yield app, server, "catalog-web-product"
+        finally:
+            db.DB_PATH = previous_db_path
+            if previous_password is None:
+                os.environ.pop("ACP_ADMIN_PASSWORD", None)
+            else:
+                os.environ["ACP_ADMIN_PASSWORD"] = previous_password
+
+
+def _login_catalog_web(client):
+    response = client.post("/dangnhap", data={"password": "catalog-password"})
+    assert response.status_code == 302
+    with client.session_transaction() as session_data:
+        return session_data["csrf"]
+
+
+def test_products_page_is_local_and_renders_filters():
+    """The default workspace must read the local catalog, not call live search on GET."""
+    with _catalog_web_app() as (app, _server, _product_id):
+        client = app.test_client()
+        response = client.get("/sanpham?q=váy&sort=score&inventory=1")
+
+    assert response.status_code == 200
+    assert "Đồng bộ sản phẩm" in response.text
+    assert "ACP Score" in response.text
+    assert "Váy test" in response.text
+    assert "Nhập link affiliate" in response.text
+
+
+def test_catalog_routes_require_csrf_and_hide_api_errors():
+    """Catalog mutation routes retain CSRF and never render provider credentials."""
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        assert client.post("/sanpham/sync").status_code == 400
+
+        original_service = server.ProductService
+
+        class _FailingService:
+            def __init__(self, *_):
+                pass
+
+            def sync(self, **_):
+                raise RuntimeError("Authorization: Token catalog-secret")
+
+        server.ProductService = _FailingService
+        try:
+            response = client.post("/sanpham/sync", data={"_csrf": csrf})
+        finally:
+            server.ProductService = original_service
+        assert response.status_code == 302
+        page = client.get(response.headers["Location"])
+        assert "Không thể tiếp tục. Vui lòng thử lại." in page.text
+        assert "catalog-secret" not in page.text
+        assert "Authorization" not in page.text
+
+        original_create = server.pipeline.create_post_for_catalog_product
+        server.pipeline.create_post_for_catalog_product = lambda *_args, **_kwargs: {"ok": True}
+        try:
+            response = client.post(f"/sanpham/{product_id}/tao-bai", data={"_csrf": csrf})
+        finally:
+            server.pipeline.create_post_for_catalog_product = original_create
+        assert response.status_code == 302
+        assert "/duyet" in response.headers["Location"]
+
+
+def test_catalog_sync_redirects_with_operator_summary():
+    """A successful local sync returns its safe operator summary to the catalog page."""
+    with _catalog_web_app(require_auth=True) as (app, server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        original_service = server.ProductService
+
+        class _SyncService:
+            def __init__(self, *_):
+                pass
+
+            def sync(self, **_):
+                return type("_Result", (), {"fetched": 3, "inserted": 1, "updated": 2})()
+
+        server.ProductService = _SyncService
+        try:
+            response = client.post("/sanpham/sync", data={"_csrf": csrf, "q": "váy"})
+        finally:
+            server.ProductService = original_service
+        page = client.get(response.headers["Location"])
+
+    assert response.status_code == 302
+    assert "Đã đồng bộ 3 sản phẩm (1 mới, 2 cập nhật)." in page.text
+
+
+def test_catalog_standalone_link_uses_product_marker():
+    """Copied catalog links carry the product marker; post creation gets a fresh post marker elsewhere."""
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        calls = []
+
+        class _LinkClient:
+            def create_product_link(self, detail_link, *, post_id, external_product_id):
+                from acp.adapters.accesstrade_client import LinkResult
+                calls.append((detail_link, post_id, external_product_id))
+                return LinkResult("https://tracking.example/product", "https://short.example/product")
+
+        original_client = server.AccessTradeClient
+        server.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(lambda: _LinkClient())})
+        try:
+            response = client.post(f"/sanpham/{product_id}/affiliate-link", data={"_csrf": csrf})
+        finally:
+            server.AccessTradeClient = original_client
+
+    assert response.status_code == 302
+    assert calls == [("https://example.test/product", "product:external-web-product", "external-web-product")]
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
@@ -1250,7 +1399,11 @@ def main():
                       test_product_sync_uses_seed_catalog_in_mock_mode,
                       test_product_sync_initializes_its_catalog_schema_before_syncing,
                       test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review,
-                      test_auto_prepare_failure_is_redacted_and_returns_nonzero]}
+                      test_auto_prepare_failure_is_redacted_and_returns_nonzero],
+              "web": [test_products_page_is_local_and_renders_filters,
+                      test_catalog_routes_require_csrf_and_hide_api_errors,
+                      test_catalog_sync_redirects_with_operator_summary,
+                      test_catalog_standalone_link_uses_product_marker]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:
