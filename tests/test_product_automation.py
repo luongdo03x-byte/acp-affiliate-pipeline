@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import json
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -442,6 +443,213 @@ def test_factory_context_exposes_product_client():
     assert context["product_client"].__class__.__name__ == "AccessTradeClient"
 
 
+class _ProductClient:
+    """Small in-memory Product Search V2 boundary for ProductService tests."""
+
+    def __init__(self, pages=None, error=None):
+        self.pages = list(pages or [])
+        self.error = error
+        self.calls = []
+
+    def search_products(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return self.pages.pop(0) if self.pages else ([], None)
+
+
+def _catalog_conn():
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA)
+    db.migrate(conn)
+    return conn
+
+
+def _insert_catalog_product(conn, *, product_id, external_id, name="Product", shop="Shop",
+                            detail_link="https://example.test/product", has_inventory=1,
+                            affiliate_status="NOT_CREATED", last_posted_at=None, units_sold=1,
+                            commission_rate_percent=10, commission_amount=1000,
+                            price_min=10000, last_seen_at="2026-08-11T10:00:00+00:00"):
+    timestamp = "2026-08-11T10:00:00+00:00"
+    conn.execute("""INSERT INTO product (
+                    id, source, merchant, external_product_id, name, description,
+                    current_price, commission_value, category_code, product_url,
+                    is_available, created_at, updated_at, provider, shop_name, detail_link,
+                    price_min, commission_rate_percent, commission_amount, units_sold,
+                    has_inventory, affiliate_link_status, last_posted_at, first_seen_at, last_seen_at,
+                    last_synced_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (product_id, "accesstrade_tiktok", shop, external_id, name, "", price_min or 0,
+                  commission_amount or 0, "catalog", detail_link or "", 1, timestamp, timestamp,
+                  "ACCESSTRADE_TIKTOK", shop, detail_link, price_min, commission_rate_percent,
+                  commission_amount, units_sold, has_inventory, affiliate_status, last_posted_at,
+                  timestamp, last_seen_at, timestamp))
+
+
+def test_sync_paginates_and_upserts_without_duplicate():
+    """A repeated provider ID must update one row, retain its first sighting, and keep paging."""
+    from acp.core.products import ProductService
+
+    conn = _catalog_conn()
+    try:
+        client = _ProductClient([
+            ([
+                {"id": "p1", "title": "First", "detail_link": "https://example.test/p1",
+                 "sales_price": {"minimum_amount": "10000"},
+                 "commission": {"amount": "1000", "rate": "1000"}, "units_sold": 4,
+                 "shop": {"name": "Shop"}, "has_inventory": True},
+                {"id": "p2", "title": "Second", "detail_link": "https://example.test/p2",
+                 "sales_price": {"minimum_amount": "20000"},
+                 "commission": {"amount": "2000", "rate": "2000"}, "units_sold": 8,
+                 "shop": {"name": "Shop"}, "has_inventory": True},
+            ], "NEXT"),
+            ([
+                {"id": "p1", "title": "First updated", "detail_link": "https://example.test/p1",
+                 "sales_price": {"minimum_amount": "15000"},
+                 "commission": {"amount": "1500", "rate": "1500"},
+                 "shop": {"name": "Shop"}, "has_inventory": True},
+            ], None),
+        ])
+        service = ProductService(conn, client)
+        result = service.sync(max_pages=10)
+
+        row = conn.execute("""SELECT first_seen_at, price_min, commission_amount, units_sold
+                              FROM product WHERE provider=? AND external_product_id=?""",
+                           ("ACCESSTRADE_TIKTOK", "p1")).fetchone()
+        assert (result.fetched, result.inserted, result.updated, result.pages) == (3, 2, 1, 2)
+        assert conn.execute("SELECT COUNT(*) FROM product WHERE provider=?",
+                            ("ACCESSTRADE_TIKTOK",)).fetchone()[0] == 2
+        assert row["first_seen_at"] is not None
+        assert row["price_min"] == 15000
+        assert row["commission_amount"] == 1500
+        assert row["units_sold"] is None
+        assert [call["page_token"] for call in client.calls] == [None, "NEXT"]
+    finally:
+        conn.close()
+
+
+def test_recommendation_excludes_stockout_unavailable_and_cooldown():
+    """Automatic candidates must exclude unavailable, stockless, and recently posted products."""
+    from acp.core.products import ProductService
+
+    conn = _catalog_conn()
+    try:
+        _insert_catalog_product(conn, product_id="eligible", external_id="eligible", units_sold=100,
+                                commission_rate_percent=20, commission_amount=5000)
+        _insert_catalog_product(conn, product_id="stockout", external_id="stockout", has_inventory=0,
+                                units_sold=1000, commission_rate_percent=50, commission_amount=9000)
+        _insert_catalog_product(conn, product_id="unavailable", external_id="unavailable",
+                                affiliate_status="UNAVAILABLE", units_sold=1000,
+                                commission_rate_percent=50, commission_amount=9000)
+        _insert_catalog_product(
+            conn, product_id="cooldown", external_id="cooldown",
+            last_posted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), units_sold=1000,
+            commission_rate_percent=50, commission_amount=9000)
+
+        service = ProductService(conn, _ProductClient())
+        service.recalculate_scores()
+
+        assert [row["id"] for row in service.recommended(20)] == ["eligible"]
+    finally:
+        conn.close()
+
+
+def test_local_search_filters_and_sorts_catalog_rows():
+    """Local filters must constrain catalog results without interpolating their values into SQL."""
+    from acp.core.products import ProductFilters, ProductService
+
+    conn = _catalog_conn()
+    try:
+        _insert_catalog_product(conn, product_id="a", external_id="a", name="Áo khoác", shop="Fashion",
+                                units_sold=10, commission_rate_percent=10, commission_amount=1000,
+                                price_min=30000)
+        _insert_catalog_product(conn, product_id="b", external_id="b", name="Áo len", shop="Fashion",
+                                units_sold=30, commission_rate_percent=20, commission_amount=3000,
+                                price_min=10000)
+        _insert_catalog_product(conn, product_id="c", external_id="c", name="Nồi", shop="Kitchen",
+                                units_sold=100, commission_rate_percent=50, commission_amount=9000,
+                                price_min=50000, affiliate_status="UNAVAILABLE")
+
+        rows = ProductService(conn, _ProductClient()).search_local(ProductFilters(
+            title_keyword="Áo", shop_keyword="fashion", min_units_sold=20,
+            min_commission_amount=2000, max_price=20000, affiliate_link_status="NOT_CREATED",
+            sort="sold"))
+
+        assert [row["id"] for row in rows] == ["b"]
+    finally:
+        conn.close()
+
+
+def test_product_filters_parse_catalog_request_values():
+    """Route input must become typed filters, with malformed numbers safely ignored."""
+    from acp.core.products import ProductFilters
+
+    filters = ProductFilters.from_request({
+        "q": "váy", "shop": "Store", "inventory": "1", "min_price": "25000",
+        "max_units_sold": "not-a-number", "affiliate_status": "READY", "sort": "price_asc",
+    })
+
+    assert filters.keyword == "váy"
+    assert filters.shop_keyword == "Store"
+    assert filters.has_inventory is True
+    assert filters.min_price == 25000
+    assert filters.max_units_sold is None
+    assert filters.affiliate_link_status == "READY"
+    assert filters.sort == "price_asc"
+
+
+def test_sync_retries_recommended_once_when_commission_sort_is_rejected():
+    """A rejected commission sort must fall back once, not abandon a manual catalog sync."""
+    from acp.adapters.base import PublishError
+    from acp.core.products import ProductService
+
+    class _CommissionRejectingClient(_ProductClient):
+        def search_products(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["sort_field"] == "COMMISSION":
+                raise PublishError("ACCESSTRADE từ chối yêu cầu")
+            return ([], None)
+
+    conn = _catalog_conn()
+    try:
+        client = _CommissionRejectingClient()
+        result = ProductService(conn, client).sync(sort_field="COMMISSION", max_pages=1)
+
+        assert result.warning
+        assert [call["sort_field"] for call in client.calls] == ["COMMISSION", "RECOMMENDED"]
+    finally:
+        conn.close()
+
+
+def test_sync_lock_rejects_fresh_lock_and_releases_after_error():
+    """A failed sync must not leave a lock that blocks the next operator request."""
+    from acp.adapters.base import PublishError
+    from acp.core.products import ProductService, SyncAlreadyRunning
+
+    conn = _catalog_conn()
+    try:
+        conn.execute("INSERT INTO product_sync_lock (name, locked_at) VALUES (?, ?)",
+                     ("accesstrade_tiktok", datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        try:
+            ProductService(conn, _ProductClient()).sync(max_pages=1)
+        except SyncAlreadyRunning as error:
+            assert "đang chạy" in str(error)
+        else:
+            raise AssertionError("Expected SyncAlreadyRunning")
+        conn.execute("DELETE FROM product_sync_lock WHERE name=?", ("accesstrade_tiktok",))
+
+        try:
+            ProductService(conn, _ProductClient(error=PublishError("provider failed"))).sync(max_pages=1)
+        except PublishError:
+            pass
+        else:
+            raise AssertionError("Expected provider failure")
+        assert conn.execute("SELECT COUNT(*) FROM product_sync_lock").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
@@ -457,7 +665,13 @@ def main():
                          test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate,
                          test_create_product_only_link_uses_explicit_product_sub1,
                          test_legacy_tiktok_source_keeps_its_existing_fractional_rate_contract,
-                         test_factory_context_exposes_product_client]}
+                         test_factory_context_exposes_product_client],
+              "service": [test_sync_paginates_and_upserts_without_duplicate,
+                          test_recommendation_excludes_stockout_unavailable_and_cooldown,
+                          test_local_search_filters_and_sorts_catalog_rows,
+                          test_product_filters_parse_catalog_request_values,
+                          test_sync_retries_recommended_once_when_commission_sort_is_rejected,
+                          test_sync_lock_rejects_fresh_lock_and_releases_after_error]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:
