@@ -8,6 +8,8 @@ import sqlite3
 import sys
 import tempfile
 import json
+import contextlib
+import io
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -852,6 +854,235 @@ def test_stale_lock_owner_cannot_release_new_owner_lease():
         conn.close()
 
 
+def test_product_sync_command_runs_catalog_sync_and_prints_summary():
+    """Removing the CLI catalog sync path would leave a scheduled run invisible to operators."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_):
+            return False
+
+    class _Result:
+        fetched = 2
+        inserted = 1
+        updated = 1
+        skipped = 0
+
+    class _Service:
+        def __init__(self, conn, client):
+            self.conn = conn
+            self.client = client
+
+        def sync(self, **kwargs):
+            assert kwargs == {"title_keywords": None}
+            return _Result()
+
+    original = {name: getattr(run, name, None)
+                for name in ("db", "ProductService", "AccessTradeClient")}
+    try:
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.ProductService = _Service
+        run.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(object)})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            assert run.main(["product-sync"]) == 0
+        assert "Fetched: 2" in output.getvalue()
+        assert "New: 1" in output.getvalue()
+        assert "Updated: 1" in output.getvalue()
+        assert "Skipped: 0" in output.getvalue()
+        assert "Failed: 0" in output.getvalue()
+    finally:
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
+def test_product_sync_auto_prepare_requires_flag_and_environment():
+    """A scheduler must never create review posts when either explicit safety gate is absent."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return "connection"
+
+        def __exit__(self, *_):
+            return False
+
+    class _Result:
+        fetched = inserted = updated = skipped = 0
+
+    class _Service:
+        def __init__(self, *_):
+            pass
+
+        def sync(self, **_):
+            return _Result()
+
+        def recommended(self, limit):
+            assert limit == 3
+            return [{"id": "catalog-product"}]
+
+    class _Pipeline:
+        calls = []
+
+        @classmethod
+        def create_post_for_catalog_product(cls, *args):
+            cls.calls.append(args)
+            return {"ok": True, "status": "PENDING_REVIEW"}
+
+    original = {name: getattr(run, name, None)
+                for name in ("db", "ProductService", "AccessTradeClient", "factory", "pipeline")}
+    old_auto_prepare = os.environ.pop("ACP_AUTO_PREPARE_CONTENT", None)
+    try:
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.ProductService = _Service
+        run.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(object)})
+        run.factory = type("_Factory", (), {"build_context": staticmethod(lambda: {"ctx": "value"})})
+        run.pipeline = _Pipeline
+        run.cmd_product_sync(auto_prepare=False)
+        run.cmd_product_sync(auto_prepare=True)
+        assert _Pipeline.calls == []
+
+        os.environ["ACP_AUTO_PREPARE_CONTENT"] = "true"
+        run.cmd_product_sync(auto_prepare=True)
+        assert _Pipeline.calls == [("connection", {"ctx": "value"}, "catalog-product", run.CAMPAIGN_CODE)]
+    finally:
+        if old_auto_prepare is None:
+            os.environ.pop("ACP_AUTO_PREPARE_CONTENT", None)
+        else:
+            os.environ["ACP_AUTO_PREPARE_CONTENT"] = old_auto_prepare
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
+def test_product_sync_skip_and_errors_have_cron_safe_exit_codes():
+    """Disabled cron jobs must skip cleanly, while a busy catalog lock must be retryable."""
+    from acp import run
+
+    old_enabled = os.environ.get("ACP_PRODUCT_SYNC_ENABLED")
+    try:
+        os.environ["ACP_PRODUCT_SYNC_ENABLED"] = "false"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            assert run.main(["product-sync"]) == 0
+        assert "disabled" in output.getvalue().lower()
+    finally:
+        if old_enabled is None:
+            os.environ.pop("ACP_PRODUCT_SYNC_ENABLED", None)
+        else:
+            os.environ["ACP_PRODUCT_SYNC_ENABLED"] = old_enabled
+
+
+def test_product_sync_returns_nonzero_without_leaking_provider_errors():
+    """Cron must retry a busy or provider-failed sync without printing request secrets."""
+    from acp import run
+    from acp.adapters.base import PublishError
+
+    class _Session:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_):
+            return False
+
+    errors = [run.SyncAlreadyRunning(), PublishError("token=must-not-print")]
+
+    class _Service:
+        def __init__(self, *_):
+            pass
+
+        def sync(self, **_):
+            raise errors.pop(0)
+
+    original = {name: getattr(run, name, None)
+                for name in ("db", "ProductService", "AccessTradeClient")}
+    old_enabled = os.environ.get("ACP_PRODUCT_SYNC_ENABLED")
+    try:
+        os.environ["ACP_PRODUCT_SYNC_ENABLED"] = "true"
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.ProductService = _Service
+        run.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(object)})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            assert run.main(["product-sync"]) == 1
+            assert run.main(["product-sync"]) == 1
+        assert "token=must-not-print" not in output.getvalue()
+    finally:
+        if old_enabled is None:
+            os.environ.pop("ACP_PRODUCT_SYNC_ENABLED", None)
+        else:
+            os.environ["ACP_PRODUCT_SYNC_ENABLED"] = old_enabled
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
+def test_product_sync_uses_seed_catalog_in_mock_mode():
+    """Mock-mode verification must not make an ACCESSTRADE network request."""
+    from acp import run
+
+    previous_db_path = db.DB_PATH
+    previous_adapter = os.environ.get("ACP_ADAPTER")
+    previous_source = os.environ.get("ACP_SOURCE")
+    previous_enabled = os.environ.get("ACP_PRODUCT_SYNC_ENABLED")
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "catalog.db")
+        try:
+            db.init_db()
+            os.environ["ACP_ADAPTER"] = "mock"
+            os.environ["ACP_SOURCE"] = "mock"
+            os.environ["ACP_PRODUCT_SYNC_ENABLED"] = "true"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                assert run.main(["product-sync"]) == 0
+            assert "Fetched: " in output.getvalue()
+            assert "Failed: 0" in output.getvalue()
+        finally:
+            db.DB_PATH = previous_db_path
+            for name, value in (("ACP_ADAPTER", previous_adapter),
+                                ("ACP_SOURCE", previous_source),
+                                ("ACP_PRODUCT_SYNC_ENABLED", previous_enabled)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
+def test_product_sync_initializes_its_catalog_schema_before_syncing():
+    """A fresh cron database must receive the catalog migration before acquiring its sync lock."""
+    from acp import run
+
+    previous_db_path = db.DB_PATH
+    previous_adapter = os.environ.get("ACP_ADAPTER")
+    previous_source = os.environ.get("ACP_SOURCE")
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "fresh-catalog.db")
+        try:
+            os.environ["ACP_ADAPTER"] = "mock"
+            os.environ["ACP_SOURCE"] = "mock"
+            assert run.main(["product-sync"]) == 0
+        finally:
+            db.DB_PATH = previous_db_path
+            for name, value in (("ACP_ADAPTER", previous_adapter), ("ACP_SOURCE", previous_source)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
@@ -878,7 +1109,13 @@ def main():
               "pipeline": [test_catalog_product_creates_fresh_per_post_link_and_pending_review,
                            test_catalog_link_failure_stops_before_caption_or_post_generation,
                            test_catalog_product_publish_updates_post_metadata_once_after_success,
-                           test_catalog_product_publish_failure_leaves_post_metadata_unchanged]}
+                           test_catalog_product_publish_failure_leaves_post_metadata_unchanged],
+              "cli": [test_product_sync_command_runs_catalog_sync_and_prints_summary,
+                      test_product_sync_auto_prepare_requires_flag_and_environment,
+                      test_product_sync_skip_and_errors_have_cron_safe_exit_codes,
+                      test_product_sync_returns_nonzero_without_leaking_provider_errors,
+                      test_product_sync_uses_seed_catalog_in_mock_mode,
+                      test_product_sync_initializes_its_catalog_schema_before_syncing]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:
