@@ -952,7 +952,11 @@ def test_product_sync_auto_prepare_requires_flag_and_environment():
 
         os.environ["ACP_AUTO_PREPARE_CONTENT"] = "true"
         run.cmd_product_sync(auto_prepare=True)
-        assert _Pipeline.calls == [("connection", {"ctx": "value"}, "catalog-product", run.CAMPAIGN_CODE)]
+        assert len(_Pipeline.calls) == 1
+        _, context, product_id, campaign_code = _Pipeline.calls[0]
+        assert context["ctx"] == "value"
+        assert "product_client" in context
+        assert (product_id, campaign_code) == ("catalog-product", run.CAMPAIGN_CODE)
     finally:
         if old_auto_prepare is None:
             os.environ.pop("ACP_AUTO_PREPARE_CONTENT", None)
@@ -1083,6 +1087,135 @@ def test_product_sync_initializes_its_catalog_schema_before_syncing():
                     os.environ[name] = value
 
 
+def test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review():
+    """Mock auto-prepare must not replace its safe catalog client with a live link client."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return "connection"
+
+        def __exit__(self, *_):
+            return False
+
+    class _Result:
+        fetched = inserted = updated = skipped = 0
+
+    class _Service:
+        def __init__(self, _, client):
+            self.client = client
+
+        def sync(self, **_):
+            return _Result()
+
+        def recommended(self, _):
+            return [{"id": "catalog-product"}]
+
+    class _LiveClient:
+        calls = []
+
+        def create_product_link(self, *_args, **_kwargs):
+            self.calls.append((_args, _kwargs))
+            raise AssertionError("mock auto-prepare must not call the live client")
+
+    class _Pipeline:
+        results = []
+
+        @classmethod
+        def create_post_for_catalog_product(cls, _, ctx, product_id, campaign_code):
+            link = ctx["product_client"].create_product_link(
+                "https://example.test/product", post_id="post-1", external_product_id=product_id)
+            cls.results.append((link.full_url, campaign_code, "PENDING_REVIEW"))
+            return {"ok": True, "status": "PENDING_REVIEW"}
+
+    original = {name: getattr(run, name, None)
+                for name in ("db", "ProductService", "factory", "pipeline")}
+    old_values = {name: os.environ.get(name) for name in (
+        "ACP_ADAPTER", "ACP_SOURCE", "ACP_PRODUCT_SYNC_ENABLED", "ACP_AUTO_PREPARE_CONTENT")}
+    try:
+        os.environ.update({"ACP_ADAPTER": "mock", "ACP_SOURCE": "mock",
+                           "ACP_PRODUCT_SYNC_ENABLED": "true", "ACP_AUTO_PREPARE_CONTENT": "true"})
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.ProductService = _Service
+        run.factory = type("_Factory", (), {"build_context": staticmethod(
+            lambda: {"product_client": _LiveClient()})})
+        run.pipeline = _Pipeline
+
+        assert run.cmd_product_sync(auto_prepare=True) == 0
+        assert _LiveClient.calls == []
+        assert _Pipeline.results == [("https://mock.acp/product/catalog-product?post_id=post-1",
+                                      run.CAMPAIGN_CODE, "PENDING_REVIEW")]
+    finally:
+        for name, value in old_values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
+def test_auto_prepare_failure_is_redacted_and_returns_nonzero():
+    """A failed affiliate-link preparation must make cron retry without leaking the provider error."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return "connection"
+
+        def __exit__(self, *_):
+            return False
+
+    class _Result:
+        fetched = inserted = updated = skipped = 0
+
+    class _Service:
+        def __init__(self, *_):
+            pass
+
+        def sync(self, **_):
+            return _Result()
+
+        def recommended(self, _):
+            return [{"id": "catalog-product"}]
+
+    class _Pipeline:
+        @staticmethod
+        def create_post_for_catalog_product(*_):
+            return {"ok": False, "error": "provider token=must-not-print"}
+
+    original = {name: getattr(run, name, None)
+                for name in ("db", "ProductService", "AccessTradeClient", "factory", "pipeline")}
+    old_auto_prepare = os.environ.get("ACP_AUTO_PREPARE_CONTENT")
+    try:
+        os.environ["ACP_AUTO_PREPARE_CONTENT"] = "true"
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.ProductService = _Service
+        run.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(object)})
+        run.factory = type("_Factory", (), {"build_context": staticmethod(lambda: {})})
+        run.pipeline = _Pipeline
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            assert run.cmd_product_sync(auto_prepare=True) == 1
+        assert "Preparation failed: 1" in output.getvalue()
+        assert "token=must-not-print" not in output.getvalue()
+    finally:
+        if old_auto_prepare is None:
+            os.environ.pop("ACP_AUTO_PREPARE_CONTENT", None)
+        else:
+            os.environ["ACP_AUTO_PREPARE_CONTENT"] = old_auto_prepare
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
 def main():
     groups = {"migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
@@ -1115,7 +1248,9 @@ def main():
                       test_product_sync_skip_and_errors_have_cron_safe_exit_codes,
                       test_product_sync_returns_nonzero_without_leaking_provider_errors,
                       test_product_sync_uses_seed_catalog_in_mock_mode,
-                      test_product_sync_initializes_its_catalog_schema_before_syncing]}
+                      test_product_sync_initializes_its_catalog_schema_before_syncing,
+                      test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review,
+                      test_auto_prepare_failure_is_redacted_and_returns_nonzero]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:

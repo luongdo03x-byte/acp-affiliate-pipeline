@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from acp.adapters.mock import MockAccessTrade, MockThreads, simulate_postbacks
 from acp.adapters import factory
-from acp.adapters.accesstrade_client import AccessTradeClient
+from acp.adapters.accesstrade_client import AccessTradeClient, LinkResult
 from acp.core import attribution, crypto, jobs, pipeline, scoring
 from acp.core import db
 from acp.core.db import audit, connect, init_db, now, ulid
@@ -403,6 +403,10 @@ class _MockCatalogClient:
             "category": {"code": product.category_code},
         } for product in products], None)
 
+    def create_product_link(self, detail_link, *, post_id, external_product_id):
+        return LinkResult(
+            full_url=f"https://mock.acp/product/{external_product_id}?post_id={post_id}")
+
 
 def _product_sync_client():
     if (os.environ.get("ACP_ADAPTER", "").lower() == "mock"
@@ -420,17 +424,26 @@ def cmd_product_sync(keyword=None, auto_prepare=False):
     try:
         db.init_db()
         with db.session() as conn:
-            service = ProductService(conn, _product_sync_client())
+            product_client = _product_sync_client()
+            service = ProductService(conn, product_client)
             result = service.sync(title_keywords=keyword)
             print(_product_sync_summary(result))
             if auto_prepare and env_bool("ACP_AUTO_PREPARE_CONTENT", False):
                 prepared = 0
+                failed = 0
+                context = factory.build_context()
+                context["product_client"] = product_client
                 for product in service.recommended(env_int("ACP_AUTO_PREPARE_CONTENT_COUNT", 3)):
                     post = pipeline.create_post_for_catalog_product(
-                        conn, factory.build_context(), product["id"], CAMPAIGN_CODE)
+                        conn, context, product["id"], CAMPAIGN_CODE)
                     if post.get("ok"):
                         prepared += 1
+                    else:
+                        failed += 1
                 print(f"Prepared for review: {prepared}")
+                if failed:
+                    print(f"Preparation failed: {failed}")
+                    return 1
         return 0
     except SyncAlreadyRunning as error:
         print(f"Product sync failed: {error}")
