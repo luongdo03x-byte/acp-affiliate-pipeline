@@ -99,6 +99,29 @@ def test_caption_tone():
           "người mua rồi" in content._social_proof(product_with_social).lower())
 
 
+def test_strip_shop_suffix():
+    print("\nCắt hậu tố tên shop dính trong tên sản phẩm")
+    check("cắt được hậu tố kiểu domain sau dấu gạch dưới",
+          content._strip_shop_suffix("Quần linen giả váy hàng 2 lớp_Linhchi.studio")
+          == "Quần linen giả váy hàng 2 lớp")
+    check("cắt đúng theo shop đã biết dù không có dấu chấm",
+          content._strip_shop_suffix("Nồi chiên không dầu 5L_ABC Shop", shop="ABC Shop")
+          == "Nồi chiên không dầu 5L")
+    check("không đụng tên không có hậu tố shop",
+          content._strip_shop_suffix("Nồi chiên không dầu 5L") == "Nồi chiên không dầu 5L")
+    check("không nhầm đơn vị đo cuối tên thành tên shop",
+          content._strip_shop_suffix("Bình giữ nhiệt 500ml") == "Bình giữ nhiệt 500ml")
+    check("tên rỗng/None không lỗi", content._strip_shop_suffix(None) is None)
+
+    product = {"name": "Quần linen giả váy chất đũi tơ_Linhchi.studio", "current_price": 100250,
+               "original_price": None, "sold_count": 0, "rating": None,
+               "review_count": 0, "category_code": "thoi-trang", "description": "", "shop": None}
+    caption = content.generate(product, "comparison", "https://go.isclix.com/x?sub1=abc",
+                                discount_pct=0.1, hook_code="H9_TRUCTIEP")
+    check("generate() dùng tên đã cắt hậu tố shop trong cả hook lẫn thân bài",
+          "Linhchi.studio" not in caption, caption)
+
+
 def test_caption_llm_safety():
     print("\nAn toàn khi bật LLM viết lại caption")
     product = {"name": "Quần linen giả váy", "current_price": 100250,
@@ -306,6 +329,7 @@ if __name__ == "__main__":
     test_crypto()
     test_content_guards()
     test_caption_tone()
+    test_strip_shop_suffix()
     test_caption_llm_safety()
     test_scoring()
     test_subid_roundtrip()

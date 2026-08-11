@@ -85,6 +85,32 @@ def _social_proof(product) -> str:
     return ("Cũng " + ", ".join(bits) + ".") if bits else ""
 
 
+_SHOP_SUFFIX_RE = re.compile(r"[ \t]*[_|]\s*([A-Za-z0-9][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+)\s*$")
+
+
+def _strip_shop_suffix(name, shop: str = None):
+    """Nhiều seller Shopee nhét tên shop vào cuối tên sản phẩm (vd. '..._Linhchi.studio'),
+    đọc như tên file chứ không phải lời người thật -- cắt bỏ trước khi dùng trong caption.
+
+    Ưu tiên cắt đúng theo `shop` đã biết (chính xác nhất). Không có/không khớp thì
+    suy đoán bằng heuristic: hậu tố sau dấu '_' hoặc '|', không khoảng trắng, có
+    dạng tên miền (chứa dấu chấm) -- để không nhầm với đơn vị đo ("500ml", "5L")
+    hay các đoạn tên sản phẩm có khoảng trắng bình thường."""
+    if not name:
+        return name
+    text = name.rstrip()
+    if shop:
+        shop = shop.strip()
+        for sep in ("_", "-", "|"):
+            suffix = f"{sep}{shop}"
+            if text.lower().endswith(suffix.lower()):
+                return text[: -len(suffix)].rstrip(" _-|.,")
+    m = _SHOP_SUFFIX_RE.search(text)
+    if m:
+        return text[: m.start()].rstrip(" _-|.,")
+    return text
+
+
 def _highlight(product) -> str:
     desc = (product["description"] or "").strip()
     if not desc:
@@ -109,6 +135,12 @@ def generate(product, template_code: str, affiliate_link: str,
     nhưng pipeline.plan_content() luôn truyền vào một mã cụ thể để xoay vòng hook
     làm biến thể đo bằng sub3. Caption trả về CHƯA qua validate().
     """
+    # dict(product) chuẩn hoá cả dict thường lẫn sqlite3.Row về cùng kiểu, để
+    # gán lại "name" đã cắt hậu tố shop -- áp dụng cho MỌI nơi đọc product["name"]
+    # phía sau, kể cả playbook.render_hook().
+    product = dict(product)
+    product["name"] = _strip_shop_suffix(product.get("name"), product.get("shop"))
+
     rng = rng or random.Random()
     hook_code = playbook.pick_hook(hook_code, rng=rng)
     hook_line = playbook.render_hook(hook_code, product, discount_pct)
