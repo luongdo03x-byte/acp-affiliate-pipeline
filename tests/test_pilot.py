@@ -367,6 +367,37 @@ def test_hook_rotation_in_plan_content():
 
 # -------------------------------------------------------------- bảo mật web
 
+def test_caption_llm_wired_regardless_of_manual_flow():
+    """create_app() phải bật content.set_llm() ngay lúc khởi tạo, KHÔNG chỉ
+    qua factory.build_context() -- luồng nhập Shopee affiliate thủ công
+    (web/server.py::create_affiliate_product) cố ý không gọi build_context()
+    để tránh khởi tạo nguồn ACCESSTRADE thật ("provider boundary"), nên nếu
+    Gemini chỉ được bật trong build_context() thì luồng operator thật sự
+    dùng hàng ngày sẽ không bao giờ thấy caption được viết lại."""
+    print("\nLLM caption được bật kể cả khi dùng luồng Shopee thủ công")
+    # create_app() đòi ACP_ADMIN_PASSWORD/ACP_SECRET_KEY khi ACP_ENV=production
+    # (đã bật sẵn khi chạy qua manage.sh test) -- lưu/khôi phục đúng giá trị
+    # gốc, không pop() thẳng tay (xem lỗi tương tự đã sửa ở test_web_security).
+    _saved = {k: os.environ.get(k) for k in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY")}
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    os.environ["ACP_CAPTION_LLM"] = "gemini"
+    content.set_llm(None)
+    try:
+        from acp.web.server import create_app
+        create_app()
+        check("create_app() tự bật content._llm_fn theo ACP_CAPTION_LLM",
+              content._llm_fn is not None and content._llm_fn.__name__ == "rewrite")
+    finally:
+        content.set_llm(None)
+        os.environ.pop("ACP_CAPTION_LLM", None)
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_web_security():
     print("\nBảo mật web")
     # Lưu lại giá trị gốc (nếu có, ví dụ ACP_SECRET_KEY nạp sẵn từ .env.local khi
@@ -1303,6 +1334,7 @@ if __name__ == "__main__":
     test_dark_premium_template_contract()
     test_shopee_edge_hardening()
     test_shopee_helper_pairing()
+    test_caption_llm_wired_regardless_of_manual_flow()
     test_web_security()
     test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
     test_production_guard()

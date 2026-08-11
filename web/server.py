@@ -21,7 +21,7 @@ from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
-from ..core import attribution, helper_pairing, jobs, pipeline, scoring, storage
+from ..core import attribution, content, helper_pairing, jobs, pipeline, scoring, storage
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -70,6 +70,15 @@ def create_app():
     # Test seam + provider boundary: manual Shopee must never be obtained through
     # the ACCESSTRADE source factory.
     app.config["SHOPEE_SOURCE_FACTORY"] = ManualShopeeSource
+
+    # Bật LLM viết lại caption (nếu ACP_CAPTION_LLM có set) ngay ở đây, KHÔNG
+    # chỉ trong factory.build_context() -- luồng nhập Shopee affiliate thủ
+    # công (create_affiliate_product bên dưới) cố ý không gọi build_context()
+    # để tránh khởi tạo nguồn ACCESSTRADE thật, nên nếu chỉ bật trong đó thì
+    # luồng operator dùng hàng ngày sẽ không bao giờ thấy caption được viết
+    # lại. content._llm_fn là biến module-level, set một lần ở đây là đủ cho
+    # mọi route.
+    content.set_llm(factory.get_caption_llm())
 
     # ------------------------------------------------------------ xác thực
 
