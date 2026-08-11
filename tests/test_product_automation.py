@@ -339,9 +339,8 @@ def test_client_status_false_and_401_are_domain_errors():
     )
 
 
-def test_client_maps_final_rate_limit_network_and_bad_json_to_safe_errors():
+def test_client_maps_final_rate_limit_and_bad_json_to_safe_errors():
     """No token, payload, or parser traceback may escape the HTTP boundary."""
-    import requests
     from acp.adapters.accesstrade_client import AccessTradeClient
     from acp.adapters.base import PublishError, RateLimitError
 
@@ -352,19 +351,31 @@ def test_client_maps_final_rate_limit_network_and_bad_json_to_safe_errors():
         RateLimitError,
     )
     _assert_error(
-        "Không thể kết nối ACCESSTRADE; hãy thử lại sau",
-        lambda: AccessTradeClient(
-            session=_FakeSession([requests.exceptions.ConnectionError("token=secret")] * 3),
-            sleep=lambda _: None).search_products(),
-        PublishError,
-    )
-    _assert_error(
         "ACCESSTRADE trả dữ liệu không hợp lệ",
         lambda: AccessTradeClient(session=_FakeSession([
             _Response(200, json_error=ValueError("broken JSON"))
         ])).search_products(),
         PublishError,
     )
+
+
+def test_client_maps_non_timeout_network_error_without_retry():
+    """Retrying a connection or TLS failure violates the bounded retry policy."""
+    import requests
+    from acp.adapters.accesstrade_client import AccessTradeClient
+    from acp.adapters.base import PublishError
+
+    fake_session = _FakeSession([requests.exceptions.ConnectionError("token=secret")])
+    delays = []
+
+    _assert_error(
+        "Không thể kết nối ACCESSTRADE; hãy thử lại sau",
+        lambda: AccessTradeClient(session=fake_session, sleep=delays.append).search_products(),
+        PublishError,
+    )
+
+    assert fake_session.calls == 1
+    assert delays == []
 
 
 def test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate():
@@ -441,7 +452,8 @@ def main():
                          test_client_retries_429_then_returns_page,
                          test_client_retries_timeout_and_server_error_twice,
                          test_client_status_false_and_401_are_domain_errors,
-                         test_client_maps_final_rate_limit_network_and_bad_json_to_safe_errors,
+                         test_client_maps_final_rate_limit_and_bad_json_to_safe_errors,
+                         test_client_maps_non_timeout_network_error_without_retry,
                          test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate,
                          test_create_product_only_link_uses_explicit_product_sub1,
                          test_legacy_tiktok_source_keeps_its_existing_fractional_rate_contract,

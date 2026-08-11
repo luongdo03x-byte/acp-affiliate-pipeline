@@ -188,10 +188,12 @@ class AccessTradeClient:
             try:
                 response = self.session.get(url, timeout=(5, 20), **kwargs) if method == "GET" else \
                     self.session.post(url, timeout=(5, 20), **kwargs)
-            except requests.RequestException:
+            except requests.Timeout:
                 if attempt < 2:
                     self._sleep(1 if attempt == 0 else 2)
                     continue
+                raise PublishError("Không thể kết nối ACCESSTRADE; hãy thử lại sau")
+            except requests.RequestException:
                 raise PublishError("Không thể kết nối ACCESSTRADE; hãy thử lại sau")
 
             if response.status_code in self.RETRYABLE_STATUS_CODES:
