@@ -49,6 +49,11 @@ Nếu Create Link thất bại, pipeline dừng và không bao giờ fallback sa
 `detail_link` TikTok. `FAILED` có thể retry; `UNAVAILABLE` loại khỏi auto
 recommendation.
 
+Nút tạo/copy link độc lập tạo link chỉ để operator sao chép thủ công, với
+`sub1=product:<external_product_id>`. Link này được gắn `product-only`, được
+lưu để hiển thị trên Product, và **không bao giờ** được content pipeline ACP
+tái sử dụng. Khi tạo content, ACP luôn tạo một link mới có `sub1=<post_id>`.
+
 ## Schema và migration
 
 Migration SQLite idempotent sẽ bổ sung các cột product về provider, shop,
