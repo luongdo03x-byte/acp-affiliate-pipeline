@@ -15,6 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+# manage.sh (và mọi group test khác trong file này) chạy với cwd = thư mục
+# CHA của acp/ để "python -m acp.tests..." import được -- nên không thể dùng
+# Path(".env.example") tương đối theo cwd, phải neo theo vị trí file này.
+ACP_ROOT = Path(__file__).resolve().parent.parent
+
 from acp.core import db  # noqa: E402
 
 
@@ -34,7 +39,7 @@ CATALOG_COLUMNS = {
 
 def test_env_example_has_required_safe_defaults():
     """Operators receive bounded catalog defaults without any token placeholder."""
-    text = Path(".env.example").read_text()
+    text = Path(ACP_ROOT / ".env.example").read_text()
     assert "ACCESSTRADE_API_TOKEN=" in text
     assert "ACP_PRODUCT_SYNC_MAX_PAGES=10" in text
     assert "ACP_AUTO_PREPARE_CONTENT=false" in text
@@ -43,7 +48,7 @@ def test_env_example_has_required_safe_defaults():
 
 def test_catalog_schedule_docs_source_active_release_env():
     """Scheduled sync must export the active release env before running Python."""
-    for path in (Path("README.md"), Path("docs/ACP_RUNBOOK.md")):
+    for path in (ACP_ROOT / "README.md", ACP_ROOT / "docs/ACP_RUNBOOK.md"):
         text = path.read_text()
         assert "/bin/bash -lc" in text
         assert "set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a" in text
@@ -1820,10 +1825,10 @@ def test_worker_once_returns_safe_nonzero_on_operational_failure():
 
 def test_user_worker_units_use_active_env_without_embedded_secrets():
     """The timer must source the active release config and never store credentials in git."""
-    service = Path("ops/acp-worker.service").read_text(encoding="utf-8")
-    timer = Path("ops/acp-worker.timer").read_text(encoding="utf-8")
+    service = Path(ACP_ROOT / "ops" / "acp-worker.service").read_text(encoding="utf-8")
+    timer = Path(ACP_ROOT / "ops" / "acp-worker.timer").read_text(encoding="utf-8")
     docs = "\n".join(
-        Path(path).read_text(encoding="utf-8") for path in ("README.md", "docs/ACP_RUNBOOK.md")
+        (ACP_ROOT / path).read_text(encoding="utf-8") for path in ("README.md", "docs/ACP_RUNBOOK.md")
     )
 
     assert "%h/Downloads/ACP/acp/.env.local" in service
