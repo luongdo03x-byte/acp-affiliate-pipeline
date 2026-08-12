@@ -11,6 +11,7 @@ import json
 import contextlib
 import io
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -29,6 +30,15 @@ CATALOG_COLUMNS = {
     "first_seen_at", "last_seen_at", "last_synced_at", "affiliate_link_created_at",
     "last_posted_at", "post_count",
 }
+
+
+def test_env_example_has_required_safe_defaults():
+    """Operators receive bounded catalog defaults without any token placeholder."""
+    text = Path(".env.example").read_text()
+    assert "ACCESSTRADE_API_TOKEN=" in text
+    assert "ACP_PRODUCT_SYNC_MAX_PAGES=10" in text
+    assert "ACP_AUTO_PREPARE_CONTENT=false" in text
+    assert "REDACTED" not in text
 
 
 def test_product_catalog_migration_is_idempotent():
@@ -1461,7 +1471,8 @@ def test_catalog_standalone_link_uses_product_marker():
 
 
 def main():
-    groups = {"migration": [test_product_catalog_migration_is_idempotent,
+    groups = {"docs": [test_env_example_has_required_safe_defaults],
+              "migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
                             test_migration_distinguishes_duplicate_legacy_external_ids_by_merchant],
               "client": [test_parser_keeps_missing_units_sold_as_none,

@@ -211,3 +211,80 @@ Giao diện quản trị dùng stylesheet chung `web/static/acp.css`. Khi kiểm
 ```
 
 Kiểm tra thêm trên cửa sổ hẹp/mobile để chắc chắn sidebar, form Shopee, bảng và review card không vỡ layout. Thay đổi UI không phải lý do để bật adapter live hoặc publish thử tự động.
+
+## 11. Catalog ACCESSTRADE TikTok Shop
+
+### Cấu hình an toàn
+
+Sao chép các biến catalog trong `.env.example` vào `.env.local` của runtime. Chỉ
+điền token thật vào `.env.local`; file đó nằm trong `shared/` và không được
+commit. Các giá trị vận hành mặc định là:
+
+```dotenv
+ACCESSTRADE_API_BASE_URL=https://api.accesstrade.vn
+ACCESSTRADE_API_TOKEN=
+ACP_PRODUCT_SYNC_ENABLED=true
+ACP_PRODUCT_SYNC_INTERVAL_MINUTES=60
+ACP_PRODUCT_SYNC_MAX_PAGES=10
+ACP_PRODUCT_REPOST_COOLDOWN_DAYS=7
+ACP_PRODUCT_RECOMMENDATION_LIMIT=20
+ACP_AUTO_PREPARE_CONTENT=false
+ACP_AUTO_PREPARE_CONTENT_COUNT=3
+```
+
+`ACP_AUTO_PREPARE_CONTENT` phải giữ `false` cho đến khi operator chủ động bật
+nó. Bật cờ này vẫn không tự publish: nội dung tạo tự động dừng ở
+`PENDING_REVIEW` để duyệt tay tại `/duyet`.
+
+### Đồng bộ thủ công và theo lịch
+
+Từ release đang chạy:
+
+```bash
+cd ~/Downloads/ACP/acp
+python3 run.py product-sync
+```
+
+Trên dashboard, mở `/sanpham`, có thể nhập từ khóa, rồi bấm **Đồng bộ**. Catalog
+được tìm/lọc/sắp xếp tại database cục bộ; tạo link hoặc tạo bài chỉ áp dụng cho
+sản phẩm operator chọn.
+
+Tạo cron hoặc systemd timer ngoài Flask worker, chạy mỗi 60 phút. Ví dụ cron:
+
+```cron
+0 * * * * cd /home/operator/Downloads/ACP/acp && /home/operator/Downloads/ACP/acp/.venv/bin/python run.py product-sync
+```
+
+Với systemd, dùng `OnUnitActiveSec=60min` trong timer và `ExecStart` trỏ đến
+cùng interpreter/lệnh. Khóa database của catalog chặn sync chồng nhau; khi nhận
+thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song song.
+
+### Xử lý sự cố
+
+- **401:** token ACCESSTRADE thiếu hoặc sai. Cập nhật chỉ `.env.local`, rồi chạy
+  lại sync; không đưa token vào source control.
+- **429:** ACCESSTRADE đang rate-limit. Client đã retry hữu hạn; chờ rồi chạy lại,
+  không tạo thêm timer song song.
+- **Không phản hồi/5xx:** dịch vụ hoặc mạng tạm thời không khả dụng. Thử lại sau
+  và xem log vận hành, không dán response/provider token vào ticket.
+- **Sản phẩm không được auto-prepare:** kiểm tra còn hàng, `detail_link`, trạng
+  thái link và cooldown. Manual selection ở `/sanpham` được phép override
+  cooldown nhưng bài vẫn phải duyệt tay.
+
+### Acceptance mock end-to-end
+
+Chỉ dùng mock (`ACP_ADAPTER=mock`, `ACP_SOURCE=mock`) khi chạy acceptance:
+
+```text
+sync
+→ một catalog row
+→ generate bài cho row
+→ short link được lưu
+→ PENDING_REVIEW
+→ sync lại vẫn một row
+→ simulated publish thành công cập nhật cooldown
+```
+
+Kiểm tra `last_posted_at` và `post_count` sau simulated publish; candidate đó sẽ
+không được auto-prepare lại trong `ACP_PRODUCT_REPOST_COOLDOWN_DAYS`. Không
+publish Threads thật trong quy trình xác minh này.
