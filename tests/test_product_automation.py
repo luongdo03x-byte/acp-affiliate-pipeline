@@ -1316,6 +1316,55 @@ def test_catalog_routes_require_csrf_and_hide_api_errors():
         assert "/duyet" in response.headers["Location"]
 
 
+def test_catalog_publish_error_is_redacted_from_redirect_and_page():
+    """A provider error is diagnostic-only; its credentials must never enter a redirect or HTML."""
+    from acp.adapters.base import PublishError
+
+    with _catalog_web_app(require_auth=True) as (app, server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        original_service = server.ProductService
+
+        class _FailingService:
+            def __init__(self, *_):
+                pass
+
+            def sync(self, **_):
+                raise PublishError("Authorization: Token provider-secret; response body=private")
+
+        server.ProductService = _FailingService
+        try:
+            response = client.post("/sanpham/sync", data={"_csrf": csrf})
+        finally:
+            server.ProductService = original_service
+        page = client.get(response.headers["Location"])
+
+    assert response.status_code == 302
+    assert "provider-secret" not in response.headers["Location"]
+    assert "Authorization" not in response.headers["Location"]
+    assert "provider-secret" not in page.text
+    assert "Authorization" not in page.text
+    assert "Không thể tiếp tục. Vui lòng thử lại." in page.text
+
+
+def test_catalog_omits_unsafe_provider_urls_from_html():
+    """Only absolute HTTP(S) detail and image URLs may cross the catalog template boundary."""
+    with _catalog_web_app() as (app, _server, product_id):
+        conn = db.connect()
+        try:
+            conn.execute("""UPDATE product SET detail_link=?, main_image_url=? WHERE id=?""",
+                         ("javascript:alert('catalog-xss')", "not-a-url", product_id))
+        finally:
+            conn.close()
+        response = app.test_client().get("/sanpham")
+
+    assert response.status_code == 200
+    assert "javascript:alert" not in response.text
+    assert "not-a-url" not in response.text
+    assert '<a href="javascript:' not in response.text
+    assert '<img src="not-a-url"' not in response.text
+
+
 def test_catalog_sync_redirects_with_operator_summary():
     """A successful local sync returns its safe operator summary to the catalog page."""
     with _catalog_web_app(require_auth=True) as (app, server, _product_id):
@@ -1402,6 +1451,8 @@ def main():
                       test_auto_prepare_failure_is_redacted_and_returns_nonzero],
               "web": [test_products_page_is_local_and_renders_filters,
                       test_catalog_routes_require_csrf_and_hide_api_errors,
+                      test_catalog_publish_error_is_redacted_from_redirect_and_page,
+                      test_catalog_omits_unsafe_provider_urls_from_html,
                       test_catalog_sync_redirects_with_operator_summary,
                       test_catalog_standalone_link_uses_product_marker]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"

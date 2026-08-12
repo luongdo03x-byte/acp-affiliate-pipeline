@@ -13,13 +13,13 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
 from ..adapters import factory
 from ..adapters.accesstrade_client import AccessTradeClient
-from ..adapters.base import PublishError
 from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
@@ -58,6 +58,21 @@ def _fmt_int(v):
         return f"{int(v):,}".replace(",", ".")
     except (TypeError, ValueError):
         return "0"
+
+
+def _safe_external_url(value):
+    """Return only a browser-safe absolute HTTP(S) URL for catalog rendering."""
+    text = str(value or "").strip()
+    if not text or any(ord(character) < 32 for character in text):
+        return None
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+    if (parsed.scheme.lower() not in ("http", "https") or not parsed.netloc or
+            parsed.username is not None or parsed.password is not None):
+        return None
+    return text
 
 
 def create_app():
@@ -201,9 +216,19 @@ def create_app():
     def _catalog_error(error):
         if isinstance(error, ProductUserError):
             return error.user_message
-        if isinstance(error, (PublishError, SyncAlreadyRunning)):
-            return str(error)
+        if isinstance(error, SyncAlreadyRunning):
+            return "Đồng bộ sản phẩm ACCESSTRADE đang chạy; hãy thử lại sau"
         return "Không thể tiếp tục. Vui lòng thử lại."
+
+    def _safe_catalog_items(rows):
+        """Drop unsafe external URLs before catalog records reach the template."""
+        items = []
+        for row in rows:
+            item = dict(row)
+            for field in ("detail_link", "main_image_url", "affiliate_url", "affiliate_short_url"):
+                item[field] = _safe_external_url(item.get(field))
+            items.append(item)
+        return items
 
     def _catalog_redirect(*, err=None, synced=None):
         values = {"q": request.form.get("q", "").strip()}
@@ -226,7 +251,7 @@ def create_app():
         conn = connect()
         try:
             service = ProductService(conn, AccessTradeClient.from_env())
-            items = service.search_local(filters)
+            items = _safe_catalog_items(service.search_local(filters))
             catalog = _catalog_summary(conn)
         except Exception:
             app.logger.exception("Catalog query failed")
@@ -248,7 +273,7 @@ def create_app():
                 title_keywords=request.form.get("q") or None)
             return _catalog_redirect(synced=_sync_summary(result))
         except Exception as error:
-            if not isinstance(error, (ProductUserError, PublishError, SyncAlreadyRunning)):
+            if not isinstance(error, ProductUserError):
                 app.logger.exception("Catalog sync failed")
             return _catalog_redirect(err=_catalog_error(error))
         finally:
@@ -279,7 +304,7 @@ def create_app():
                          (full_url or short_url, short_url, linked_at, linked_at, product_id))
             return _catalog_redirect(synced="Đã tạo link affiliate để sao chép.")
         except Exception as error:
-            if not isinstance(error, (ProductUserError, PublishError, SyncAlreadyRunning)):
+            if not isinstance(error, ProductUserError):
                 app.logger.exception("Catalog standalone link failed")
             return _catalog_redirect(err=_catalog_error(error))
         finally:
@@ -297,7 +322,7 @@ def create_app():
                 raise ProductUserError(result.get("error") or "Không thể tạo bài nháp.")
             return redirect(url_for("review"))
         except Exception as error:
-            if not isinstance(error, (ProductUserError, PublishError, SyncAlreadyRunning)):
+            if not isinstance(error, ProductUserError):
                 app.logger.exception("Catalog post creation failed")
             return _catalog_redirect(err=_catalog_error(error))
         finally:
