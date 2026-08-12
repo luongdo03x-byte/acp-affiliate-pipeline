@@ -66,6 +66,8 @@ Runtime/secrets vẫn nằm ở `~/Downloads/ACP/shared`, log ở `~/Downloads/A
 | `python3 run.py ingest` | Chặng 1 — nạp datafeed |
 | `python3 run.py plan` | Chặng 2 — chấm điểm, tạo job sinh nội dung |
 | `python3 run.py work` | Chạy hàng đợi tới khi hết việc |
+| `python3 run.py worker-once` | Chạy một lượt worker theo công tắc tự đăng |
+| `python3 run.py worker-status` | Xem công tắc tự đăng và tổng số job an toàn |
 | `python3 run.py niche` | Xem nhóm sản phẩm của từng kênh |
 | `python3 run.py niche <kênh> <nhóm...>` | Đặt nhóm cho một kênh |
 | `python3 run.py niche <kênh>` | Xoá nhóm (kênh nhận mọi danh mục) |
@@ -366,6 +368,32 @@ Khi gặp lỗi: HTTP 401 nghĩa là kiểm tra lại token ACCESSTRADE trong `.
 thì thử lại sau. Sản phẩm hết hàng, không có `detail_link`, hoặc còn trong
 `ACP_PRODUCT_REPOST_COOLDOWN_DAYS` sẽ không được auto-prepare. Manual selection
 trên `/sanpham` có thể override cooldown, nhưng vẫn dừng ở bước duyệt tay.
+
+### Worker tự đăng theo lịch
+
+Worker đăng bài chạy ngoài Flask, một lượt mỗi phút. Nó chỉ xử lý job
+`PUBLISH_POST` khi công tắc toàn hệ thống đã được operator bật; cài timer không
+tự bật công tắc này. Xem trạng thái bằng:
+
+```bash
+/bin/bash -lc 'set -a; . "$HOME/Downloads/ACP/acp/.env.local"; set +a; exec "$HOME/Downloads/ACP/acp/.venv/bin/python" "$HOME/Downloads/ACP/acp/run.py" worker-status'
+```
+
+Để cài timer cấp user (không cần root), sao chép các mẫu unit trong `ops/`. Mẫu
+dùng symlink `~/Downloads/ACP/acp` để luôn gọi release active và chỉ source
+`.env.local` khi chạy, nên không có token trong unit:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ops/acp-worker.service ops/acp-worker.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acp-worker.timer
+systemctl --user status acp-worker.timer
+```
+
+Xem lượt chạy gần nhất bằng `journalctl --user -u acp-worker.service -n 100`.
+Sau upgrade, giữ timer đang bật; unit sẽ theo symlink release active. Khi cần
+dừng lịch worker, chạy `systemctl --user disable --now acp-worker.timer`.
 
 ### Kiểm tra end-to-end bằng mock
 

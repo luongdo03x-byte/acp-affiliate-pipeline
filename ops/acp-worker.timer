@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ACP publish worker every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=acp-worker.service
+
+[Install]
+WantedBy=timers.target

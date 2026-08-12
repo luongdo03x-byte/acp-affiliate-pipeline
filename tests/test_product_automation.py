@@ -1706,6 +1706,137 @@ def test_auto_prepare_failure_is_redacted_and_returns_nonzero():
                 setattr(run, name, value)
 
 
+def test_worker_once_uses_context_and_respects_persisted_publish_switch():
+    """The minute worker must leave publish work ready until an operator enables it."""
+    from acp import run
+    from acp.core import jobs, system_settings
+
+    previous_db_path = db.DB_PATH
+    previous_factory = run.factory
+    previous_handler = jobs._handlers.get("PUBLISH_POST")
+    calls = []
+
+    @jobs.handler("PUBLISH_POST")
+    def publish_handler(_conn, payload, ctx):
+        calls.append((payload["post_id"], ctx))
+
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "worker-once.db")
+        try:
+            db.init_db()
+            run.factory = type("_Factory", (), {
+                "build_context": staticmethod(lambda: {"worker": "active-context"})
+            })
+            conn = db.connect()
+            try:
+                job_id = jobs.enqueue(conn, "PUBLISH_POST", {"post_id": "post-worker-once"})
+            finally:
+                conn.close()
+
+            disabled_output = io.StringIO()
+            with contextlib.redirect_stdout(disabled_output):
+                assert run.main(["worker-once"]) == 0
+            assert "disabled" in disabled_output.getvalue().lower()
+            conn = db.connect()
+            try:
+                assert conn.execute("SELECT status FROM job_queue WHERE id=?", (job_id,)).fetchone()[0] == "READY"
+                system_settings.set_system_setting(conn, "publish_worker_enabled", "1")
+            finally:
+                conn.close()
+
+            enabled_output = io.StringIO()
+            with contextlib.redirect_stdout(enabled_output):
+                assert run.main(["worker-once"]) == 0
+            assert "enabled" in enabled_output.getvalue().lower()
+            conn = db.connect()
+            try:
+                assert conn.execute("SELECT status FROM job_queue WHERE id=?", (job_id,)).fetchone()[0] == "DONE"
+            finally:
+                conn.close()
+            assert calls == [("post-worker-once", {"worker": "active-context"})]
+        finally:
+            db.DB_PATH = previous_db_path
+            run.factory = previous_factory
+            if previous_handler is None:
+                jobs._handlers.pop("PUBLISH_POST", None)
+            else:
+                jobs._handlers["PUBLISH_POST"] = previous_handler
+
+
+def test_worker_status_prints_only_switch_and_queue_counts():
+    """Status output is operator-safe: no queue payloads, provider details, or credentials."""
+    from acp import run
+    from acp.core import jobs
+
+    previous_db_path = db.DB_PATH
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "worker-status.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                jobs.enqueue(conn, "PUBLISH_POST", {"token": "must-not-print"})
+                running = jobs.enqueue(conn, "FETCH_INSIGHTS", {"response": "also-private"})
+                conn.execute("UPDATE job_queue SET status='RUNNING' WHERE id=?", (running,))
+            finally:
+                conn.close()
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                assert run.main(["worker-status"]) == 0
+            text = output.getvalue()
+            assert "Publish worker: disabled" in text
+            assert "READY=1" in text
+            assert "RUNNING=1" in text
+            assert "must-not-print" not in text
+            assert "also-private" not in text
+        finally:
+            db.DB_PATH = previous_db_path
+
+
+def test_worker_once_returns_safe_nonzero_on_operational_failure():
+    """A failed service run must be retryable without exposing configuration error text."""
+    from acp import run
+
+    previous_factory = run.factory
+    previous_db_path = db.DB_PATH
+    with tempfile.TemporaryDirectory() as directory:
+        db.DB_PATH = os.path.join(directory, "worker-error.db")
+        try:
+            db.init_db()
+            run.factory = type("_Factory", (), {
+                "build_context": staticmethod(lambda: (_ for _ in ()).throw(
+                    RuntimeError("Authorization: Token must-not-print")))
+            })
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                assert run.main(["worker-once"]) == 1
+            assert "must-not-print" not in output.getvalue()
+            assert "authorization" not in output.getvalue().lower()
+        finally:
+            db.DB_PATH = previous_db_path
+            run.factory = previous_factory
+
+
+def test_user_worker_units_use_active_env_without_embedded_secrets():
+    """The timer must source the active release config and never store credentials in git."""
+    service = Path("ops/acp-worker.service").read_text(encoding="utf-8")
+    timer = Path("ops/acp-worker.timer").read_text(encoding="utf-8")
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8") for path in ("README.md", "docs/ACP_RUNBOOK.md")
+    )
+
+    assert "%h/Downloads/ACP/acp/.env.local" in service
+    assert "run.py" in service
+    assert "worker-once" in service
+    assert "Restart=on-failure" in service
+    assert "OnUnitActiveSec=1min" in timer
+    assert "systemctl --user enable --now acp-worker.timer" in docs
+    for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
+        assert secret_name not in service
+        assert secret_name not in timer
+
+
 @contextlib.contextmanager
 def _catalog_web_app(*, require_auth=False):
     """Create an isolated catalog-backed web client without touching production data."""
@@ -2294,7 +2425,11 @@ def main():
                       test_product_sync_uses_seed_catalog_in_mock_mode,
                       test_product_sync_initializes_its_catalog_schema_before_syncing,
                       test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review,
-                      test_auto_prepare_failure_is_redacted_and_returns_nonzero],
+                      test_auto_prepare_failure_is_redacted_and_returns_nonzero,
+                      test_worker_once_uses_context_and_respects_persisted_publish_switch,
+                      test_worker_status_prints_only_switch_and_queue_counts,
+                      test_worker_once_returns_safe_nonzero_on_operational_failure,
+                      test_user_worker_units_use_active_env_without_embedded_secrets],
               "web": [test_products_page_is_local_and_renders_filters,
                       test_catalog_routes_require_csrf_and_hide_api_errors,
                       test_catalog_publish_error_is_redacted_from_redirect_and_page,

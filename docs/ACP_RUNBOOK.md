@@ -285,6 +285,42 @@ acp-product-sync.timer`. Khóa database của catalog chặn sync chồng nhau; 
 nhận thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song
 song.
 
+### Worker tự đăng bài theo lịch
+
+Worker là process riêng chạy một lượt mỗi phút; Flask dashboard không tự quét
+hàng đợi. Công tắc publish worker được lưu trong database và mặc định **tắt**.
+Vì vậy cài hoặc bật timer không làm ACP tự đăng bài. Khi công tắc tắt, các job
+`PUBLISH_POST` đến hạn vẫn giữ `READY`; các job khác vẫn có thể được xử lý.
+
+Kiểm tra trạng thái trước khi cài:
+
+```bash
+/bin/bash -lc 'set -a; . "$HOME/Downloads/ACP/acp/.env.local"; set +a; exec "$HOME/Downloads/ACP/acp/.venv/bin/python" "$HOME/Downloads/ACP/acp/run.py" worker-status'
+```
+
+Từ source/release ACP, cài unit user đi kèm. Các unit dùng `%h/Downloads/ACP/acp`
+(symlink release active), source `.env.local` ngay khi bắt đầu và không chứa
+token/key trong source control:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ops/acp-worker.service ops/acp-worker.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acp-worker.timer
+systemctl --user status acp-worker.timer
+```
+
+Kiểm tra một lượt chạy và lỗi cục bộ an toàn:
+
+```bash
+systemctl --user status acp-worker.service
+journalctl --user -u acp-worker.service -n 100
+```
+
+Timer gọi `run.py worker-once` mỗi phút và service sẽ thử lại khi lỗi vận hành.
+Không dùng `run.py work` trong timer vì lệnh đó drain toàn bộ hàng đợi. Dừng lịch
+nhưng không đổi công tắc bằng `systemctl --user disable --now acp-worker.timer`.
+
 ### Xử lý sự cố
 
 - **401:** token ACCESSTRADE thiếu hoặc sai. Cập nhật chỉ `.env.local`, rồi chạy

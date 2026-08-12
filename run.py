@@ -6,6 +6,8 @@
     python3 run.py ingest               chặng 1
     python3 run.py plan                 chặng 2 + tạo job
     python3 run.py work                 chạy hàng đợi tới khi hết việc
+    python3 run.py worker-once          chạy một lượt worker theo công tắc tự đăng
+    python3 run.py worker-status        xem công tắc tự đăng và số lượng job an toàn
     python3 run.py niche                xem chủ đề của từng kênh
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
@@ -119,6 +121,52 @@ def cmd_work():
     print(f"✓ Hàng đợi — xong {stats['done']}, thử lại {stats['retried']}, "
           f"hoãn {stats['deferred']}, thất bại {stats['failed']}")
     print(f"  Trạng thái hiện tại: {q}")
+
+
+def _format_queue_counts(summary):
+    """Render only aggregate queue state; never expose job payload or error data."""
+    if not summary:
+        return "empty"
+    return ", ".join(f"{status}={summary[status]}" for status in sorted(summary))
+
+
+def cmd_worker_once():
+    """Run one timer-safe queue pass without revealing provider/configuration details."""
+    from acp.core.system_settings import publish_worker_enabled
+
+    try:
+        with db.session() as conn:
+            ctx = factory.build_context()
+            stats = jobs.run_once(conn, ctx=ctx)
+            enabled = publish_worker_enabled(conn)
+            queue = jobs.queue_summary(conn)
+    except Exception:
+        print("Worker execution failed. Check local service logs.")
+        return 1
+
+    state = "enabled" if enabled else "disabled"
+    print(f"Publish worker: {state}")
+    print("Worker pass: " + ", ".join(
+        f"{key}={stats[key]}" for key in ("done", "retried", "deferred", "failed", "skipped")))
+    print(f"Queue: {_format_queue_counts(queue)}")
+    return 0
+
+
+def cmd_worker_status():
+    """Print durable worker state and aggregate queue counts for operators."""
+    from acp.core.system_settings import publish_worker_enabled
+
+    try:
+        with db.session() as conn:
+            enabled = publish_worker_enabled(conn)
+            queue = jobs.queue_summary(conn)
+    except Exception:
+        print("Worker status unavailable. Check local service logs.")
+        return 1
+
+    print(f"Publish worker: {'enabled' if enabled else 'disabled'}")
+    print(f"Queue: {_format_queue_counts(queue)}")
+    return 0
 
 
 def cmd_review():
@@ -589,6 +637,7 @@ def cmd_serve():
 
 COMMANDS = {
     "init": cmd_init, "ingest": cmd_ingest, "plan": cmd_plan, "work": cmd_work,
+    "worker-once": cmd_worker_once, "worker-status": cmd_worker_status,
     "review": cmd_review, "approve-all": cmd_approve_all, "report": cmd_report,
     "reconcile": cmd_reconcile, "trace": cmd_trace, "doctor": cmd_doctor,
     "product": cmd_product, "search": cmd_search, "niche": cmd_niche,
@@ -619,6 +668,8 @@ def main(argv=None):
                                 auto_prepare=auto_prepare)
     elif cmd == "approve" and len(args) > 1:
         c = connect(); print(pipeline.approve_post(c, args[1])); c.close()
+    elif cmd in ("worker-once", "worker-status"):
+        return COMMANDS[cmd]()
     elif cmd in COMMANDS:
         COMMANDS[cmd]()
     else:
