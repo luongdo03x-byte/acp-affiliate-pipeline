@@ -249,6 +249,50 @@
         </select>
       </div>
       <div class="field">
+        <label for="min_commission_rate">Hoa hồng tối thiểu (%)</label>
+        <input id="min_commission_rate" name="min_commission_rate" inputmode="decimal"
+               value="{{ filters.min_commission_rate_percent if filters.min_commission_rate_percent is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_commission_amount">Hoa hồng tối thiểu (VND)</label>
+        <input id="min_commission_amount" name="min_commission_amount" inputmode="numeric"
+               value="{{ filters.min_commission_amount if filters.min_commission_amount is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_price">Giá từ (VND)</label>
+        <input id="min_price" name="min_price" inputmode="numeric"
+               value="{{ filters.min_price if filters.min_price is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="max_price">Giá đến (VND)</label>
+        <input id="max_price" name="max_price" inputmode="numeric"
+               value="{{ filters.max_price if filters.max_price is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_units_sold">Đã bán tối thiểu</label>
+        <input id="min_units_sold" name="min_units_sold" inputmode="numeric"
+               value="{{ filters.min_units_sold if filters.min_units_sold is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="affiliate_status">Trạng thái link</label>
+        <select id="affiliate_status" name="affiliate_status">
+          <option value="">Tất cả</option>
+          {% for state in ['NOT_CREATED', 'CREATING', 'PRODUCT_ONLY', 'READY', 'FAILED', 'UNAVAILABLE'] %}
+          <option value="{{ state }}" {{ 'selected' if filters.affiliate_link_status == state }}>{{ state }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="post_state">Trạng thái bài</label>
+        <select id="post_state" name="post_state">
+          <option value="">Tất cả</option>
+          <option value="active" {{ 'selected' if filters.post_state == 'active' }}>Đang hoạt động</option>
+          <option value="no_active" {{ 'selected' if filters.post_state == 'no_active' }}>Chưa có bài hoạt động</option>
+          <option value="posted" {{ 'selected' if filters.post_state == 'posted' }}>Đã đăng</option>
+          <option value="unposted" {{ 'selected' if filters.post_state == 'unposted' }}>Chưa đăng</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="sort">Sắp xếp</label>
         <select id="sort" name="sort">
           <option value="recommended" {{ 'selected' if filters.sort == 'recommended' }}>Đề xuất</option>
@@ -257,6 +301,7 @@
           <option value="commission" {{ 'selected' if filters.sort == 'commission' }}>Hoa hồng</option>
           <option value="price_asc" {{ 'selected' if filters.sort == 'price_asc' }}>Giá thấp</option>
           <option value="price_desc" {{ 'selected' if filters.sort == 'price_desc' }}>Giá cao</option>
+          <option value="newest" {{ 'selected' if filters.sort == 'newest' }}>Mới nhất</option>
         </select>
       </div>
       <button class="btn" type="submit">Lọc catalog</button>

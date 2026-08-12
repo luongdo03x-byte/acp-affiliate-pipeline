@@ -441,6 +441,73 @@ def test_create_product_only_link_uses_explicit_product_sub1():
     assert fake_session.requests[0][2]["json"]["sub1"] == "product:product-42"
 
 
+def test_legacy_tiktok_source_forwards_campaign_and_configurable_link_path():
+    """Delegating HTTP must preserve the legacy campaign and endpoint contract."""
+    from acp.adapters.accesstrade_client import LinkResult
+    from acp.adapters.tiktokshop import AccessTradeTikTokShopSource
+
+    class _Client:
+        def __init__(self):
+            self.search_calls = []
+            self.link_calls = []
+
+        def search_products(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [], None
+
+        def create_tracking_link(self, detail_link, sub_ids, **kwargs):
+            self.link_calls.append((detail_link, sub_ids, kwargs))
+            return LinkResult("https://tracking.example/legacy")
+
+    old_path = os.environ.get("AT_TIKTOK_LINK_PATH")
+    try:
+        os.environ["AT_TIKTOK_LINK_PATH"] = "/v1/custom-tiktok-link"
+        client = _Client()
+        source = AccessTradeTikTokShopSource(
+            campaign_id="legacy-campaign", client=client)
+        source.search_products(query="váy", limit=12, cursor="CURSOR")
+        link = source.create_tracking_link(
+            "https://example.test/product", {"sub1": "post-1"})
+    finally:
+        if old_path is None:
+            os.environ.pop("AT_TIKTOK_LINK_PATH", None)
+        else:
+            os.environ["AT_TIKTOK_LINK_PATH"] = old_path
+
+    assert client.search_calls == [{
+        "limit": 12, "title_keywords": "váy", "page_token": "CURSOR",
+        "campaign_id": "legacy-campaign",
+    }]
+    assert link == "https://tracking.example/legacy"
+    assert client.link_calls[0][2] == {
+        "campaign_id": "legacy-campaign", "link_path": "/v1/custom-tiktok-link",
+    }
+
+
+def test_client_marks_only_explicitly_unsupported_commission_sort():
+    """Auth/server/provider failures must not masquerade as unsupported sorting."""
+    from acp.adapters.accesstrade_client import AccessTradeClient, UnsupportedSortError
+    from acp.adapters.base import PublishError
+
+    unsupported = _Response(400, {
+        "status": False,
+        "code": "UNSUPPORTED_SORT_FIELD",
+        "message": "sort_field COMMISSION is not supported",
+    })
+    _assert_error(
+        "ACCESSTRADE không hỗ trợ sắp xếp hoa hồng",
+        lambda: AccessTradeClient(session=_FakeSession([unsupported])).search_products(
+            sort_field="COMMISSION"),
+        UnsupportedSortError,
+    )
+    _assert_error(
+        "ACCESSTRADE không phản hồi thành công (HTTP 400)",
+        lambda: AccessTradeClient(session=_FakeSession([unsupported])).search_products(
+            sort_field="RECOMMENDED"),
+        PublishError,
+    )
+
+
 def test_legacy_tiktok_source_keeps_its_existing_fractional_rate_contract():
     """Moving HTTP to the client must not reinterpret the CLI adapter's legacy feed values."""
     from acp.adapters.tiktokshop import AccessTradeTikTokShopSource
@@ -483,9 +550,11 @@ class _ProductClient:
 class _CatalogPipelineClient(_ProductClient):
     """External link boundary used by catalog-post pipeline tests."""
 
-    def __init__(self, *, error=None):
+    def __init__(self, *, error=None, link_result=None, on_create=None):
         super().__init__()
         self.error = error
+        self.link_result = link_result
+        self.on_create = on_create
         self.link_calls = []
         self.last_body = None
 
@@ -495,10 +564,12 @@ class _CatalogPipelineClient(_ProductClient):
         self.last_body = {"detail_link": detail_link, "sub1": post_id,
                           "external_product_id": external_product_id}
         self.link_calls.append(self.last_body)
+        if self.on_create:
+            self.on_create()
         if self.error:
             raise self.error
-        return LinkResult(full_url="https://tracking.example/post",
-                          short_url="https://short.example/post")
+        return self.link_result or LinkResult(full_url="https://tracking.example/post",
+                                              short_url="https://short.example/post")
 
 
 class _CatalogStorage:
@@ -566,6 +637,18 @@ def _catalog_pipeline_conn():
     return conn
 
 
+def _insert_catalog_post(conn, *, post_id, product_id, status):
+    timestamp = "2026-08-11T10:00:00+00:00"
+    conn.execute("""INSERT INTO post (
+                    id, product_id, channel_id, campaign_id, caption_template_id,
+                    variant_code, caption_body, disclosure_text, caption_final,
+                    status, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product_id, "channel-1", "campaign-1", "template-1",
+                  "H1", "body", "Có chứa link tiếp thị liên kết.", "caption",
+                  status, timestamp, timestamp))
+
+
 def test_catalog_product_creates_fresh_per_post_link_and_pending_review():
     """Reusing an operator's product-only link would attribute sales to no post."""
     from acp.core import pipeline
@@ -622,6 +705,85 @@ def test_catalog_link_failure_stops_before_caption_or_post_generation():
         assert product["affiliate_link_status"] == "FAILED"
         assert "secret-value" not in product["affiliate_link_error"]
     finally:
+        conn.close()
+
+
+def test_catalog_stockout_sets_unavailable_without_requesting_a_link():
+    """A stockout must become UNAVAILABLE before any provider link request."""
+    from acp.core import pipeline
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient()
+    try:
+        conn.execute("UPDATE product SET has_inventory=0 WHERE id='catalog-product'")
+        result = pipeline.create_post_for_catalog_product(
+            conn, {"product_client": client, "storage": _CatalogStorage()},
+            "catalog-product", "gd2026", "ch1")
+        product = conn.execute(
+            "SELECT affiliate_link_status, updated_at FROM product WHERE id='catalog-product'"
+        ).fetchone()
+
+        assert not result["ok"]
+        assert product["affiliate_link_status"] == "UNAVAILABLE"
+        assert product["updated_at"]
+        assert client.link_calls == []
+        assert conn.execute("SELECT COUNT(*) FROM post").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_catalog_link_state_is_creating_during_request_and_records_timestamp():
+    """The observable link lifecycle must transition CREATING -> READY with a timestamp."""
+    from acp.core import pipeline
+    import tempfile
+
+    conn = _catalog_pipeline_conn()
+    observed = []
+    client = _CatalogPipelineClient(on_create=lambda: observed.append(
+        conn.execute("SELECT affiliate_link_status FROM product WHERE id='catalog-product'").fetchone()[0]))
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                "catalog-product", "gd2026", "ch1")
+        product = conn.execute("""SELECT affiliate_link_status, affiliate_link_created_at, updated_at
+                                  FROM product WHERE id='catalog-product'""").fetchone()
+
+        assert result["ok"]
+        assert observed == ["CREATING"]
+        assert product["affiliate_link_status"] == "READY"
+        assert product["affiliate_link_created_at"]
+        assert product["updated_at"] == product["affiliate_link_created_at"]
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
+def test_catalog_post_uses_full_link_when_short_link_is_absent():
+    """A valid full affiliate URL is the required fallback when no short URL exists."""
+    from acp.adapters.accesstrade_client import LinkResult
+    from acp.core import pipeline
+    import tempfile
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient(
+        link_result=LinkResult(full_url="https://tracking.example/full-only"))
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                "catalog-product", "gd2026", "ch1")
+        post = conn.execute("SELECT affiliate_link, caption_final FROM post WHERE id=?",
+                            (result["post_id"],)).fetchone()
+
+        assert post["affiliate_link"] == "https://tracking.example/full-only"
+        assert "https://tracking.example/full-only" in post["caption_final"]
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
         conn.close()
 
 
@@ -724,8 +886,12 @@ def test_end_to_end_catalog_product_to_review_and_repost_cooldown():
                             ("ACCESSTRADE_TIKTOK", product["external_product_id"])).fetchone()[0] == 1
 
         assert pipeline.approve_post(conn, result["post_id"])["ok"]
+        channel = _PublishingChannel()
         pipeline.publish_post(conn, {"post_id": result["post_id"], "channel_id": "channel-1"},
-                              {"channel": _PublishingChannel()})
+                              {"channel": channel})
+        published = conn.execute("SELECT status FROM post WHERE id=?", (result["post_id"],)).fetchone()
+        assert channel.calls == 1
+        assert published["status"] == "PUBLISHED"
         recommended_ids = {row["id"] for row in ProductService(conn, client).recommended(20)}
         assert product["id"] not in recommended_ids
     finally:
@@ -801,6 +967,164 @@ def test_recommendation_excludes_stockout_unavailable_and_cooldown():
         conn.close()
 
 
+def test_recommendation_excludes_products_with_active_sales_posts():
+    """Auto-prepare must not create another post while an active sales post exists."""
+    from acp.core.products import ProductService
+
+    conn = _catalog_pipeline_conn()
+    try:
+        active_statuses = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED")
+        for index, status in enumerate(active_statuses):
+            product_id = f"active-{index}"
+            _insert_catalog_product(conn, product_id=product_id, external_id=product_id)
+            _insert_catalog_post(conn, post_id=f"post-{index}", product_id=product_id, status=status)
+        _insert_catalog_product(conn, product_id="eligible-no-post", external_id="eligible-no-post")
+
+        recommended = {row["id"] for row in ProductService(conn, _ProductClient()).recommended(20)}
+
+        assert "eligible-no-post" in recommended
+        assert not set(f"active-{index}" for index in range(4)) & recommended
+    finally:
+        conn.close()
+
+
+def test_sync_recovers_only_eligible_unavailable_rows_and_preserves_failed_errors():
+    """Availability recovery clears UNAVAILABLE but leaves unrelated FAILED diagnostics intact."""
+    from acp.core.products import ProductService
+
+    conn = _catalog_conn()
+    try:
+        _insert_catalog_product(conn, product_id="recover", external_id="recover",
+                                affiliate_status="UNAVAILABLE", has_inventory=0)
+        _insert_catalog_product(conn, product_id="failed", external_id="failed",
+                                affiliate_status="FAILED")
+        conn.execute("UPDATE product SET affiliate_link_error='stockout' WHERE id='recover'")
+        conn.execute("UPDATE product SET affiliate_link_error='safe failure' WHERE id='failed'")
+        rows = [
+            {"id": "recover", "title": "Recovered", "detail_link": "https://example.test/recover",
+             "sales_price": {"minimum_amount": 10000}, "has_inventory": True},
+            {"id": "failed", "title": "Still failed", "detail_link": "https://example.test/failed",
+             "sales_price": {"minimum_amount": 10000}, "has_inventory": True},
+        ]
+
+        ProductService(conn, _ProductClient([(rows, None)])).sync(max_pages=1)
+        recovered = conn.execute(
+            "SELECT affiliate_link_status, affiliate_link_error FROM product WHERE id='recover'"
+        ).fetchone()
+        failed = conn.execute(
+            "SELECT affiliate_link_status, affiliate_link_error FROM product WHERE id='failed'"
+        ).fetchone()
+
+        assert (recovered["affiliate_link_status"], recovered["affiliate_link_error"]) == (
+            "NOT_CREATED", None)
+        assert (failed["affiliate_link_status"], failed["affiliate_link_error"]) == (
+            "FAILED", "safe failure")
+    finally:
+        conn.close()
+
+
+def test_sync_counts_malformed_rows_and_continues_later_rows_and_pages():
+    """One malformed provider row must not discard valid rows or later pages."""
+    from acp.core.products import ProductService
+
+    valid_1 = {"id": "valid-1", "title": "One", "detail_link": "https://example.test/1",
+               "sales_price": {"minimum_amount": 10000}, "has_inventory": True}
+    valid_2 = {"id": "valid-2", "title": "Two", "detail_link": "https://example.test/2",
+               "sales_price": {"minimum_amount": 20000}, "has_inventory": True}
+    conn = _catalog_conn()
+    try:
+        result = ProductService(conn, _ProductClient([
+            ([valid_1, "malformed-row"], "NEXT"),
+            ([valid_2], None),
+        ])).sync(max_pages=2)
+
+        assert (result.fetched, result.inserted, result.failed, result.pages) == (3, 2, 1, 2)
+        assert conn.execute("SELECT COUNT(*) FROM product WHERE provider='ACCESSTRADE_TIKTOK'").fetchone()[0] == 2
+        assert "Failed: 1" in result.operator_summary()
+    finally:
+        conn.close()
+
+
+def test_sync_propagates_database_failures_instead_of_counting_them_as_bad_rows():
+    """Infrastructure/data-integrity failures must abort sync rather than report partial success."""
+    import sqlite3
+    from acp.core.products import ProductService
+
+    class _DatabaseFailingService(ProductService):
+        def _upsert(self, product, result):
+            raise sqlite3.OperationalError("database write failed")
+
+    row = {"id": "valid", "title": "Valid", "detail_link": "https://example.test/valid",
+           "sales_price": {"minimum_amount": 10000}, "has_inventory": True}
+    conn = _catalog_conn()
+    try:
+        try:
+            _DatabaseFailingService(conn, _ProductClient([([row], None)])).sync(max_pages=1)
+        except sqlite3.OperationalError as error:
+            assert str(error) == "database write failed"
+        else:
+            raise AssertionError("Expected database failure to propagate")
+    finally:
+        conn.close()
+
+
+def test_catalog_rows_never_enter_legacy_scoring_or_generate_content():
+    """Catalog posts require per-post Product API links, never the legacy ctx.source path."""
+    from acp.core import pipeline, scoring
+
+    conn = _catalog_pipeline_conn()
+    try:
+        conn.execute("""UPDATE product SET rating=5, review_count=500,
+                        commission_value=50000, sold_count=5000, is_available=1
+                        WHERE id='catalog-product'""")
+        explained_ids = {
+            item["product"]["id"] for item in scoring.score_candidates(conn, limit=20, explain=True)
+        }
+        assert "catalog-product" not in explained_ids
+        assert pipeline.plan_content(conn, "gd2026", limit=10) == []
+
+        class _LegacySource:
+            calls = 0
+
+            def create_tracking_link(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("catalog row reached legacy source")
+
+        source = _LegacySource()
+        payload = {
+            "product_id": "catalog-product", "channel_id": "channel-1",
+            "campaign_id": "campaign-1", "template_id": "template-1",
+            "variant_code": "H1", "score": 1,
+        }
+        try:
+            pipeline.generate_content(conn, payload, {"source": source})
+        except ValueError as error:
+            assert "catalog" in str(error).lower()
+        else:
+            raise AssertionError("Expected catalog legacy-pipeline guard")
+        assert source.calls == 0
+    finally:
+        conn.close()
+
+
+def test_recommendation_default_cooldown_is_seven_days():
+    """The service fallback must match the documented seven-day repost cooldown."""
+    from acp.core.products import ProductService
+
+    old_value = os.environ.pop("ACP_PRODUCT_REPOST_COOLDOWN_DAYS", None)
+    conn = _catalog_conn()
+    try:
+        _insert_catalog_product(
+            conn, product_id="posted-eight-days", external_id="posted-eight-days",
+            last_posted_at=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat(timespec="seconds"))
+        assert [row["id"] for row in ProductService(conn, _ProductClient()).recommended(20)] == [
+            "posted-eight-days"]
+    finally:
+        conn.close()
+        if old_value is not None:
+            os.environ["ACP_PRODUCT_REPOST_COOLDOWN_DAYS"] = old_value
+
+
 def test_local_search_filters_and_sorts_catalog_rows():
     """Local filters must constrain catalog results without interpolating their values into SQL."""
     from acp.core.products import ProductFilters, ProductService
@@ -827,6 +1151,26 @@ def test_local_search_filters_and_sorts_catalog_rows():
         conn.close()
 
 
+def test_newest_sort_uses_first_seen_not_last_sync_refresh():
+    """Resyncing an old product must not make it newer than a later catalog arrival."""
+    from acp.core.products import ProductFilters, ProductService
+
+    conn = _catalog_conn()
+    try:
+        _insert_catalog_product(conn, product_id="older", external_id="older")
+        _insert_catalog_product(conn, product_id="newer", external_id="newer")
+        conn.execute("""UPDATE product SET first_seen_at='2026-08-01T00:00:00+00:00',
+                        last_seen_at='2026-08-12T00:00:00+00:00' WHERE id='older'""")
+        conn.execute("""UPDATE product SET first_seen_at='2026-08-10T00:00:00+00:00',
+                        last_seen_at='2026-08-10T00:00:00+00:00' WHERE id='newer'""")
+
+        rows = ProductService(conn, _ProductClient()).search_local(ProductFilters(sort="newest"))
+
+        assert [row["id"] for row in rows] == ["newer", "older"]
+    finally:
+        conn.close()
+
+
 def test_product_filters_parse_catalog_request_values():
     """Route input must become typed filters, with malformed numbers safely ignored."""
     from acp.core.products import ProductFilters
@@ -846,24 +1190,52 @@ def test_product_filters_parse_catalog_request_values():
 
 
 def test_sync_retries_recommended_once_when_commission_sort_is_rejected():
-    """A rejected commission sort must fall back once, not abandon a manual catalog sync."""
-    from acp.adapters.base import PublishError
+    """Unsupported commission sorting restarts RECOMMENDED at page one exactly once."""
+    from acp.adapters.accesstrade_client import UnsupportedSortError
     from acp.core.products import ProductService
 
     class _CommissionRejectingClient(_ProductClient):
         def search_products(self, **kwargs):
             self.calls.append(kwargs)
-            if kwargs["sort_field"] == "COMMISSION":
-                raise PublishError("ACCESSTRADE từ chối yêu cầu")
-            return ([], None)
+            if len(self.calls) == 1:
+                return ([{"id": "commission-page", "title": "Commission",
+                          "detail_link": "https://example.test/commission",
+                          "sales_price": {"minimum_amount": 10000}, "has_inventory": True}],
+                        "FOREIGN-TOKEN")
+            if len(self.calls) == 2:
+                raise UnsupportedSortError("ACCESSTRADE không hỗ trợ sắp xếp hoa hồng")
+            return ([{"id": "recommended-page", "title": "Recommended",
+                      "detail_link": "https://example.test/recommended",
+                      "sales_price": {"minimum_amount": 20000}, "has_inventory": True}], None)
 
     conn = _catalog_conn()
     try:
         client = _CommissionRejectingClient()
-        result = ProductService(conn, client).sync(sort_field="COMMISSION", max_pages=1)
+        result = ProductService(conn, client).sync(sort_field="COMMISSION", max_pages=2)
 
         assert result.warning
-        assert [call["sort_field"] for call in client.calls] == ["COMMISSION", "RECOMMENDED"]
+        assert [(call["sort_field"], call["page_token"]) for call in client.calls] == [
+            ("COMMISSION", None), ("COMMISSION", "FOREIGN-TOKEN"), ("RECOMMENDED", None)]
+    finally:
+        conn.close()
+
+
+def test_sync_does_not_fallback_commission_sort_on_auth_network_or_server_errors():
+    """Only UnsupportedSortError is eligible for the one-time RECOMMENDED fallback."""
+    from acp.adapters.base import PublishError
+    from acp.core.products import ProductService
+
+    conn = _catalog_conn()
+    client = _ProductClient(error=PublishError("Token ACCESSTRADE không hợp lệ"))
+    try:
+        try:
+            ProductService(conn, client).sync(sort_field="COMMISSION", max_pages=2)
+        except PublishError:
+            pass
+        else:
+            raise AssertionError("Expected auth/provider error")
+        assert len(client.calls) == 1
+        assert client.calls[0]["sort_field"] == "COMMISSION"
     finally:
         conn.close()
 
@@ -1341,6 +1713,10 @@ def test_products_page_is_local_and_renders_filters():
     assert "ACP Score" in response.text
     assert "Váy test" in response.text
     assert "Nhập link affiliate" in response.text
+    for field in ("min_commission_rate", "min_commission_amount", "min_price", "max_price",
+                  "min_units_sold", "affiliate_status", "post_state"):
+        assert f'name="{field}"' in response.text
+    assert '<option value="newest"' in response.text
 
 
 def test_catalog_routes_require_csrf_and_hide_api_errors():
@@ -1429,8 +1805,8 @@ def test_catalog_omits_unsafe_provider_urls_from_html():
     assert '<img src="not-a-url"' not in response.text
 
 
-def test_catalog_create_post_logs_provider_exception_but_redacts_operator_response():
-    """The provider exception must reach the internal logger, never the result/redirect/page."""
+def test_catalog_create_post_logs_only_safe_diagnostic_context():
+    """Link logs retain operation/type/product context without provider exception data."""
     from acp.adapters.base import PublishError
     from acp.adapters import factory
     import logging
@@ -1471,8 +1847,72 @@ def test_catalog_create_post_logs_provider_exception_but_redacts_operator_respon
     assert "post-provider-secret" not in response.headers["Location"]
     assert "post-provider-secret" not in page.text
     assert "Không thể tạo link affiliate cho sản phẩm" in page.text
-    assert any(record.exc_info and "post-provider-secret" in str(record.exc_info[1])
-               for record in captured)
+    rendered = "\n".join(record.getMessage() for record in captured)
+    assert "operation=create_post_link" in rendered
+    assert "error_type=PublishError" in rendered
+    assert f"product_id={product_id}" in rendered
+    assert "post-provider-secret" not in rendered
+    assert "Authorization" not in rendered
+    assert all(record.exc_info is None for record in captured)
+
+
+def test_catalog_sync_and_standalone_link_logs_never_contain_provider_secrets():
+    """Sync/link failures may log safe context only, never exception messages or bodies."""
+    from acp.adapters.base import PublishError
+    import logging
+
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        captured = []
+        app.logger.disabled = False
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        class _FailingService:
+            def __init__(self, *_):
+                pass
+
+            def sync(self, **_):
+                raise PublishError("Authorization: Token sync-secret; response body=sync-private")
+
+        class _FailingLinkClient:
+            def create_product_link(self, *_args, **_kwargs):
+                raise PublishError("Authorization: Token link-secret; response body=link-private")
+
+        handler = _Capture()
+        previous_handlers = list(app.logger.handlers)
+        previous_propagate = app.logger.propagate
+        original_service = server.ProductService
+        original_client = server.AccessTradeClient
+        app.logger.handlers[:] = [handler]
+        app.logger.propagate = False
+        app.logger.setLevel(logging.ERROR)
+        server.ProductService = _FailingService
+        try:
+            client.post("/sanpham/sync", data={"_csrf": csrf})
+            server.ProductService = original_service
+            server.AccessTradeClient = type(
+                "_Client", (), {"from_env": staticmethod(lambda: _FailingLinkClient())})
+            client.post(f"/sanpham/{product_id}/affiliate-link", data={"_csrf": csrf})
+        finally:
+            server.ProductService = original_service
+            server.AccessTradeClient = original_client
+            app.logger.handlers[:] = previous_handlers
+            app.logger.propagate = previous_propagate
+            app.logger.disabled = True
+
+    rendered = "\n".join(record.getMessage() for record in captured)
+    assert "operation=sync" in rendered
+    assert "operation=create_product_link" in rendered
+    assert "error_type=PublishError" in rendered
+    assert f"product_id={product_id}" in rendered
+    for secret in ("sync-secret", "link-secret", "Authorization", "response body", "sync-private",
+                   "link-private"):
+        assert secret not in rendered
+    assert all(record.exc_info is None for record in captured)
 
 
 def test_catalog_sync_redirects_with_operator_summary():
@@ -1487,7 +1927,9 @@ def test_catalog_sync_redirects_with_operator_summary():
                 pass
 
             def sync(self, **_):
-                return type("_Result", (), {"fetched": 3, "inserted": 1, "updated": 2})()
+                return type("_Result", (), {
+                    "fetched": 4, "inserted": 1, "updated": 2, "failed": 1,
+                })()
 
         server.ProductService = _SyncService
         try:
@@ -1497,7 +1939,7 @@ def test_catalog_sync_redirects_with_operator_summary():
         page = client.get(response.headers["Location"])
 
     assert response.status_code == 302
-    assert "Đã đồng bộ 3 sản phẩm (1 mới, 2 cập nhật)." in page.text
+    assert "Đã đồng bộ 4 sản phẩm (1 mới, 2 cập nhật, 1 lỗi)." in page.text
 
 
 def test_catalog_standalone_link_uses_product_marker():
@@ -1540,17 +1982,30 @@ def main():
                          test_client_maps_non_timeout_network_error_without_retry,
                          test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate,
                          test_create_product_only_link_uses_explicit_product_sub1,
+                         test_legacy_tiktok_source_forwards_campaign_and_configurable_link_path,
+                         test_client_marks_only_explicitly_unsupported_commission_sort,
                          test_legacy_tiktok_source_keeps_its_existing_fractional_rate_contract,
                          test_factory_context_exposes_product_client],
               "service": [test_sync_paginates_and_upserts_without_duplicate,
                           test_recommendation_excludes_stockout_unavailable_and_cooldown,
+                          test_recommendation_excludes_products_with_active_sales_posts,
+                          test_sync_recovers_only_eligible_unavailable_rows_and_preserves_failed_errors,
+                          test_sync_counts_malformed_rows_and_continues_later_rows_and_pages,
+                          test_sync_propagates_database_failures_instead_of_counting_them_as_bad_rows,
+                          test_catalog_rows_never_enter_legacy_scoring_or_generate_content,
+                          test_recommendation_default_cooldown_is_seven_days,
                           test_local_search_filters_and_sorts_catalog_rows,
+                          test_newest_sort_uses_first_seen_not_last_sync_refresh,
                           test_product_filters_parse_catalog_request_values,
                           test_sync_retries_recommended_once_when_commission_sort_is_rejected,
+                          test_sync_does_not_fallback_commission_sort_on_auth_network_or_server_errors,
                           test_sync_lock_rejects_fresh_lock_and_releases_after_error,
                           test_stale_lock_owner_cannot_release_new_owner_lease],
               "pipeline": [test_catalog_product_creates_fresh_per_post_link_and_pending_review,
                            test_catalog_link_failure_stops_before_caption_or_post_generation,
+                           test_catalog_stockout_sets_unavailable_without_requesting_a_link,
+                           test_catalog_link_state_is_creating_during_request_and_records_timestamp,
+                           test_catalog_post_uses_full_link_when_short_link_is_absent,
                            test_catalog_product_publish_updates_post_metadata_once_after_success,
                            test_catalog_product_publish_failure_leaves_post_metadata_unchanged],
               "e2e": [test_end_to_end_catalog_product_to_review_and_repost_cooldown],
@@ -1566,7 +2021,8 @@ def main():
                       test_catalog_routes_require_csrf_and_hide_api_errors,
                       test_catalog_publish_error_is_redacted_from_redirect_and_page,
                       test_catalog_omits_unsafe_provider_urls_from_html,
-                      test_catalog_create_post_logs_provider_exception_but_redacts_operator_response,
+                      test_catalog_create_post_logs_only_safe_diagnostic_context,
+                      test_catalog_sync_and_standalone_link_logs_never_contain_provider_secrets,
                       test_catalog_sync_redirects_with_operator_summary,
                       test_catalog_standalone_link_uses_product_marker]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"

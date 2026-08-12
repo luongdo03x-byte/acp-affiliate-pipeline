@@ -12,6 +12,10 @@ from .base import PublishError, RateLimitError
 DEFAULT_BASE_URL = "https://api.accesstrade.vn"
 
 
+class UnsupportedSortError(PublishError):
+    """The provider explicitly rejected a requested catalog sort field."""
+
+
 @dataclass(frozen=True)
 class LinkResult:
     """Both provider URLs; callers choose short URL only for presentation."""
@@ -130,7 +134,8 @@ class AccessTradeClient:
         return cls()
 
     def search_products(self, *, sort_field="RECOMMENDED", limit=50,
-                        title_keywords=None, page_token=None, product_ids=None):
+                        title_keywords=None, page_token=None, product_ids=None,
+                        campaign_id=None):
         params = {"sort_field": sort_field, "limit": min(int(limit), 50)}
         if title_keywords:
             params["title_keywords"] = title_keywords
@@ -138,7 +143,11 @@ class AccessTradeClient:
             params["page_token"] = page_token
         if product_ids:
             params["product_ids"] = ",".join(map(str, product_ids))
-        payload = self._request("GET", self.PRODUCT_FEED_PATH, params=params)
+        if campaign_id:
+            params["campaign_id"] = campaign_id
+        payload = self._request(
+            "GET", self.PRODUCT_FEED_PATH, params=params,
+            requested_sort=sort_field)
         data = payload.get("data") or {}
         return data.get("products") or [], data.get("next_page_token")
 
@@ -151,9 +160,10 @@ class AccessTradeClient:
             "sub1": str(post_id),
         })
 
-    def create_tracking_link(self, detail_link: str, sub_ids: dict) -> LinkResult:
+    def create_tracking_link(self, detail_link: str, sub_ids: dict, *,
+                             campaign_id=None, link_path=None) -> LinkResult:
         """Compatibility path for the existing ContentSource contract."""
-        return self._create_link(detail_link, {
+        attribution = {
             "utm_source": sub_ids.get("sub4", ""),
             "utm_medium": "threads",
             "utm_campaign": sub_ids.get("sub2", ""),
@@ -162,11 +172,14 @@ class AccessTradeClient:
             "sub2": sub_ids.get("sub2", ""),
             "sub3": sub_ids.get("sub3", ""),
             "sub4": sub_ids.get("sub4", ""),
-        })
+        }
+        if campaign_id:
+            attribution["campaign_id"] = campaign_id
+        return self._create_link(detail_link, attribution, link_path=link_path)
 
-    def _create_link(self, detail_link: str, attribution: dict) -> LinkResult:
+    def _create_link(self, detail_link: str, attribution: dict, *, link_path=None) -> LinkResult:
         body = {"urls": [detail_link], "url_enc": True, **attribution}
-        payload = self._request("POST", self.CREATE_LINK_PATH, json=body)
+        payload = self._request("POST", link_path or self.CREATE_LINK_PATH, json=body)
         node = payload.get("data") or {}
         links = node.get("success_link") or node.get("links") or []
         if isinstance(node, list):
@@ -183,6 +196,7 @@ class AccessTradeClient:
         return LinkResult(full_url=full_url or short_url, short_url=short_url)
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
+        requested_sort = str(kwargs.pop("requested_sort", "") or "").upper()
         url = f"{self.base_url}{path}"
         for attempt in range(3):
             try:
@@ -206,6 +220,13 @@ class AccessTradeClient:
             if response.status_code == 401:
                 raise PublishError("Token ACCESSTRADE không hợp lệ")
             if response.status_code < 200 or response.status_code >= 300:
+                if requested_sort == "COMMISSION" and response.status_code == 400:
+                    try:
+                        error_payload = response.json()
+                    except (TypeError, ValueError):
+                        error_payload = None
+                    if isinstance(error_payload, dict) and self._is_unsupported_sort(error_payload):
+                        raise UnsupportedSortError("ACCESSTRADE không hỗ trợ sắp xếp hoa hồng")
                 raise PublishError(f"ACCESSTRADE không phản hồi thành công (HTTP {response.status_code})")
             try:
                 payload = response.json()
@@ -214,6 +235,16 @@ class AccessTradeClient:
             if not isinstance(payload, dict):
                 raise PublishError("ACCESSTRADE trả dữ liệu không hợp lệ")
             if payload.get("status") is False or payload.get("success") is False:
+                if requested_sort == "COMMISSION" and self._is_unsupported_sort(payload):
+                    raise UnsupportedSortError("ACCESSTRADE không hỗ trợ sắp xếp hoa hồng")
                 raise PublishError("ACCESSTRADE từ chối yêu cầu")
             return payload
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _is_unsupported_sort(payload: dict) -> bool:
+        code = str(payload.get("code") or payload.get("error_code") or "").upper()
+        message = str(payload.get("message") or payload.get("error") or "").lower()
+        return (code in {"UNSUPPORTED_SORT", "UNSUPPORTED_SORT_FIELD", "INVALID_SORT_FIELD"}
+                or ("sort" in message and any(word in message for word in (
+                    "unsupported", "not supported", "không hỗ trợ"))))

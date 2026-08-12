@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import sqlite3
 from typing import Optional
 
-from ..adapters.accesstrade_client import normalize_accesstrade_product
-from ..adapters.base import PublishError
+from ..adapters.accesstrade_client import UnsupportedSortError, normalize_accesstrade_product
 from .db import now, transaction, ulid
 
 
@@ -39,7 +39,12 @@ class SyncResult:
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
+    failed: int = 0
     warning: Optional[str] = None
+
+    def operator_summary(self):
+        return (f"Fetched: {self.fetched} | New: {self.inserted} | Updated: {self.updated} | "
+                f"Skipped: {self.skipped} | Failed: {self.failed}")
 
 
 @dataclass
@@ -125,26 +130,35 @@ class ProductService:
         result = SyncResult()
         token = None
         active_sort = sort_field
+        fallback_used = False
+        phase_pages = 0
         self._acquire_lock()
         try:
-            for _ in range(max(0, int(max_pages))):
+            while phase_pages < max(0, int(max_pages)):
                 try:
                     rows, token = self.client.search_products(
                         sort_field=active_sort, limit=50, title_keywords=title_keywords,
                         page_token=token)
-                except PublishError:
-                    if active_sort.upper() != "COMMISSION":
+                except UnsupportedSortError:
+                    if active_sort.upper() != "COMMISSION" or fallback_used:
                         raise
                     active_sort = "RECOMMENDED"
+                    fallback_used = True
+                    token = None
+                    phase_pages = 0
                     result.warning = "ACCESSTRADE không hỗ trợ sắp xếp hoa hồng; đã dùng đề xuất"
-                    rows, token = self.client.search_products(
-                        sort_field=active_sort, limit=50, title_keywords=title_keywords,
-                        page_token=token)
+                    continue
 
+                phase_pages += 1
                 result.pages += 1
                 result.fetched += len(rows)
                 for raw in rows:
-                    self._upsert(normalize_accesstrade_product(raw), result)
+                    try:
+                        self._upsert(normalize_accesstrade_product(raw), result)
+                    except sqlite3.DatabaseError:
+                        raise
+                    except (AttributeError, TypeError, ValueError):
+                        result.failed += 1
                 if not token:
                     break
             self.recalculate_scores()
@@ -195,7 +209,8 @@ class ProductService:
             if product.category_data is not None else None
         category_code = self._category_code(product.category_data)
         row = self.conn.execute(
-            "SELECT id FROM product WHERE provider=? AND external_product_id=?",
+            "SELECT id, affiliate_link_status, affiliate_link_error FROM product "
+            "WHERE provider=? AND external_product_id=?",
             (PROVIDER, product.external_product_id)).fetchone()
         values = (
             product.title, product.shop_name, product.detail_link, product.main_image_url,
@@ -207,14 +222,19 @@ class ProductService:
             category_code, product.detail_link or "", product.main_image_url, seen_at, seen_at,
         )
         if row:
+            recovered = (row["affiliate_link_status"] == "UNAVAILABLE"
+                         and product.has_inventory is True and bool(product.detail_link))
+            link_status = "NOT_CREATED" if recovered else row["affiliate_link_status"]
+            link_error = None if recovered else row["affiliate_link_error"]
             self.conn.execute("""UPDATE product SET
                     name=?, shop_name=?, detail_link=?, main_image_url=?, sale_region=?, currency=?,
                     price_min=?, price_max=?, original_price_min=?, original_price_max=?,
                     commission_rate_raw=?, commission_rate_percent=?, commission_amount=?,
                     commission_currency=?, units_sold=?, has_inventory=?, category_data=?,
                     current_price=?, commission_value=?, category_code=?, product_url=?, image_url_original=?,
-                    is_available=1, last_seen_at=?, last_synced_at=?, updated_at=?
-                WHERE id=?""", values + (seen_at, row["id"]))
+                    is_available=1, last_seen_at=?, last_synced_at=?, affiliate_link_status=?,
+                    affiliate_link_error=?, updated_at=?
+                WHERE id=?""", values + (link_status, link_error, seen_at, row["id"]))
             result.updated += 1
             return
 
@@ -276,11 +296,17 @@ class ProductService:
 
     def recommended(self, limit=20):
         cooldown = (datetime.now(timezone.utc) - timedelta(
-            days=env_int("ACP_PRODUCT_REPOST_COOLDOWN_DAYS", 30))).isoformat(timespec="seconds")
+            days=env_int("ACP_PRODUCT_REPOST_COOLDOWN_DAYS", 7))).isoformat(timespec="seconds")
         return self.conn.execute("""SELECT * FROM product
             WHERE provider=? AND has_inventory=1 AND detail_link IS NOT NULL AND detail_link <> ''
               AND external_product_id <> '' AND COALESCE(affiliate_link_status, '') <> 'UNAVAILABLE'
               AND (last_posted_at IS NULL OR last_posted_at < ?)
+              AND NOT EXISTS (
+                  SELECT 1 FROM post
+                  WHERE post.product_id=product.id
+                    AND post.post_type='SALES'
+                    AND post.status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED')
+              )
             ORDER BY COALESCE(score, 0) DESC, last_seen_at DESC
             LIMIT ?""", (PROVIDER, cooldown, max(0, int(limit)))).fetchall()
 
@@ -312,6 +338,14 @@ class ProductService:
                 where.append("last_posted_at IS NOT NULL")
             elif state in ("unposted", "not_posted"):
                 where.append("last_posted_at IS NULL")
+            elif state == "active":
+                where.append("""EXISTS (SELECT 1 FROM post WHERE post.product_id=product.id
+                              AND post.post_type='SALES'
+                              AND post.status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED'))""")
+            elif state == "no_active":
+                where.append("""NOT EXISTS (SELECT 1 FROM post WHERE post.product_id=product.id
+                              AND post.post_type='SALES'
+                              AND post.status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED'))""")
 
         order_by = {
             "recommended": "COALESCE(score, 0) DESC, last_seen_at DESC",
@@ -320,7 +354,7 @@ class ProductService:
             "commission": "COALESCE(commission_amount, 0) DESC, last_seen_at DESC",
             "price_asc": "price_min ASC, last_seen_at DESC",
             "price_desc": "price_min DESC, last_seen_at DESC",
-            "newest": "last_seen_at DESC",
+            "newest": "COALESCE(first_seen_at, created_at) DESC, id DESC",
         }.get((filters.sort or "recommended").lower(), "COALESCE(score, 0) DESC, last_seen_at DESC")
         sql = f"SELECT * FROM product WHERE {' AND '.join(where)} ORDER BY {order_by}"
         if filters.limit is not None:

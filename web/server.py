@@ -211,7 +211,17 @@ def create_app():
     @staticmethod
     def _sync_summary(result):
         return (f"Đã đồng bộ {result.fetched} sản phẩm "
-                f"({result.inserted} mới, {result.updated} cập nhật).")
+                f"({result.inserted} mới, {result.updated} cập nhật, "
+                f"{getattr(result, 'failed', 0)} lỗi).")
+
+    def _log_catalog_failure(operation, error, *, product_id=None, status=None):
+        """Log allowlisted diagnostics only; provider exception text may contain credentials."""
+        fields = [f"operation={operation}", f"error_type={type(error).__name__}"]
+        if product_id:
+            fields.append(f"product_id={product_id}")
+        if status:
+            fields.append(f"status={status}")
+        app.logger.error("Catalog operation failed: %s", " ".join(fields))
 
     def _catalog_error(error):
         if isinstance(error, ProductUserError):
@@ -253,8 +263,8 @@ def create_app():
             service = ProductService(conn, AccessTradeClient.from_env())
             items = _safe_catalog_items(service.search_local(filters))
             catalog = _catalog_summary(conn)
-        except Exception:
-            app.logger.exception("Catalog query failed")
+        except Exception as error:
+            _log_catalog_failure("query", error)
             err = err or "Không thể tiếp tục. Vui lòng thử lại."
         finally:
             conn.close()
@@ -274,7 +284,7 @@ def create_app():
             return _catalog_redirect(synced=_sync_summary(result))
         except Exception as error:
             if not isinstance(error, ProductUserError):
-                app.logger.exception("Catalog sync failed")
+                _log_catalog_failure("sync", error)
             return _catalog_redirect(err=_catalog_error(error))
         finally:
             conn.close()
@@ -305,7 +315,7 @@ def create_app():
             return _catalog_redirect(synced="Đã tạo link affiliate để sao chép.")
         except Exception as error:
             if not isinstance(error, ProductUserError):
-                app.logger.exception("Catalog standalone link failed")
+                _log_catalog_failure("create_product_link", error, product_id=product_id)
             return _catalog_redirect(err=_catalog_error(error))
         finally:
             conn.close()
@@ -318,15 +328,14 @@ def create_app():
                 conn, factory.build_context(), product_id,
                 campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
                 channel_code=request.form.get("channel_code") or None,
-                on_link_error=lambda error: app.logger.error(
-                    "Catalog post affiliate link failed",
-                    exc_info=(type(error), error, error.__traceback__)))
+                on_link_error=lambda error: _log_catalog_failure(
+                    "create_post_link", error, product_id=product_id, status="FAILED"))
             if not result.get("ok"):
                 raise ProductUserError(result.get("error") or "Không thể tạo bài nháp.")
             return redirect(url_for("review"))
         except Exception as error:
             if not isinstance(error, ProductUserError):
-                app.logger.exception("Catalog post creation failed")
+                _log_catalog_failure("create_post", error, product_id=product_id)
             return _catalog_redirect(err=_catalog_error(error))
         finally:
             conn.close()

@@ -13,7 +13,7 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
-from . import attribution, content, crypto, imaging, niche, playbook, scoring, storage, valuepost
+from . import attribution, content, imaging, niche, playbook, scoring, storage, valuepost
 from .db import audit, now, ulid
 from .jobs import enqueue, handler
 from .products import PROVIDER as CATALOG_PROVIDER, ProductService
@@ -303,9 +303,9 @@ def _set_catalog_link_state(conn, product_id: str, status: str, error: str = Non
 
 
 def _redacted_link_error(error: Exception) -> str:
-    # Provider responses can carry request context. The state only needs to say that
-    # link creation failed; details remain out of the catalog database and audit log.
-    return crypto.redact(str(error))
+    # Provider exceptions can embed tokens, headers, URLs, and response bodies.
+    # Persist only the exception class, never its message.
+    return f"Link creation failed ({type(error).__name__})"
 
 
 def _create_post_from_catalog_product(conn, ctx, product, post_id: str, link,
@@ -521,6 +521,8 @@ def generate_content(conn, payload, ctx):
     template = conn.execute("SELECT * FROM caption_template WHERE id=?", (payload["template_id"],)).fetchone()
     if not (product and channel and campaign and template):
         raise ValueError("Thiếu dữ liệu tham chiếu khi sinh nội dung")
+    if product["provider"] == CATALOG_PROVIDER:
+        raise ValueError("Catalog product must use the catalog content pipeline")
 
     post_id = ulid()
     subs = attribution.encode_sub_ids(post_id, campaign["code"], payload["variant_code"], channel["code"])

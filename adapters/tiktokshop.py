@@ -19,6 +19,7 @@ AT_ROOT = os.environ.get("AT_ROOT", "https://api.accesstrade.vn")
 # chưa được lưu lại, nên để cấu hình được và có đường dự phòng chung.
 # Compatibility contract: the client owns calls to "/v2/tiktokshop_product_feeds".
 PRODUCT_FEED_PATH = "/v2/tiktokshop_product_feeds"
+DEFAULT_TIKTOK_LINK_PATH = "/v1/product_link/create"
 
 
 def _rate(node) -> Optional[float]:
@@ -100,7 +101,8 @@ class AccessTradeTikTokShopSource(ContentSource):
     def search_products(self, query: str = None, limit: int = 20, cursor: str = None):
         """Trả về (danh sách RawProduct, next_page_token)."""
         rows, next_page_token = self.client.search_products(
-            limit=limit, title_keywords=query, page_token=cursor)
+            limit=limit, title_keywords=query, page_token=cursor,
+            campaign_id=self.campaign_id or None)
         out = []
         for r in rows:
             try:
@@ -141,7 +143,9 @@ class AccessTradeTikTokShopSource(ContentSource):
 
     def create_tracking_link(self, product_url: str, sub_ids: dict) -> str:
         """Gắn post_id vào cả utm_content lẫn sub1 -- xem attribution.extract_post_id."""
-        link = self.client.create_tracking_link(product_url, sub_ids)
+        link = self.client.create_tracking_link(
+            product_url, sub_ids, campaign_id=self.campaign_id or None,
+            link_path=os.environ.get("AT_TIKTOK_LINK_PATH", DEFAULT_TIKTOK_LINK_PATH))
         return link.short_url or link.full_url
 
     @staticmethod
@@ -152,7 +156,7 @@ class AccessTradeTikTokShopSource(ContentSource):
         if isinstance(node, list):
             links = node
         if not links:
-            raise PublishError(f"Accesstrade không tạo được link: {node.get('error_link') or data}")
+            raise PublishError("Accesstrade không tạo được link")
         first = links[0]
         if isinstance(first, str):
             return first
