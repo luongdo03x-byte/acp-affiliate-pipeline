@@ -41,6 +41,16 @@ def test_env_example_has_required_safe_defaults():
     assert "REDACTED" not in text
 
 
+def test_catalog_schedule_docs_source_active_release_env():
+    """Scheduled sync must export the active release env before running Python."""
+    for path in (Path("README.md"), Path("docs/ACP_RUNBOOK.md")):
+        text = path.read_text()
+        assert "/bin/bash -lc" in text
+        assert "set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a" in text
+        assert ("exec /home/operator/Downloads/ACP/acp/.venv/bin/python "
+                "/home/operator/Downloads/ACP/acp/run.py product-sync") in text
+
+
 def test_product_catalog_migration_is_idempotent():
     with tempfile.TemporaryDirectory() as directory:
         previous_db_path = db.DB_PATH
@@ -1471,7 +1481,8 @@ def test_catalog_standalone_link_uses_product_marker():
 
 
 def main():
-    groups = {"docs": [test_env_example_has_required_safe_defaults],
+    groups = {"docs": [test_env_example_has_required_safe_defaults,
+                        test_catalog_schedule_docs_source_active_release_env],
               "migration": [test_product_catalog_migration_is_idempotent,
                             test_migration_preserves_existing_product_and_backfills_provider,
                             test_migration_distinguishes_duplicate_legacy_external_ids_by_merchant],

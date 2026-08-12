@@ -241,9 +241,13 @@ nó. Bật cờ này vẫn không tự publish: nội dung tạo tự động d�
 Từ release đang chạy:
 
 ```bash
-cd ~/Downloads/ACP/acp
-python3 run.py product-sync
+/bin/bash -lc 'set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a; exec /home/operator/Downloads/ACP/acp/.venv/bin/python /home/operator/Downloads/ACP/acp/run.py product-sync'
 ```
+
+Thay `/home/operator` bằng đường dẫn cài đặt tuyệt đối. `acp` là symlink release
+đang active, nên wrapper source `.env.local` của đúng release trước khi gọi
+interpreter và `run.py` cùng release đó. Không dùng bare `python3 run.py` trong
+cron hoặc systemd vì process scheduler không tự nạp `.env.local`.
 
 Trên dashboard, mở `/sanpham`, có thể nhập từ khóa, rồi bấm **Đồng bộ**. Catalog
 được tìm/lọc/sắp xếp tại database cục bộ; tạo link hoặc tạo bài chỉ áp dụng cho
@@ -252,12 +256,34 @@ sản phẩm operator chọn.
 Tạo cron hoặc systemd timer ngoài Flask worker, chạy mỗi 60 phút. Ví dụ cron:
 
 ```cron
-0 * * * * cd /home/operator/Downloads/ACP/acp && /home/operator/Downloads/ACP/acp/.venv/bin/python run.py product-sync
+0 * * * * /bin/bash -lc 'set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a; exec /home/operator/Downloads/ACP/acp/.venv/bin/python /home/operator/Downloads/ACP/acp/run.py product-sync'
 ```
 
-Với systemd, dùng `OnUnitActiveSec=60min` trong timer và `ExecStart` trỏ đến
-cùng interpreter/lệnh. Khóa database của catalog chặn sync chồng nhau; khi nhận
-thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song song.
+Ví dụ systemd (dùng một service để env không bị ghi trực tiếp trong unit):
+
+```ini
+# /etc/systemd/system/acp-product-sync.service
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc 'set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a; exec /home/operator/Downloads/ACP/acp/.venv/bin/python /home/operator/Downloads/ACP/acp/run.py product-sync'
+```
+
+```ini
+# /etc/systemd/system/acp-product-sync.timer
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60min
+Persistent=true
+Unit=acp-product-sync.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Sau khi tạo/sửa unit, chạy `systemctl daemon-reload` rồi `systemctl enable --now
+acp-product-sync.timer`. Khóa database của catalog chặn sync chồng nhau; khi
+nhận thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song
+song.
 
 ### Xử lý sự cố
 
