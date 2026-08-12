@@ -18,7 +18,8 @@ def set_system_setting(conn, key: str, value, actor: str = "operator") -> None:
         INSERT INTO system_setting (key, value, updated_at) VALUES (?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
     """, (key, value, now()))
-    audit(conn, "system_setting", key, "set", actor=actor, detail={"value": value})
+    audit_value = value if key == PUBLISH_WORKER_ENABLED else "[redacted]"
+    audit(conn, "system_setting", key, "set", actor=actor, detail={"value": audit_value})
 
 
 def publish_worker_enabled(conn) -> bool:

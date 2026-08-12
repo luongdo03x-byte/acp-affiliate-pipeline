@@ -91,6 +91,12 @@ def _fail(conn, job, err: str, retryable: bool) -> None:
                      (attempts, err[:500], now(), job["id"]))
 
 
+def _release_disabled_publish(conn, job) -> None:
+    """Trả job publish về READY khi operator tắt công tắc ngay sau claim."""
+    conn.execute("""UPDATE job_queue SET status='READY', locked_at=NULL, locked_by=NULL,
+                    updated_at=? WHERE id=?""", (now(), job["id"]))
+
+
 def run_once(conn, limit: int = 10, ctx: dict = None) -> dict:
     """Chạy một lượt. Trả về thống kê để CLI và test đọc được."""
     from ..adapters.base import RateLimitError, ContentViolationError, AuthError, PublishError
@@ -103,6 +109,10 @@ def run_once(conn, limit: int = 10, ctx: dict = None) -> dict:
         if not fn:
             _fail(conn, job, f"Không có handler cho loại job '{job['job_type']}'", retryable=False)
             stats["failed"] += 1
+            continue
+        if job["job_type"] == "PUBLISH_POST" and not publish_worker_enabled(conn):
+            _release_disabled_publish(conn, job)
+            stats["skipped"] += 1
             continue
         try:
             fn(conn, json.loads(job["payload"]), ctx)

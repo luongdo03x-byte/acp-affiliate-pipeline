@@ -2169,6 +2169,80 @@ def test_enabled_publish_worker_executes_due_publish_job():
                 jobs._handlers["PUBLISH_POST"] = previous_handler
 
 
+def test_system_setting_audit_redacts_non_toggle_value():
+    """An arbitrary setting value must never be copied into the audit trail."""
+    from acp.core import system_settings
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "redacted-setting.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                secret_value = "credential-that-must-not-appear-in-audit"
+                system_settings.set_system_setting(conn, "unrelated_setting", secret_value)
+
+                audit_detail = conn.execute(
+                    "SELECT detail FROM audit_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()["detail"]
+                assert secret_value not in audit_detail
+                assert audit_detail == '{"value": "[redacted]"}'
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+
+
+def test_publish_worker_releases_claimed_job_if_disabled_before_handler():
+    """A toggle flipped after claim must still stop the publish handler from running."""
+    from acp.core import jobs, system_settings
+
+    calls = []
+    previous_handler = jobs._handlers.get("PUBLISH_POST")
+    original_claim = jobs.claim
+
+    @jobs.handler("PUBLISH_POST")
+    def publish_handler(conn, payload, ctx):
+        calls.append(payload["post_id"])
+
+    def claim_then_disable(conn, *args, **kwargs):
+        claimed = original_claim(conn, *args, **kwargs)
+        system_settings.set_system_setting(conn, "publish_worker_enabled", "0")
+        return claimed
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "worker-race.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                system_settings.set_system_setting(conn, "publish_worker_enabled", "1")
+                job_id = jobs.enqueue(conn, "PUBLISH_POST", {"post_id": "post-race"})
+                jobs.claim = claim_then_disable
+
+                stats = jobs.run_once(conn, limit=1, ctx={})
+
+                job = conn.execute(
+                    "SELECT status, attempt_count, locked_at, locked_by FROM job_queue WHERE id=?", (job_id,)
+                ).fetchone()
+                assert dict(job) == {
+                    "status": "READY", "attempt_count": 0, "locked_at": None, "locked_by": None,
+                }
+                assert calls == []
+                assert stats["skipped"] == 1
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+            jobs.claim = original_claim
+            if previous_handler is None:
+                jobs._handlers.pop("PUBLISH_POST", None)
+            else:
+                jobs._handlers["PUBLISH_POST"] = previous_handler
+
+
 def main():
     groups = {"docs": [test_env_example_has_required_safe_defaults,
                         test_catalog_schedule_docs_source_active_release_env],
@@ -2232,7 +2306,9 @@ def main():
               "worker": [test_system_setting_schema_is_idempotent_and_unique,
                          test_publish_worker_setting_defaults_persists_and_audits,
                          test_disabled_publish_worker_keeps_publish_ready_and_runs_other_jobs,
-                         test_enabled_publish_worker_executes_due_publish_job]}
+                         test_enabled_publish_worker_executes_due_publish_job,
+                         test_system_setting_audit_redacts_non_toggle_value,
+                         test_publish_worker_releases_claimed_job_if_disabled_before_handler]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:

@@ -17,7 +17,7 @@ db.DB_PATH = os.environ["ACP_DB"]
 
 from acp.adapters.base import ContentViolationError, PublishError, RateLimitError  # noqa: E402
 from acp.adapters.mock import MockAccessTrade, MockThreads  # noqa: E402
-from acp.core import attribution, content, crypto, jobs, pipeline, scoring  # noqa: E402
+from acp.core import attribution, content, crypto, jobs, pipeline, scoring, system_settings  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 PASS, FAIL = [], []
@@ -259,6 +259,7 @@ def test_idempotency_and_double_post():
     res = pipeline.approve_post(conn, post["id"])
     check("duyệt xong thì lên lịch", res["ok"])
     conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{post['id']}"))
+    system_settings.set_system_setting(conn, "publish_worker_enabled", "1", actor="test")
     jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
 
     before = len(ch.published)
@@ -316,6 +317,7 @@ def test_daily_cap():
     for r in conn.execute("SELECT id FROM post WHERE status='PENDING_REVIEW'").fetchall():
         pipeline.approve_post(conn, r["id"])
     conn.execute("UPDATE job_queue SET run_after=? WHERE job_type='PUBLISH_POST' AND status='READY'", (now(),))
+    system_settings.set_system_setting(conn, "publish_worker_enabled", "1", actor="test")
     approved = conn.execute("SELECT COUNT(*) FROM post WHERE status='SCHEDULED'").fetchone()[0]
     before = len(ch.published)
     jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
