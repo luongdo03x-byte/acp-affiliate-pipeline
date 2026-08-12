@@ -146,7 +146,12 @@ def score_candidates(conn, limit: int = 20, explain: bool = False, niches=None):
         WHERE substr(COALESCE(p.published_at, p.scheduled_at, p.created_at), 1, 10) = ?
         GROUP BY pr.category_code""", (today,)).fetchall()}
 
-    products = conn.execute("SELECT * FROM product WHERE is_available = 1").fetchall()
+    # ACCESSTRADE_TIKTOK rows have a separate ranking and per-post link pipeline.
+    # Sending them through this legacy scorer would later use ctx.source and lose
+    # catalog stock/link semantics.
+    products = conn.execute("""SELECT * FROM product
+                               WHERE is_available = 1
+                                 AND COALESCE(provider, '') <> 'ACCESSTRADE_TIKTOK'""").fetchall()
     if not products:
         return []
 

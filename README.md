@@ -327,6 +327,55 @@ Các nguyên tắc bắt buộc của luồng này:
 - không tạo `PUBLISH_POST` trước khi operator duyệt tại `/duyet`;
 - outbound URL và ảnh đi qua kiểm tra scheme/host/DNS/IP, redirect, Content-Type và giới hạn kích thước để giảm rủi ro SSRF.
 
+## Catalog sản phẩm ACCESSTRADE TikTok Shop
+
+Đồng bộ catalog chạy độc lập với Flask để có thể gọi an toàn từ cron hoặc
+systemd timer. Sao chép các biến catalog từ `.env.example` vào `.env.local` của
+runtime, rồi đặt `ACCESSTRADE_API_TOKEN` ở file runtime đó. Token phải để trống
+trong `.env.example` và không được commit.
+
+```bash
+/bin/bash -lc 'set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a; exec /home/operator/Downloads/ACP/acp/.venv/bin/python /home/operator/Downloads/ACP/acp/run.py product-sync'
+```
+
+`/home/operator/Downloads/ACP/acp` là symlink tới release đang active, vì vậy
+lệnh luôn source đúng `.env.local` của release trước khi chạy đúng virtualenv.
+Thay `/home/operator` bằng đường dẫn tuyệt đối nơi ACP được cài.
+
+Lệnh lấy tối đa `ACP_PRODUCT_SYNC_MAX_PAGES` trang, upsert catalog cục bộ và
+không tạo bản ghi trùng khi đồng bộ lại. Đặt lịch mỗi 60 phút (theo
+`ACP_PRODUCT_SYNC_INTERVAL_MINUTES`), ví dụ cron:
+
+```cron
+0 * * * * /bin/bash -lc 'set -a; . /home/operator/Downloads/ACP/acp/.env.local; set +a; exec /home/operator/Downloads/ACP/acp/.venv/bin/python /home/operator/Downloads/ACP/acp/run.py product-sync'
+```
+
+Hoặc dùng systemd service có `ExecStart` là đúng command `/bin/bash -lc` ở trên,
+và timer `OnUnitActiveSec=60min`. Không đặt scheduler trong Flask worker. Khóa
+trong database sẽ từ chối một lượt đồng bộ đang chạy, nên không chạy chồng nhiều
+job.
+
+Để chạy thủ công, mở `/sanpham`, nhập từ khóa nếu cần và bấm **Đồng bộ**. Trang
+này chỉ đọc catalog cục bộ sau khi sync; operator có thể tạo link affiliate hoặc
+tạo bài nháp cho một sản phẩm. `--auto-prepare` chỉ có hiệu lực khi
+`ACP_AUTO_PREPARE_CONTENT=true`; mặc định tắt. Ngay cả khi bật, ACP chỉ tạo bài
+`PENDING_REVIEW` để người vận hành kiểm tra ở `/duyet`, không tự publish.
+
+Khi gặp lỗi: HTTP 401 nghĩa là kiểm tra lại token ACCESSTRADE trong `.env.local`;
+429 là giới hạn tốc độ, chờ rồi chạy lại; timeout/5xx hoặc dịch vụ không phản hồi
+thì thử lại sau. Sản phẩm hết hàng, không có `detail_link`, hoặc còn trong
+`ACP_PRODUCT_REPOST_COOLDOWN_DAYS` sẽ không được auto-prepare. Manual selection
+trên `/sanpham` có thể override cooldown, nhưng vẫn dừng ở bước duyệt tay.
+
+### Kiểm tra end-to-end bằng mock
+
+Giữ `ACP_ADAPTER=mock` và `ACP_SOURCE=mock`, rồi chạy command trên với hai biến
+đó được export trong shell hiện tại, để sync → có một catalog row → tạo bài cho
+row đó → xác nhận short link được lưu và post ở `PENDING_REVIEW`. Sync lại cùng
+catalog phải vẫn chỉ có một row. Cuối cùng, mô phỏng publish thành công và kiểm
+tra `last_posted_at`/`post_count` được cập nhật; lần auto-prepare sau phải tôn
+trọng cooldown. Quy trình mock này không được publish Threads thật.
+
 ## Dark Premium dashboard
 
 Dashboard server-rendered dùng design system chung tại:

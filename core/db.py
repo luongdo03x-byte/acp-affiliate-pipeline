@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS product (
     UNIQUE (source, merchant, external_product_id)
 );
 
+CREATE TABLE IF NOT EXISTS product_sync_lock (
+    name      TEXT PRIMARY KEY,
+    locked_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS product_price_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id  TEXT NOT NULL REFERENCES product(id),
@@ -231,11 +236,45 @@ def transaction(conn: sqlite3.Connection):
         raise
 
 
+PRODUCT_MIGRATIONS = [
+    # Catalog fields are added one at a time so existing product data stays intact.
+    ("product", "provider", "ALTER TABLE product ADD COLUMN provider TEXT"),
+    ("product", "shop_name", "ALTER TABLE product ADD COLUMN shop_name TEXT"),
+    ("product", "detail_link", "ALTER TABLE product ADD COLUMN detail_link TEXT"),
+    ("product", "main_image_url", "ALTER TABLE product ADD COLUMN main_image_url TEXT"),
+    ("product", "sale_region", "ALTER TABLE product ADD COLUMN sale_region TEXT"),
+    ("product", "currency", "ALTER TABLE product ADD COLUMN currency TEXT"),
+    ("product", "price_min", "ALTER TABLE product ADD COLUMN price_min INTEGER"),
+    ("product", "price_max", "ALTER TABLE product ADD COLUMN price_max INTEGER"),
+    ("product", "original_price_min", "ALTER TABLE product ADD COLUMN original_price_min INTEGER"),
+    ("product", "original_price_max", "ALTER TABLE product ADD COLUMN original_price_max INTEGER"),
+    ("product", "commission_rate_raw", "ALTER TABLE product ADD COLUMN commission_rate_raw INTEGER"),
+    ("product", "commission_rate_percent", "ALTER TABLE product ADD COLUMN commission_rate_percent REAL"),
+    ("product", "commission_amount", "ALTER TABLE product ADD COLUMN commission_amount INTEGER"),
+    ("product", "commission_currency", "ALTER TABLE product ADD COLUMN commission_currency TEXT"),
+    ("product", "units_sold", "ALTER TABLE product ADD COLUMN units_sold INTEGER"),
+    ("product", "has_inventory", "ALTER TABLE product ADD COLUMN has_inventory INTEGER"),
+    ("product", "category_data", "ALTER TABLE product ADD COLUMN category_data TEXT"),
+    ("product", "score", "ALTER TABLE product ADD COLUMN score REAL"),
+    ("product", "affiliate_url", "ALTER TABLE product ADD COLUMN affiliate_url TEXT"),
+    ("product", "affiliate_short_url", "ALTER TABLE product ADD COLUMN affiliate_short_url TEXT"),
+    ("product", "affiliate_link_status",
+     "ALTER TABLE product ADD COLUMN affiliate_link_status TEXT NOT NULL DEFAULT 'NOT_CREATED'"),
+    ("product", "affiliate_link_error", "ALTER TABLE product ADD COLUMN affiliate_link_error TEXT"),
+    ("product", "first_seen_at", "ALTER TABLE product ADD COLUMN first_seen_at TEXT"),
+    ("product", "last_seen_at", "ALTER TABLE product ADD COLUMN last_seen_at TEXT"),
+    ("product", "last_synced_at", "ALTER TABLE product ADD COLUMN last_synced_at TEXT"),
+    ("product", "affiliate_link_created_at", "ALTER TABLE product ADD COLUMN affiliate_link_created_at TEXT"),
+    ("product", "last_posted_at", "ALTER TABLE product ADD COLUMN last_posted_at TEXT"),
+    ("product", "post_count", "ALTER TABLE product ADD COLUMN post_count INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 MIGRATIONS = [
     # (bảng, cột, câu lệnh) -- chạy được nhiều lần, bỏ qua nếu cột đã có.
     ("channel", "niches", "ALTER TABLE channel ADD COLUMN niches TEXT NOT NULL DEFAULT '[]'"),
     ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
-]
+] + PRODUCT_MIGRATIONS
 
 
 def _rebuild_post_table(conn) -> None:
@@ -283,6 +322,20 @@ def migrate(conn) -> list:
         if cols and column not in cols:
             conn.execute(sql)
             applied.append(f"{table}.{column}")
+
+    product_cols = {r[1] for r in conn.execute("PRAGMA table_info(product)").fetchall()}
+    if {"provider", "source", "merchant"} <= product_cols:
+        conn.execute("""UPDATE product
+                        SET provider=COALESCE(
+                            provider,
+                            'LEGACY_' || length(source) || ':' || source || ':' ||
+                            length(merchant) || ':' || merchant
+                        )""")
+    if {"first_seen_at", "created_at"} <= product_cols:
+        conn.execute("UPDATE product SET first_seen_at=COALESCE(first_seen_at, created_at)")
+    if {"provider", "external_product_id"} <= product_cols:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_provider_external "
+                     "ON product(provider, external_product_id)")
 
     post_cols = conn.execute("PRAGMA table_info(post)").fetchall()
     product_id_col = next((r for r in post_cols if r[1] == "product_id"), None)

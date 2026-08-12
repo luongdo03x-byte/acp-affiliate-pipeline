@@ -5,17 +5,18 @@
   <div>
     <div class="eyebrow">Product workspace</div>
     <h1>Sản phẩm</h1>
-    <p class="lede">Tìm sản phẩm từ nguồn hiện có hoặc tạo bài từ link affiliate Shopee đã có sẵn.</p>
+    <p class="lede">Chọn sản phẩm từ catalog ACCESSTRADE đã đồng bộ, hoặc tạo bài từ link affiliate Shopee đã có sẵn.</p>
   </div>
   <a class="btn btn--ghost" href="/duyet">Chờ duyệt{% if pending_review %} · {{ pending_review }}{% endif %}</a>
 </div>
 
 <div class="tabs" role="navigation" aria-label="Chế độ sản phẩm">
-  <a class="tab {{ 'tab--active' if mode != 'affiliate' }}" href="{{ url_for('products', mode='search') }}">Tìm sản phẩm</a>
+  <a class="tab {{ 'tab--active' if mode != 'affiliate' }}" href="{{ url_for('products') }}">Catalog sản phẩm</a>
   <a class="tab {{ 'tab--active' if mode == 'affiliate' }}" href="{{ url_for('products', mode='affiliate') }}">Nhập link affiliate</a>
 </div>
 
 {% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
+{% if synced %}<div class="alert alert--success"><strong>✓</strong><span>{{ synced }}</span></div>{% endif %}
 {% if metadata_state == 'AUTO_COMPLETE' %}
 <div class="alert alert--success"><strong>✓ Đã tự lấy thông tin.</strong><span>Kiểm tra lại rồi tạo bài.</span></div>
 {% elif metadata_state == 'AUTO_PARTIAL' %}
@@ -216,56 +217,166 @@
   </script>
   {% endif %}
 {% else %}
-  <form method="get" class="card search-panel">
-    <input type="hidden" name="mode" value="search">
-    <div class="field field--grow">
-      <label for="q">Từ khoá</label>
-      <input id="q" name="q" value="{{ q }}" placeholder="máy xay, tai nghe, thảm yoga...">
-    </div>
-    <div class="field search-panel__source">
-      <label for="nguon">Nguồn</label>
-      <select id="nguon" name="nguon">
-        {% for s in ['', 'tiktokshop', 'shopee', 'mock'] %}
-        <option value="{{ s }}" {{ 'selected' if s == request.args.get('nguon','') }}>{{ s or 'mặc định' }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button class="btn btn--primary" type="submit">Tìm sản phẩm</button>
-  </form>
+  <section class="catalog-summary" aria-label="Tổng quan catalog">
+    <div class="catalog-stat"><span>Đồng bộ gần nhất</span><strong>{{ catalog.last_synced_at or '—' }}</strong></div>
+    <div class="catalog-stat"><span>Trong catalog</span><strong>{{ catalog.count|num }}</strong></div>
+    <div class="catalog-stat"><span>Còn hàng</span><strong>{{ catalog.in_stock|num }}</strong></div>
+    <div class="catalog-stat"><span>Link sẵn sàng</span><strong>{{ catalog.ready|num }}</strong></div>
+  </section>
+
+  <div class="catalog-tools card">
+    <form method="post" action="{{ url_for('sync_products') }}" class="catalog-sync-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="q" value="{{ filters.keyword or '' }}">
+      <button class="btn btn--primary" type="submit">Đồng bộ sản phẩm</button>
+      <span class="note">Tìm từ ACCESSTRADE theo từ khoá hiện tại.</span>
+    </form>
+    <form method="get" class="catalog-filters">
+      <div class="field field--grow">
+        <label for="q">Từ khoá</label>
+        <input id="q" name="q" value="{{ filters.keyword or '' }}" placeholder="váy, máy xay, tai nghe...">
+      </div>
+      <div class="field">
+        <label for="shop">Shop</label>
+        <input id="shop" name="shop" value="{{ filters.shop_keyword or '' }}" placeholder="Tên shop">
+      </div>
+      <div class="field">
+        <label for="inventory">Kho</label>
+        <select id="inventory" name="inventory">
+          <option value="" {{ 'selected' if filters.has_inventory is none }}>Tất cả</option>
+          <option value="1" {{ 'selected' if filters.has_inventory is true }}>Còn hàng</option>
+          <option value="0" {{ 'selected' if filters.has_inventory is false }}>Hết hàng</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="min_commission_rate">Hoa hồng tối thiểu (%)</label>
+        <input id="min_commission_rate" name="min_commission_rate" inputmode="decimal"
+               value="{{ filters.min_commission_rate_percent if filters.min_commission_rate_percent is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_commission_amount">Hoa hồng tối thiểu (VND)</label>
+        <input id="min_commission_amount" name="min_commission_amount" inputmode="numeric"
+               value="{{ filters.min_commission_amount if filters.min_commission_amount is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_price">Giá từ (VND)</label>
+        <input id="min_price" name="min_price" inputmode="numeric"
+               value="{{ filters.min_price if filters.min_price is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="max_price">Giá đến (VND)</label>
+        <input id="max_price" name="max_price" inputmode="numeric"
+               value="{{ filters.max_price if filters.max_price is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="min_units_sold">Đã bán tối thiểu</label>
+        <input id="min_units_sold" name="min_units_sold" inputmode="numeric"
+               value="{{ filters.min_units_sold if filters.min_units_sold is not none else '' }}">
+      </div>
+      <div class="field">
+        <label for="affiliate_status">Trạng thái link</label>
+        <select id="affiliate_status" name="affiliate_status">
+          <option value="">Tất cả</option>
+          {% for state in ['NOT_CREATED', 'CREATING', 'PRODUCT_ONLY', 'READY', 'FAILED', 'UNAVAILABLE'] %}
+          <option value="{{ state }}" {{ 'selected' if filters.affiliate_link_status == state }}>{{ state }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="post_state">Trạng thái bài</label>
+        <select id="post_state" name="post_state">
+          <option value="">Tất cả</option>
+          <option value="active" {{ 'selected' if filters.post_state == 'active' }}>Đang hoạt động</option>
+          <option value="no_active" {{ 'selected' if filters.post_state == 'no_active' }}>Chưa có bài hoạt động</option>
+          <option value="posted" {{ 'selected' if filters.post_state == 'posted' }}>Đã đăng</option>
+          <option value="unposted" {{ 'selected' if filters.post_state == 'unposted' }}>Chưa đăng</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="sort">Sắp xếp</label>
+        <select id="sort" name="sort">
+          <option value="recommended" {{ 'selected' if filters.sort == 'recommended' }}>Đề xuất</option>
+          <option value="score" {{ 'selected' if filters.sort == 'score' }}>ACP Score</option>
+          <option value="sold" {{ 'selected' if filters.sort == 'sold' }}>Đã bán</option>
+          <option value="commission" {{ 'selected' if filters.sort == 'commission' }}>Hoa hồng</option>
+          <option value="price_asc" {{ 'selected' if filters.sort == 'price_asc' }}>Giá thấp</option>
+          <option value="price_desc" {{ 'selected' if filters.sort == 'price_desc' }}>Giá cao</option>
+          <option value="newest" {{ 'selected' if filters.sort == 'newest' }}>Mới nhất</option>
+        </select>
+      </div>
+      <button class="btn" type="submit">Lọc catalog</button>
+    </form>
+  </div>
 
   {% if items %}
   <div class="section-heading section-heading--spaced">
-    <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
+    <div><h2>{{ items|length }} sản phẩm trong catalog</h2><p class="note">Dữ liệu đọc từ database cục bộ.</p></div>
   </div>
-  <div class="table-card">
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Đã bán</th><th></th></tr></thead>
-        <tbody>
-        {% for p in items %}
-          <tr>
-            <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span></td>
-            <td class="dim">{{ p.merchant }}</td>
-            <td class="n">{{ p.current_price|vnd }}</td>
-            <td class="n money">{{ p.commission_value|vnd }}</td>
-            <td class="n dim">{{ p.sold_count|num }}</td>
-            <td class="table-action">
-              <form method="post" action="/sanpham/tao-bai">
-                <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-                <input type="hidden" name="external_product_id" value="{{ p.external_product_id }}">
-                <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
-                <input type="hidden" name="q" value="{{ q }}">
-                <button class="btn btn--small" type="submit">Tạo bài</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+  <div class="catalog-grid">
+    {% for p in items %}
+    <article class="catalog-card">
+      <div class="catalog-card__image">
+        {% if p.main_image_url %}<img src="{{ p.main_image_url }}" alt="{{ p.name }}" loading="lazy">{% else %}<span>Chưa có ảnh</span>{% endif %}
+      </div>
+      <div class="catalog-card__body">
+        <div class="catalog-card__topline">
+          <span class="status-badge {{ 'status-badge--success' if p.has_inventory else 'status-badge--warning' }}">{{ 'Còn hàng' if p.has_inventory else 'Hết hàng' }}</span>
+          <span class="tag">{{ p.affiliate_link_status or 'NOT_CREATED' }}</span>
+        </div>
+        <h3>{{ p.name or '—' }}</h3>
+        <p class="catalog-card__shop">{{ p.shop_name or p.merchant or '—' }}</p>
+        <dl class="catalog-metrics">
+          <div><dt>Giá</dt><dd>{{ p.price_min|vnd if p.price_min is not none else '—' }}</dd></div>
+          <div><dt>Hoa hồng</dt><dd>{{ p.commission_amount|vnd if p.commission_amount is not none else '—' }}</dd></div>
+          <div><dt>Đã bán</dt><dd>{{ p.units_sold|num if p.units_sold is not none else '—' }}</dd></div>
+          <div><dt>ACP Score</dt><dd>{{ '%.2f'|format(p.score) if p.score is not none else '—' }}</dd></div>
+        </dl>
+        <div class="catalog-card__links">
+          {% if p.detail_link %}<a href="{{ p.detail_link }}" target="_blank" rel="noopener">Xem sản phẩm</a>{% else %}<span>Không có trang sản phẩm</span>{% endif %}
+          {% if p.affiliate_short_url or p.affiliate_url %}<button class="btn btn--small catalog-copy" type="button" data-affiliate-link="{{ p.affiliate_short_url or p.affiliate_url }}">Sao chép link</button>{% endif %}
+        </div>
+        <div class="catalog-card__actions">
+          <form method="post" action="{{ url_for('create_catalog_affiliate_link', product_id=p.id) }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="q" value="{{ filters.keyword or '' }}">
+            <button class="btn btn--small" type="submit">Tạo link</button>
+          </form>
+          <form method="post" action="{{ url_for('create_from_catalog_product', product_id=p.id) }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="q" value="{{ filters.keyword or '' }}">
+            <select name="channel_code" aria-label="Kênh Threads">
+              <option value="">Kênh tự chọn</option>
+              {% for ch in channels %}<option value="{{ ch.code }}">{{ ch.handle }}</option>{% endfor %}
+            </select>
+            <button class="btn btn--primary btn--small" type="submit">Tạo bài</button>
+          </form>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
   </div>
   {% elif not err %}
-  <div class="empty-state">Không tìm thấy sản phẩm nào.</div>
+  <div class="empty-state">Catalog chưa có sản phẩm phù hợp. Đồng bộ từ ACCESSTRADE để bắt đầu.</div>
   {% endif %}
+  <script>
+  (function () {
+    document.querySelectorAll(".catalog-sync-form").forEach(function (form) {
+      form.addEventListener("submit", function () {
+        var button = form.querySelector('button[type="submit"]');
+        if (button) { button.disabled = true; button.textContent = "Đang đồng bộ…"; }
+      });
+    });
+    document.querySelectorAll(".catalog-copy").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var original = button.textContent;
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(button.dataset.affiliateLink).then(function () {
+          button.textContent = "Đã sao chép";
+          window.setTimeout(function () { button.textContent = original; }, 1400);
+        });
+      });
+    });
+  })();
+  </script>
 {% endif %}
 {% endblock %}

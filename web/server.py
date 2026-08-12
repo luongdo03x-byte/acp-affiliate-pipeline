@@ -13,17 +13,20 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
 from ..adapters import factory
+from ..adapters.accesstrade_client import AccessTradeClient
 from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
 from ..core import attribution, content, helper_pairing, jobs, pipeline, scoring, storage
 from ..core.db import connect, now
+from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
 
@@ -33,6 +36,14 @@ MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # dùng + chỉ nhận request từ loopback (xem core/helper_pairing.py và route
 # helper_submit() bên dưới), không phải bằng đăng nhập.
 PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz", "/api/helper/")
+
+
+class ProductUserError(Exception):
+    """A catalog message deliberately approved for display to an operator."""
+
+    def __init__(self, user_message):
+        self.user_message = user_message
+        super().__init__(user_message)
 
 
 def _fmt_vnd(v):
@@ -47,6 +58,21 @@ def _fmt_int(v):
         return f"{int(v):,}".replace(",", ".")
     except (TypeError, ValueError):
         return "0"
+
+
+def _safe_external_url(value):
+    """Return only a browser-safe absolute HTTP(S) URL for catalog rendering."""
+    text = str(value or "").strip()
+    if not text or any(ord(character) < 32 for character in text):
+        return None
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+    if (parsed.scheme.lower() not in ("http", "https") or not parsed.netloc or
+            parsed.username is not None or parsed.password is not None):
+        return None
+    return text
 
 
 def create_app():
@@ -173,30 +199,146 @@ def create_app():
             selected_channel=selected_channel,
         ), status
 
+    def _catalog_summary(conn):
+        row = conn.execute("""SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN has_inventory=1 THEN 1 ELSE 0 END), 0) AS in_stock,
+                                   COALESCE(SUM(CASE WHEN affiliate_link_status='READY' THEN 1 ELSE 0 END), 0) AS ready,
+                                   MAX(last_synced_at) AS last_synced_at
+                            FROM product
+                            WHERE provider='ACCESSTRADE_TIKTOK'""").fetchone()
+        return dict(row)
+
+    @staticmethod
+    def _sync_summary(result):
+        return (f"Đã đồng bộ {result.fetched} sản phẩm "
+                f"({result.inserted} mới, {result.updated} cập nhật, "
+                f"{getattr(result, 'failed', 0)} lỗi).")
+
+    def _log_catalog_failure(operation, error, *, product_id=None, status=None):
+        """Log allowlisted diagnostics only; provider exception text may contain credentials."""
+        fields = [f"operation={operation}", f"error_type={type(error).__name__}"]
+        if product_id:
+            fields.append(f"product_id={product_id}")
+        if status:
+            fields.append(f"status={status}")
+        app.logger.error("Catalog operation failed: %s", " ".join(fields))
+
+    def _catalog_error(error):
+        if isinstance(error, ProductUserError):
+            return error.user_message
+        if isinstance(error, SyncAlreadyRunning):
+            return "Đồng bộ sản phẩm ACCESSTRADE đang chạy; hãy thử lại sau"
+        return "Không thể tiếp tục. Vui lòng thử lại."
+
+    def _safe_catalog_items(rows):
+        """Drop unsafe external URLs before catalog records reach the template."""
+        items = []
+        for row in rows:
+            item = dict(row)
+            for field in ("detail_link", "main_image_url", "affiliate_url", "affiliate_short_url"):
+                item[field] = _safe_external_url(item.get(field))
+            items.append(item)
+        return items
+
+    def _catalog_redirect(*, err=None, synced=None):
+        values = {"q": request.form.get("q", "").strip()}
+        if err:
+            values["err"] = err
+        if synced:
+            values["synced"] = synced
+        return redirect(url_for("products", **values))
+
     @app.route("/sanpham")
     def products():
-        """Tìm sản phẩm hoặc nhập link affiliate. Không có hành vi publish."""
-        mode = request.args.get("mode", "search")
+        """Local ACCESSTRADE catalog, with the separate manual Shopee workspace."""
+        mode = request.args.get("mode", "catalog")
         if mode == "affiliate":
             return _render_affiliate(affiliate_url=request.args.get("affiliate_url", ""))
 
-        q = request.args.get("q", "").strip()
-        source_name = request.args.get("nguon") or None
+        filters = ProductFilters.from_request(request)
         items, err = [], request.args.get("err")
+        catalog = {"count": 0, "in_stock": 0, "ready": 0, "last_synced_at": None}
+        conn = connect()
         try:
-            src = factory.get_source(source_name)
-            if hasattr(src, "search_products"):
-                items, _ = src.search_products(query=q or None, limit=24)
-            else:
-                err = err or f"Nguồn {src.name} không hỗ trợ tìm kiếm."
-        except Exception as e:
-            err = err or str(e)
+            service = ProductService(conn, AccessTradeClient.from_env())
+            items = _safe_catalog_items(service.search_local(filters))
+            catalog = _catalog_summary(conn)
+        except Exception as error:
+            _log_catalog_failure("query", error)
+            err = err or "Không thể tiếp tục. Vui lòng thử lại."
+        finally:
+            conn.close()
         pending, channels = _product_common_context()
         return render_template(
-            "products.html", page="san-pham", mode="search", items=items, q=q, err=err,
-            source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
+            "products.html", page="san-pham", mode="catalog", items=items, filters=filters,
+            catalog=catalog, synced=request.args.get("synced"), err=err,
             pending_review=pending, channels=channels, resolved=None,
             metadata=ProductMetadata(), affiliate_url="")
+
+    @app.route("/sanpham/sync", methods=["POST"])
+    def sync_products():
+        conn = connect()
+        try:
+            result = ProductService(conn, AccessTradeClient.from_env()).sync(
+                title_keywords=request.form.get("q") or None)
+            return _catalog_redirect(synced=_sync_summary(result))
+        except Exception as error:
+            if not isinstance(error, ProductUserError):
+                _log_catalog_failure("sync", error)
+            return _catalog_redirect(err=_catalog_error(error))
+        finally:
+            conn.close()
+
+    @app.route("/sanpham/<product_id>/affiliate-link", methods=["POST"])
+    def create_catalog_affiliate_link(product_id):
+        conn = connect()
+        try:
+            client = AccessTradeClient.from_env()
+            product = ProductService(conn, client).get(product_id)
+            if not product:
+                raise ProductUserError("Không tìm thấy sản phẩm trong catalog")
+            if not product["has_inventory"] or not product["detail_link"]:
+                raise ProductUserError("Sản phẩm không đủ điều kiện tạo link affiliate")
+            link = client.create_product_link(
+                product["detail_link"], post_id=f"product:{product['external_product_id']}",
+                external_product_id=product["external_product_id"])
+            full_url = getattr(link, "full_url", None)
+            short_url = getattr(link, "short_url", None)
+            if not (full_url or short_url):
+                raise ProductUserError("Không thể tạo link affiliate cho sản phẩm")
+            linked_at = now()
+            conn.execute("""UPDATE product
+                            SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='PRODUCT_ONLY',
+                                affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
+                            WHERE id=? AND provider='ACCESSTRADE_TIKTOK'""",
+                         (full_url or short_url, short_url, linked_at, linked_at, product_id))
+            return _catalog_redirect(synced="Đã tạo link affiliate để sao chép.")
+        except Exception as error:
+            if not isinstance(error, ProductUserError):
+                _log_catalog_failure("create_product_link", error, product_id=product_id)
+            return _catalog_redirect(err=_catalog_error(error))
+        finally:
+            conn.close()
+
+    @app.route("/sanpham/<product_id>/tao-bai", methods=["POST"])
+    def create_from_catalog_product(product_id):
+        conn = connect()
+        try:
+            result = pipeline.create_post_for_catalog_product(
+                conn, factory.build_context(), product_id,
+                campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
+                channel_code=request.form.get("channel_code") or None,
+                on_link_error=lambda error: _log_catalog_failure(
+                    "create_post_link", error, product_id=product_id, status="FAILED"))
+            if not result.get("ok"):
+                raise ProductUserError(result.get("error") or "Không thể tạo bài nháp.")
+            return redirect(url_for("review"))
+        except Exception as error:
+            if not isinstance(error, ProductUserError):
+                _log_catalog_failure("create_post", error, product_id=product_id)
+            return _catalog_redirect(err=_catalog_error(error))
+        finally:
+            conn.close()
 
     @app.route("/sanpham/tao-bai", methods=["POST"])
     def create_from_product():

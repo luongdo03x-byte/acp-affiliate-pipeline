@@ -9,6 +9,9 @@
     python3 run.py niche                xem chủ đề của từng kênh
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
+    python3 run.py product-sync [từ khoá] [--auto-prepare]
+                                         đồng bộ catalog ACCESSTRADE; chỉ tạo bài chờ duyệt
+                                         khi có --auto-prepare và ACP_AUTO_PREPARE_CONTENT=true
     python3 run.py product <mã sp>      MỘT sản phẩm -> MỘT bài chờ duyệt
     python3 run.py valuepost <kênh> [loại]   bài không bán hàng cho một kênh
                                          loại: price_level | real_discount | checklist
@@ -29,8 +32,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from acp.adapters.mock import MockAccessTrade, MockThreads, simulate_postbacks
+from acp.adapters import factory
+from acp.adapters.accesstrade_client import AccessTradeClient, LinkResult
 from acp.core import attribution, crypto, jobs, pipeline, scoring
+from acp.core import db
 from acp.core.db import audit, connect, init_db, now, ulid
+from acp.core.products import ProductService, SyncAlreadyRunning, env_bool, env_int
 
 CAMPAIGN_CODE = "gd2026"
 
@@ -366,6 +373,87 @@ def cmd_search(query=None, source_name=None):
     print(f"\n  Tạo bài: python3 run.py product <mã sản phẩm>\n")
 
 
+def _product_sync_summary(result):
+    """Keep cron output useful without exposing provider credentials or payloads."""
+    return (f"Fetched: {getattr(result, 'fetched', 0)} | "
+            f"New: {getattr(result, 'inserted', 0)} | "
+            f"Updated: {getattr(result, 'updated', 0)} | "
+            f"Skipped: {getattr(result, 'skipped', 0)} | "
+            f"Failed: {getattr(result, 'failed', 0)}")
+
+
+class _MockCatalogClient:
+    """Expose the existing seed data through the Product Search V2 boundary."""
+
+    def search_products(self, *, limit=50, title_keywords=None, **_):
+        products, _ = MockAccessTrade().search_products(query=title_keywords, limit=limit)
+        return ([{
+            "id": product.external_product_id,
+            "title": product.name,
+            "shop": {"name": product.merchant},
+            "detail_link": product.product_url,
+            "main_image_url": product.image_url_original,
+            "sales_price": {"minimum_amount": product.current_price, "currency": "VND"},
+            "original_price": {"minimum_amount": product.original_price, "currency": "VND"},
+            "commission": {"amount": product.commission_value,
+                           "rate": int((product.commission_rate or 0) * 10000),
+                           "currency": "VND"},
+            "units_sold": product.sold_count,
+            "has_inventory": True,
+            "category": {"code": product.category_code},
+        } for product in products], None)
+
+    def create_product_link(self, detail_link, *, post_id, external_product_id):
+        return LinkResult(
+            full_url=f"https://mock.acp/product/{external_product_id}?post_id={post_id}")
+
+
+def _product_sync_client():
+    if (os.environ.get("ACP_ADAPTER", "").lower() == "mock"
+            and os.environ.get("ACP_SOURCE", "").lower() == "mock"):
+        return _MockCatalogClient()
+    return AccessTradeClient.from_env()
+
+
+def cmd_product_sync(keyword=None, auto_prepare=False):
+    """Synchronize the local catalog; optional preparation deliberately stops at review."""
+    if not env_bool("ACP_PRODUCT_SYNC_ENABLED", True):
+        print("Product sync disabled by ACP_PRODUCT_SYNC_ENABLED=false.")
+        return 0
+
+    try:
+        db.init_db()
+        with db.session() as conn:
+            product_client = _product_sync_client()
+            service = ProductService(conn, product_client)
+            result = service.sync(title_keywords=keyword)
+            print(_product_sync_summary(result))
+            if auto_prepare and env_bool("ACP_AUTO_PREPARE_CONTENT", False):
+                prepared = 0
+                failed = 0
+                context = factory.build_context()
+                context["product_client"] = product_client
+                for product in service.recommended(env_int("ACP_AUTO_PREPARE_CONTENT_COUNT", 3)):
+                    post = pipeline.create_post_for_catalog_product(
+                        conn, context, product["id"], CAMPAIGN_CODE)
+                    if post.get("ok"):
+                        prepared += 1
+                    else:
+                        failed += 1
+                print(f"Prepared for review: {prepared}")
+                if failed:
+                    print(f"Preparation failed: {failed}")
+                    return 1
+        return 0
+    except SyncAlreadyRunning as error:
+        print(f"Product sync failed: {error}")
+        return 1
+    except Exception:
+        # Provider and transport exceptions can include sensitive request details.
+        print("Product sync failed; check configuration and connectivity.")
+        return 1
+
+
 def cmd_valuepost(channel_code=None, kind=None):
     """Bài không bán hàng cho một kênh -- xem core/valuepost.py."""
     if not channel_code:
@@ -505,21 +593,39 @@ COMMANDS = {
     "reconcile": cmd_reconcile, "trace": cmd_trace, "doctor": cmd_doctor,
     "product": cmd_product, "search": cmd_search, "niche": cmd_niche,
     "valuepost": cmd_valuepost, "mix": cmd_mix,
+    "product-sync": cmd_product_sync,
     "demo": cmd_demo, "serve": cmd_serve, "simulate": cmd_simulate_conversions,
     "genkey": lambda: print(crypto.generate_key()),
 }
 
-if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "demo"
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    cmd = args[0] if args else "demo"
     if cmd in ("-h", "--help", "help"):
         print(__doc__)
+        return 0
     elif cmd == "niche":
-        cmd_niche(*sys.argv[2:])
+        cmd_niche(*args[1:])
     elif cmd in ("product", "search", "valuepost", "mix"):
-        COMMANDS[cmd](*sys.argv[2:4])
-    elif cmd == "approve" and len(sys.argv) > 2:
-        c = connect(); print(pipeline.approve_post(c, sys.argv[2])); c.close()
+        COMMANDS[cmd](*args[1:3])
+    elif cmd == "product-sync":
+        product_args = args[1:]
+        auto_prepare = "--auto-prepare" in product_args
+        keywords = [arg for arg in product_args if arg != "--auto-prepare"]
+        if any(arg.startswith("-") for arg in keywords) or len(keywords) > 1:
+            print("Cách dùng: python3 run.py product-sync [từ khoá] [--auto-prepare]")
+            return 2
+        return cmd_product_sync(keyword=keywords[0] if keywords else None,
+                                auto_prepare=auto_prepare)
+    elif cmd == "approve" and len(args) > 1:
+        c = connect(); print(pipeline.approve_post(c, args[1])); c.close()
     elif cmd in COMMANDS:
         COMMANDS[cmd]()
     else:
-        print(f"Lệnh không hợp lệ: {cmd}\n"); print(__doc__); sys.exit(1)
+        print(f"Lệnh không hợp lệ: {cmd}\n"); print(__doc__)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

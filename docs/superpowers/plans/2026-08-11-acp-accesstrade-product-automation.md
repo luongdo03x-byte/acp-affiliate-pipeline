@@ -314,6 +314,12 @@ Expected: FAIL because catalog pipeline entry point is absent.
 
 Set product CREATING then READY, FAILED, or UNAVAILABLE with redacted error/timestamps. Persist latest full/short link for display, but persist the post-specific URL in post.affiliate_link. Caption receives short URL if present else full URL. Do not enqueue PUBLISH_POST.
 
+The separate Product-card affiliate-link action calls `create_product_link` with
+`post_id="product:" + external_product_id` solely for operator copy. Mark that
+stored link `product-only`; it must never flow into `_create_post_from_catalog_product`
+or `post.affiliate_link`. Add a regression test proving content creation calls
+the API again with the newly allocated real post ID.
+
 - [ ] **Step 4: Update successful publish metadata and add tests**
 
 After current channel publish succeeds and marks a post published, execute:

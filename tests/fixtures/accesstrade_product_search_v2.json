@@ -1,0 +1,31 @@
+{
+  "status": true,
+  "data": {
+    "products": [
+      {
+        "id": "1729384756102938475",
+        "title": "Máy xay cầm tay đa năng",
+        "detail_link": "https://vt.tiktok.com/EXAMPLE001/",
+        "main_image_url": "https://p16-oec.example.com/EXAMPLE001.jpeg",
+        "sales_price": {"minimum_amount": "289000", "maximum_amount": "299000", "currency": "VND"},
+        "original_price": {"minimum_amount": "459000", "maximum_amount": "469000", "currency": "VND"},
+        "commission": {"amount": "23120", "rate": "800", "currency": "VND"},
+        "units_sold": 12480,
+        "shop": {"id": "7000000000000000001", "name": "Nhà Bếp Thông Minh Official"},
+        "has_inventory": true,
+        "category": {"name": "Home Appliances"}
+      },
+      {
+        "id": "1729384756102938476",
+        "title": "Bộ 6 hộp thủy tinh",
+        "detail_link": "https://vt.tiktok.com/EXAMPLE002/",
+        "sales_price": {"minimum_amount": "199000", "currency": "VND"},
+        "commission": {"amount": "0", "rate": "3587", "currency": "VND"},
+        "shop": {"name": "Glass House VN"},
+        "has_inventory": true,
+        "category": {"name": "Kitchenware"}
+      }
+    ],
+    "next_page_token": "NEXT"
+  }
+}
