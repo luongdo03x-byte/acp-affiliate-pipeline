@@ -689,6 +689,50 @@ def test_catalog_product_publish_failure_leaves_post_metadata_unchanged():
         conn.close()
 
 
+def test_end_to_end_catalog_product_to_review_and_repost_cooldown():
+    """A catalog item must not be duplicated, posted without review, or immediately recommended again."""
+    from acp.core import pipeline
+    from acp.core.products import ProductService
+
+    conn = _catalog_pipeline_conn()
+    client = _CatalogPipelineClient()
+    fixture_rows = _fixture("accesstrade_product_search_v2.json")["data"]["products"]
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        client.pages.append((fixture_rows, None))
+        ProductService(conn, client).sync(max_pages=1)
+        product = conn.execute("""SELECT * FROM product
+                                  WHERE provider=? AND external_product_id=?""",
+                               ("ACCESSTRADE_TIKTOK", "1729384756102938475")).fetchone()
+        assert product is not None
+
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage()},
+                product["id"], "gd2026", "ch1")
+
+        assert result["status"] == "PENDING_REVIEW"
+        assert result["affiliate_link"] == "https://short.example/post"
+        assert client.last_body["sub1"] == result["post_id"]
+        assert client.last_body["sub1"] != f"product:{product['external_product_id']}"
+
+        client.pages.append((fixture_rows, None))
+        ProductService(conn, client).sync(max_pages=1)
+        assert conn.execute("""SELECT COUNT(*) FROM product
+                               WHERE provider=? AND external_product_id=?""",
+                            ("ACCESSTRADE_TIKTOK", product["external_product_id"])).fetchone()[0] == 1
+
+        assert pipeline.approve_post(conn, result["post_id"])["ok"]
+        pipeline.publish_post(conn, {"post_id": result["post_id"], "channel_id": "channel-1"},
+                              {"channel": _PublishingChannel()})
+        recommended_ids = {row["id"] for row in ProductService(conn, client).recommended(20)}
+        assert product["id"] not in recommended_ids
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
 def test_sync_paginates_and_upserts_without_duplicate():
     """A repeated provider ID must update one row, retain its first sighting, and keep paging."""
     from acp.core.products import ProductService
@@ -1509,6 +1553,7 @@ def main():
                            test_catalog_link_failure_stops_before_caption_or_post_generation,
                            test_catalog_product_publish_updates_post_metadata_once_after_success,
                            test_catalog_product_publish_failure_leaves_post_metadata_unchanged],
+              "e2e": [test_end_to_end_catalog_product_to_review_and_repost_cooldown],
               "cli": [test_product_sync_command_runs_catalog_sync_and_prints_summary,
                       test_product_sync_auto_prepare_requires_flag_and_environment,
                       test_product_sync_skip_and_errors_have_cron_safe_exit_codes,
