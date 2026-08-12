@@ -691,6 +691,45 @@ def test_catalog_product_creates_fresh_per_post_link_and_pending_review():
         conn.close()
 
 
+def test_catalog_post_materializes_product_image_before_creating_a_link():
+    """A real catalog image must be composed instead of silently using the placeholder."""
+    from io import BytesIO
+
+    from PIL import Image
+    from acp.adapters.safe_http import SafeHttpResponse
+    from acp.core import pipeline
+
+    class _ImageHttp:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            assert url == "https://img.example/catalog.jpg"
+            assert expected_content_prefix == "image/"
+            buffer = BytesIO()
+            Image.new("RGB", (3, 2), "red").save(buffer, format="JPEG")
+            return SafeHttpResponse(url, buffer.getvalue(), "image/jpeg")
+
+    conn = _catalog_pipeline_conn()
+    conn.execute("UPDATE product SET main_image_url=? WHERE id='catalog-product'",
+                 ("https://img.example/catalog.jpg",))
+    client = _CatalogPipelineClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = pipeline.create_post_for_catalog_product(
+                conn, {"product_client": client, "storage": _CatalogStorage(),
+                       "catalog_image_http": _ImageHttp()},
+                "catalog-product", "gd2026", "ch1")
+            product = conn.execute(
+                "SELECT image_path_local FROM product WHERE id='catalog-product'").fetchone()
+            assert os.path.isfile(product["image_path_local"])
+
+        assert result["ok"]
+        assert len(client.link_calls) == 1
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
 def test_catalog_link_failure_stops_before_caption_or_post_generation():
     """Falling back to a catalog detail URL would publish untracked content."""
     from acp.adapters.base import PublishError
@@ -857,8 +896,18 @@ def test_catalog_product_publish_failure_leaves_post_metadata_unchanged():
 
 def test_end_to_end_catalog_product_to_review_and_repost_cooldown():
     """A catalog item must not be duplicated, posted without review, or immediately recommended again."""
+    from io import BytesIO
+
+    from PIL import Image
+    from acp.adapters.safe_http import SafeHttpResponse
     from acp.core import pipeline
     from acp.core.products import ProductService
+
+    class _ImageHttp:
+        def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+            buffer = BytesIO()
+            Image.new("RGB", (3, 2), "blue").save(buffer, format="JPEG")
+            return SafeHttpResponse(url, buffer.getvalue(), "image/jpeg")
 
     conn = _catalog_pipeline_conn()
     client = _CatalogPipelineClient()
@@ -875,7 +924,8 @@ def test_end_to_end_catalog_product_to_review_and_repost_cooldown():
         with tempfile.TemporaryDirectory() as media_dir:
             pipeline.MEDIA_DIR = media_dir
             result = pipeline.create_post_for_catalog_product(
-                conn, {"product_client": client, "storage": _CatalogStorage()},
+                conn, {"product_client": client, "storage": _CatalogStorage(),
+                       "catalog_image_http": _ImageHttp()},
                 product["id"], "gd2026", "ch1")
 
         assert result["status"] == "PENDING_REVIEW"
@@ -2006,6 +2056,7 @@ def main():
                           test_sync_lock_rejects_fresh_lock_and_releases_after_error,
                           test_stale_lock_owner_cannot_release_new_owner_lease],
               "pipeline": [test_catalog_product_creates_fresh_per_post_link_and_pending_review,
+                           test_catalog_post_materializes_product_image_before_creating_a_link,
                            test_catalog_link_failure_stops_before_caption_or_post_generation,
                            test_catalog_stockout_sets_unavailable_without_requesting_a_link,
                            test_catalog_link_state_is_creating_during_request_and_records_timestamp,

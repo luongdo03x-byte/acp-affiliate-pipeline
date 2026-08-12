@@ -1,12 +1,17 @@
 """Local ACCESSTRADE TikTok product catalog synchronization and selection."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+import hashlib
 import json
 import os
 import sqlite3
 from typing import Optional
 
+from PIL import Image
+
 from ..adapters.accesstrade_client import UnsupportedSortError, normalize_accesstrade_product
+from ..adapters.safe_http import SafeHttpClient, SafeHttpError
 from .db import now, transaction, ulid
 
 
@@ -30,6 +35,41 @@ class SyncAlreadyRunning(Exception):
 
     def __init__(self):
         super().__init__("Đồng bộ sản phẩm ACCESSTRADE đang chạy; hãy thử lại sau")
+
+
+class CatalogImageError(Exception):
+    """Safe, operator-facing error when a catalog product image cannot be used."""
+
+
+def materialize_catalog_image(conn, product, media_dir: str, *, http=None) -> str:
+    """Download and validate the catalog image once before composing a sales post."""
+    existing = product["image_path_local"]
+    if existing and os.path.isfile(existing):
+        return existing
+    image_url = product["main_image_url"] or product["image_url_original"]
+    if not image_url:
+        raise CatalogImageError("Sản phẩm không có ảnh để tạo bài")
+    client = http or SafeHttpClient(max_bytes=8 * 1024 * 1024)
+    try:
+        response = client.get(image_url, allowed_hosts=None, expected_content_prefix="image/")
+        probe = Image.open(BytesIO(response.content))
+        image_format = (probe.format or "").upper()
+        probe.verify()
+    except (SafeHttpError, OSError, ValueError):
+        raise CatalogImageError("Không thể tải ảnh sản phẩm; hãy thử lại sau") from None
+
+    extension = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}.get(image_format)
+    if not extension:
+        raise CatalogImageError("Định dạng ảnh sản phẩm không được hỗ trợ")
+    source_dir = os.path.join(media_dir, "source")
+    os.makedirs(source_dir, exist_ok=True)
+    digest = hashlib.sha256(image_url.encode("utf-8")).hexdigest()[:24]
+    path = os.path.abspath(os.path.join(source_dir, f"accesstrade-{digest}{extension}"))
+    with open(path, "wb") as image_file:
+        image_file.write(response.content)
+    conn.execute("UPDATE product SET image_path_local=?, updated_at=? WHERE id=? AND provider=?",
+                 (path, now(), product["id"], PROVIDER))
+    return path
 
 
 @dataclass

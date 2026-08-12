@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from . import attribution, content, imaging, niche, playbook, scoring, storage, valuepost
 from .db import audit, now, ulid
 from .jobs import enqueue, handler
-from .products import PROVIDER as CATALOG_PROVIDER, ProductService
+from .products import (PROVIDER as CATALOG_PROVIDER, CatalogImageError,
+                       ProductService, materialize_catalog_image)
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "var", "media")
 
@@ -371,6 +372,13 @@ def create_post_for_catalog_product(conn, ctx, product_id: str, campaign_code: s
     if error:
         return error
     del post_context  # Preflight completes before making the externally visible link request.
+
+    if product["main_image_url"] or product["image_url_original"]:
+        try:
+            materialize_catalog_image(conn, product, MEDIA_DIR, http=ctx.get("catalog_image_http"))
+        except CatalogImageError as error:
+            return {"ok": False, "error": str(error)}
+        product = ProductService(conn, ctx["product_client"]).get(product_id)
 
     post_id = ulid()
     _set_catalog_link_state(conn, product_id, "CREATING")
