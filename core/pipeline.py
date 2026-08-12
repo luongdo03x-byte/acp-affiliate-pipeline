@@ -353,7 +353,7 @@ def _create_post_from_catalog_product(conn, ctx, product, post_id: str, link,
 
 
 def create_post_for_catalog_product(conn, ctx, product_id: str, campaign_code: str,
-                                    channel_code: str = None) -> dict:
+                                    channel_code: str = None, on_link_error=None) -> dict:
     """Create one catalog-backed review post with a newly allocated, per-post link.
 
     A copied product-card link deliberately uses ``product:<external_product_id>``
@@ -384,6 +384,8 @@ def create_post_for_catalog_product(conn, ctx, product_id: str, campaign_code: s
             raise ValueError("empty product link")
     except Exception as error:
         _set_catalog_link_state(conn, product_id, "FAILED", _redacted_link_error(error))
+        if on_link_error is not None:
+            on_link_error(error)
         return {"ok": False, "error": "Không thể tạo link affiliate cho sản phẩm"}
 
     linked_at = now()

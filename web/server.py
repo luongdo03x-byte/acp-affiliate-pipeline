@@ -317,7 +317,10 @@ def create_app():
             result = pipeline.create_post_for_catalog_product(
                 conn, factory.build_context(), product_id,
                 campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
-                channel_code=request.form.get("channel_code") or None)
+                channel_code=request.form.get("channel_code") or None,
+                on_link_error=lambda error: app.logger.error(
+                    "Catalog post affiliate link failed",
+                    exc_info=(type(error), error, error.__traceback__)))
             if not result.get("ok"):
                 raise ProductUserError(result.get("error") or "Không thể tạo bài nháp.")
             return redirect(url_for("review"))

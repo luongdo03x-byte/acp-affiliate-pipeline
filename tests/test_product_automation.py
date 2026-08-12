@@ -1365,6 +1365,52 @@ def test_catalog_omits_unsafe_provider_urls_from_html():
     assert '<img src="not-a-url"' not in response.text
 
 
+def test_catalog_create_post_logs_provider_exception_but_redacts_operator_response():
+    """The provider exception must reach the internal logger, never the result/redirect/page."""
+    from acp.adapters.base import PublishError
+    from acp.adapters import factory
+    import logging
+
+    with _catalog_web_app(require_auth=True) as (app, _server, product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        captured = []
+        app.logger.disabled = False
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        handler = _Capture()
+        previous_handlers = list(app.logger.handlers)
+        previous_propagate = app.logger.propagate
+        app.logger.handlers[:] = [handler]
+        app.logger.propagate = False
+        app.logger.setLevel(logging.ERROR)
+        original_context = factory.build_context
+
+        class _FailingClient:
+            def create_product_link(self, *_args, **_kwargs):
+                raise PublishError("Authorization: Token post-provider-secret")
+
+        factory.build_context = lambda: {"product_client": _FailingClient(), "storage": _CatalogStorage()}
+        try:
+            response = client.post(f"/sanpham/{product_id}/tao-bai", data={"_csrf": csrf})
+        finally:
+            factory.build_context = original_context
+            app.logger.handlers[:] = previous_handlers
+            app.logger.propagate = previous_propagate
+            app.logger.disabled = True
+        page = client.get(response.headers["Location"])
+
+    assert response.status_code == 302
+    assert "post-provider-secret" not in response.headers["Location"]
+    assert "post-provider-secret" not in page.text
+    assert "Không thể tạo link affiliate cho sản phẩm" in page.text
+    assert any(record.exc_info and "post-provider-secret" in str(record.exc_info[1])
+               for record in captured)
+
+
 def test_catalog_sync_redirects_with_operator_summary():
     """A successful local sync returns its safe operator summary to the catalog page."""
     with _catalog_web_app(require_auth=True) as (app, server, _product_id):
@@ -1453,6 +1499,7 @@ def main():
                       test_catalog_routes_require_csrf_and_hide_api_errors,
                       test_catalog_publish_error_is_redacted_from_redirect_and_page,
                       test_catalog_omits_unsafe_provider_urls_from_html,
+                      test_catalog_create_post_logs_provider_exception_but_redacts_operator_response,
                       test_catalog_sync_redirects_with_operator_summary,
                       test_catalog_standalone_link_uses_product_marker]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
