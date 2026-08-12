@@ -203,6 +203,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
+
+CREATE TABLE IF NOT EXISTS system_setting (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

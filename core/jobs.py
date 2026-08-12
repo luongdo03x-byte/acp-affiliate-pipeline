@@ -50,12 +50,14 @@ def enqueue(conn, job_type: str, payload: dict, *, priority: int = 0,
     return cur.lastrowid
 
 
-def claim(conn, limit: int = 10):
+def claim(conn, limit: int = 10, *, skip_publish: bool = False):
     """Lấy job và đánh dấu RUNNING trong cùng một giao dịch."""
     with transaction(conn):
-        rows = conn.execute("""
+        publish_filter = "AND job_type != 'PUBLISH_POST'" if skip_publish else ""
+        rows = conn.execute(f"""
             SELECT * FROM job_queue
             WHERE status = 'READY' AND run_after <= ?
+            {publish_filter}
             ORDER BY priority DESC, run_after ASC
             LIMIT ?
         """, (now(), limit)).fetchall()
@@ -92,10 +94,11 @@ def _fail(conn, job, err: str, retryable: bool) -> None:
 def run_once(conn, limit: int = 10, ctx: dict = None) -> dict:
     """Chạy một lượt. Trả về thống kê để CLI và test đọc được."""
     from ..adapters.base import RateLimitError, ContentViolationError, AuthError, PublishError
+    from .system_settings import publish_worker_enabled
 
     ctx = ctx or {}
     stats = {"done": 0, "retried": 0, "failed": 0, "deferred": 0, "skipped": 0}
-    for job in claim(conn, limit):
+    for job in claim(conn, limit, skip_publish=not publish_worker_enabled(conn)):
         fn = _handlers.get(job["job_type"])
         if not fn:
             _fail(conn, job, f"Không có handler cho loại job '{job['job_type']}'", retryable=False)

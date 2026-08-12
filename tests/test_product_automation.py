@@ -2020,6 +2020,155 @@ def test_catalog_standalone_link_uses_product_marker():
     assert calls == [("https://example.test/product", "product:external-web-product", "external-web-product")]
 
 
+def test_system_setting_schema_is_idempotent_and_unique():
+    """A repeated schema upgrade must keep one durable value per setting key."""
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "system-settings.db")
+        try:
+            db.init_db()
+            db.init_db()
+            conn = db.connect()
+            try:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(system_setting)")}
+                assert columns == {"key", "value", "updated_at"}
+                conn.execute(
+                    "INSERT INTO system_setting (key, value, updated_at) VALUES (?,?,?)",
+                    ("publish_worker_enabled", "0", db.now()),
+                )
+                try:
+                    conn.execute(
+                        "INSERT INTO system_setting (key, value, updated_at) VALUES (?,?,?)",
+                        ("publish_worker_enabled", "1", db.now()),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+                else:
+                    raise AssertionError("a duplicate system setting key must be rejected")
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+
+
+def test_publish_worker_setting_defaults_persists_and_audits():
+    """Removing the fail-safe default, persistence, or audit write breaks this contract."""
+    from acp.core import system_settings
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "worker-setting.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                assert system_settings.get_system_setting(conn, "missing", "fallback") == "fallback"
+                assert system_settings.publish_worker_enabled(conn) is False
+
+                system_settings.set_system_setting(
+                    conn, "publish_worker_enabled", "1", actor="reviewer"
+                )
+
+                assert system_settings.get_system_setting(conn, "publish_worker_enabled") == "1"
+                assert system_settings.publish_worker_enabled(conn) is True
+                audit_row = conn.execute(
+                    """SELECT entity, entity_id, action, actor, detail
+                       FROM audit_log WHERE entity='system_setting'
+                       ORDER BY id DESC LIMIT 1"""
+                ).fetchone()
+                assert dict(audit_row) == {
+                    "entity": "system_setting",
+                    "entity_id": "publish_worker_enabled",
+                    "action": "set",
+                    "actor": "reviewer",
+                    "detail": '{"value": "1"}',
+                }
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+
+
+def test_disabled_publish_worker_keeps_publish_ready_and_runs_other_jobs():
+    """A disabled worker must not consume due publish jobs, but may run other work."""
+    from acp.core import jobs
+
+    calls = []
+    previous_handler = jobs._handlers.get("WORKER_TOGGLE_NON_PUBLISH")
+
+    @jobs.handler("WORKER_TOGGLE_NON_PUBLISH")
+    def non_publish_handler(conn, payload, ctx):
+        calls.append(payload["name"])
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "disabled-worker.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                publish_id = jobs.enqueue(conn, "PUBLISH_POST", {"post_id": "post-1"})
+                other_id = jobs.enqueue(conn, "WORKER_TOGGLE_NON_PUBLISH", {"name": "catalog"})
+
+                stats = jobs.run_once(conn, limit=2, ctx={})
+
+                publish = conn.execute(
+                    "SELECT status, attempt_count, locked_by FROM job_queue WHERE id=?", (publish_id,)
+                ).fetchone()
+                other = conn.execute("SELECT status FROM job_queue WHERE id=?", (other_id,)).fetchone()
+                assert dict(publish) == {"status": "READY", "attempt_count": 0, "locked_by": None}
+                assert other["status"] == "DONE"
+                assert calls == ["catalog"]
+                assert stats["done"] == 1
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+            if previous_handler is None:
+                jobs._handlers.pop("WORKER_TOGGLE_NON_PUBLISH", None)
+            else:
+                jobs._handlers["WORKER_TOGGLE_NON_PUBLISH"] = previous_handler
+
+
+def test_enabled_publish_worker_executes_due_publish_job():
+    """Changing the enabled setting must allow a due publish job to execute once."""
+    from acp.core import jobs, system_settings
+
+    calls = []
+    previous_handler = jobs._handlers.get("PUBLISH_POST")
+
+    @jobs.handler("PUBLISH_POST")
+    def publish_handler(conn, payload, ctx):
+        calls.append(payload["post_id"])
+
+    with tempfile.TemporaryDirectory() as directory:
+        previous_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(directory, "enabled-worker.db")
+        try:
+            db.init_db()
+            conn = db.connect()
+            try:
+                system_settings.set_system_setting(conn, "publish_worker_enabled", "1")
+                job_id = jobs.enqueue(conn, "PUBLISH_POST", {"post_id": "post-2"})
+
+                stats = jobs.run_once(conn, limit=1, ctx={})
+
+                job = conn.execute(
+                    "SELECT status, attempt_count FROM job_queue WHERE id=?", (job_id,)
+                ).fetchone()
+                assert dict(job) == {"status": "DONE", "attempt_count": 0}
+                assert calls == ["post-2"]
+                assert stats["done"] == 1
+            finally:
+                conn.close()
+        finally:
+            db.DB_PATH = previous_db_path
+            if previous_handler is None:
+                jobs._handlers.pop("PUBLISH_POST", None)
+            else:
+                jobs._handlers["PUBLISH_POST"] = previous_handler
+
+
 def main():
     groups = {"docs": [test_env_example_has_required_safe_defaults,
                         test_catalog_schedule_docs_source_active_release_env],
@@ -2079,7 +2228,11 @@ def main():
                       test_catalog_create_post_logs_only_safe_diagnostic_context,
                       test_catalog_sync_and_standalone_link_logs_never_contain_provider_secrets,
                       test_catalog_sync_redirects_with_operator_summary,
-                      test_catalog_standalone_link_uses_product_marker]}
+                      test_catalog_standalone_link_uses_product_marker],
+              "worker": [test_system_setting_schema_is_idempotent_and_unique,
+                         test_publish_worker_setting_defaults_persists_and_audits,
+                         test_disabled_publish_worker_keeps_publish_ready_and_runs_other_jobs,
+                         test_enabled_publish_worker_executes_due_publish_job]}
     selected = sys.argv[1] if len(sys.argv) > 1 else "migration"
     tests = groups.get(selected)
     if tests is None:

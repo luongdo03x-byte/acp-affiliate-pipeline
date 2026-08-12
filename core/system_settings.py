@@ -1,0 +1,26 @@
+"""Cấu hình vận hành bền vững, tách khỏi biến môi trường runtime."""
+from .db import audit, now
+
+
+PUBLISH_WORKER_ENABLED = "publish_worker_enabled"
+
+
+def get_system_setting(conn, key: str, default=None):
+    """Trả về giá trị đã lưu, hoặc default khi operator chưa từng đặt khoá này."""
+    row = conn.execute("SELECT value FROM system_setting WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_system_setting(conn, key: str, value, actor: str = "operator") -> None:
+    """Ghi đè một setting và lưu dấu vết thay đổi cho operator audit."""
+    value = str(value)
+    conn.execute("""
+        INSERT INTO system_setting (key, value, updated_at) VALUES (?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+    """, (key, value, now()))
+    audit(conn, "system_setting", key, "set", actor=actor, detail={"value": value})
+
+
+def publish_worker_enabled(conn) -> bool:
+    """Fail-safe: không có bản ghi nào đồng nghĩa worker đăng bài đang tắt."""
+    return get_system_setting(conn, PUBLISH_WORKER_ENABLED, "0") == "1"
