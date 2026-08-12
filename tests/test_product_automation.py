@@ -401,16 +401,16 @@ def test_client_maps_non_timeout_network_error_without_retry():
     assert delays == []
 
 
-def test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate():
-    """Content attribution breaks if a link body uses a product-only sub1 or loses full URL."""
+def test_create_product_link_uses_v2_provider_body_and_keeps_full_short_urls_separate():
+    """TikTok Shop V2 requires product_url/product_id and underscore sub-ID fields."""
     from acp.adapters.accesstrade_client import AccessTradeClient
 
     fake_session = _FakeSession([_Response(200, {
         "status": True,
-        "data": {"success_link": [{
-            "aff_link": "https://tracking.example/full",
-            "short_link": "https://short.example/post",
-        }]},
+        "data": {
+            "aff_url": "https://tracking.example/full",
+            "aff_short_url": "https://short.example/post",
+        },
     })])
 
     link = AccessTradeClient(session=fake_session).create_product_link(
@@ -419,11 +419,15 @@ def test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separat
     assert link.full_url == "https://tracking.example/full"
     assert link.short_url == "https://short.example/post"
     body = fake_session.requests[0][2]["json"]
+    assert body["product_url"] == "https://vt.tiktok.com/product"
+    assert body["product_id"] == "product-42"
     assert body["utm_source"] == "threads"
     assert body["utm_medium"] == "social"
     assert body["utm_campaign"] == "acp"
     assert body["utm_content"] == "product-42"
-    assert body["sub1"] == "POST-123"
+    assert body["sub_1"] == "POST-123"
+    assert "urls" not in body
+    assert "url_enc" not in body
 
 
 def test_create_product_only_link_uses_explicit_product_sub1():
@@ -438,7 +442,7 @@ def test_create_product_only_link_uses_explicit_product_sub1():
     AccessTradeClient(session=fake_session).create_product_link(
         "https://vt.tiktok.com/product", post_id="product:product-42", external_product_id="product-42")
 
-    assert fake_session.requests[0][2]["json"]["sub1"] == "product:product-42"
+    assert fake_session.requests[0][2]["json"]["sub_1"] == "product:product-42"
 
 
 def test_legacy_tiktok_source_forwards_campaign_and_configurable_link_path():
@@ -1980,7 +1984,7 @@ def main():
                          test_client_status_false_and_401_are_domain_errors,
                          test_client_maps_final_rate_limit_and_bad_json_to_safe_errors,
                          test_client_maps_non_timeout_network_error_without_retry,
-                         test_create_product_link_uses_real_post_id_and_keeps_full_short_urls_separate,
+                         test_create_product_link_uses_v2_provider_body_and_keeps_full_short_urls_separate,
                          test_create_product_only_link_uses_explicit_product_sub1,
                          test_legacy_tiktok_source_forwards_campaign_and_configurable_link_path,
                          test_client_marks_only_explicitly_unsupported_commission_sort,

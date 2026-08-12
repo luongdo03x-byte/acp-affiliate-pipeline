@@ -157,8 +157,8 @@ class AccessTradeClient:
             "utm_medium": "social",
             "utm_campaign": "acp",
             "utm_content": str(external_product_id),
-            "sub1": str(post_id),
-        })
+            "sub_1": str(post_id),
+        }, product_id=external_product_id)
 
     def create_tracking_link(self, detail_link: str, sub_ids: dict, *,
                              campaign_id=None, link_path=None) -> LinkResult:
@@ -168,29 +168,37 @@ class AccessTradeClient:
             "utm_medium": "threads",
             "utm_campaign": sub_ids.get("sub2", ""),
             "utm_content": sub_ids.get("sub1", ""),
-            "sub1": sub_ids.get("sub1", ""),
-            "sub2": sub_ids.get("sub2", ""),
-            "sub3": sub_ids.get("sub3", ""),
-            "sub4": sub_ids.get("sub4", ""),
+            "sub_1": sub_ids.get("sub1", ""),
+            "sub_2": sub_ids.get("sub2", ""),
+            "sub_3": sub_ids.get("sub3", ""),
+            "sub_4": sub_ids.get("sub4", ""),
         }
         if campaign_id:
             attribution["campaign_id"] = campaign_id
         return self._create_link(detail_link, attribution, link_path=link_path)
 
-    def _create_link(self, detail_link: str, attribution: dict, *, link_path=None) -> LinkResult:
-        body = {"urls": [detail_link], "url_enc": True, **attribution}
+    def _create_link(self, detail_link: str, attribution: dict, *, product_id=None, link_path=None) -> LinkResult:
+        body = {"product_url": detail_link, **attribution}
+        if product_id:
+            body["product_id"] = str(product_id)
         payload = self._request("POST", link_path or self.CREATE_LINK_PATH, json=body)
         node = payload.get("data") or {}
-        links = node.get("success_link") or node.get("links") or []
-        if isinstance(node, list):
+        full_url = short_url = None
+        links = []
+        if isinstance(node, dict):
+            full_url = node.get("aff_url")
+            short_url = node.get("aff_short_url")
+            links = node.get("success_link") or node.get("links") or []
+        elif isinstance(node, list):
             links = node
-        if not links:
+        if not (full_url or short_url) and not links:
             raise PublishError("ACCESSTRADE không tạo được link")
-        first = links[0]
-        if isinstance(first, str):
-            return LinkResult(full_url=first)
-        full_url = first.get("aff_link") or first.get("full_url") or first.get("url")
-        short_url = first.get("short_link") or first.get("short_url")
+        if not (full_url or short_url):
+            first = links[0]
+            if isinstance(first, str):
+                return LinkResult(full_url=first)
+            full_url = first.get("aff_link") or first.get("full_url") or first.get("url")
+            short_url = first.get("short_link") or first.get("short_url")
         if not full_url and not short_url:
             raise PublishError("ACCESSTRADE không tạo được link")
         return LinkResult(full_url=full_url or short_url, short_url=short_url)
