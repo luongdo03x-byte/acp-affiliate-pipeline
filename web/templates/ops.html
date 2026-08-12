@@ -12,6 +12,26 @@
 {% endfor %}
 </div>
 
+<section class="card panel worker-toggle">
+  <div class="panel-header">
+    <h2>Worker đăng bài tự động</h2>
+    <span class="tag {{ 'ok' if worker_enabled else 'bad' }}">{{ 'BẬT' if worker_enabled else 'TẮT' }}</span>
+  </div>
+  <p class="note">
+    Công tắc này chỉ áp dụng cho bài đã duyệt và lên lịch (job <code>PUBLISH_POST</code> đến hạn) —
+    không tự duyệt, không tự tạo bài, không bỏ qua bước con người ở <code>/duyet</code>.
+    Tắt là trạng thái mặc định và an toàn: bài đến hạn vẫn chờ, không bị đánh hỏng.
+  </p>
+  {% if worker_updated_at %}<p class="dim mono">Cập nhật lần cuối: {{ worker_updated_at[:16]|replace('T',' ') }}</p>{% endif %}
+  <form method="post" action="/vanhanh/worker-toggle">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="enabled" value="{{ '0' if worker_enabled else '1' }}">
+    <button class="btn {{ 'btn--danger' if worker_enabled else 'btn--primary' }}" type="submit">
+      {{ 'Tắt worker' if worker_enabled else 'Bật worker' }}
+    </button>
+  </form>
+</section>
+
 <div class="section-heading section-heading--spaced"><div><h2>Kênh đăng bài</h2><p class="note">Quota và lịch đăng của từng kênh.</p></div></div>
 <div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Kênh</th><th>Trạng thái</th><th class="n">Hôm nay</th><th class="n">Trần ngày</th><th class="n">Chờ đăng</th><th class="n">Giãn cách</th></tr></thead><tbody>
 {% for c in channels %}<tr><td><strong>{{ c.handle }}</strong><span class="mono-sub">{{ c.code }}</span></td><td><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span></td><td class="n">{{ c.today }}</td><td class="n dim">{{ c.daily_post_cap }}</td><td class="n dim">{{ c.queued }}</td><td class="n dim">{{ c.min_gap_minutes }} phút</td></tr>{% endfor %}

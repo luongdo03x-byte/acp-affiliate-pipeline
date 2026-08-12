@@ -26,6 +26,7 @@ from ..adapters.shopee_affiliate import (
 )
 from ..core import attribution, content, helper_pairing, jobs, pipeline, scoring, storage
 from ..core.db import connect, now
+from ..core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
 from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -600,7 +601,11 @@ def create_app():
     @app.route("/vanhanh")
     def ops():
         conn = connect()
+        worker_row = conn.execute(
+            "SELECT value, updated_at FROM system_setting WHERE key=?", (PUBLISH_WORKER_ENABLED,)).fetchone()
         data = dict(
+            worker_enabled=publish_worker_enabled(conn),
+            worker_updated_at=worker_row["updated_at"] if worker_row else None,
             queue=jobs.queue_summary(conn),
             failed=[dict(r) for r in conn.execute(
                 "SELECT * FROM job_queue WHERE status='FAILED' ORDER BY updated_at DESC LIMIT 10").fetchall()],
@@ -625,6 +630,18 @@ def create_app():
         # Dùng chung factory với CLI. Trước đây chỗ này hardcode mock.
         conn = connect()
         jobs.drain(conn, ctx=factory.build_context())
+        conn.close()
+        return redirect(url_for("ops"))
+
+    @app.route("/vanhanh/worker-toggle", methods=["POST"])
+    def ops_worker_toggle():
+        # Chỉ nhận đúng "0"/"1" -- không suy đoán giá trị khác thành bật/tắt,
+        # tránh công tắc publish tự động bị đổi bởi input sai định dạng.
+        value = request.form.get("enabled", "")
+        if value not in ("0", "1"):
+            abort(400, "Giá trị công tắc không hợp lệ")
+        conn = connect()
+        set_system_setting(conn, PUBLISH_WORKER_ENABLED, value, actor="operator")
         conn.close()
         return redirect(url_for("ops"))
 

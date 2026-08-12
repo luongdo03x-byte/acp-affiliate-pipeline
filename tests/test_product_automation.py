@@ -2156,6 +2156,93 @@ def test_catalog_standalone_link_uses_product_marker():
     assert calls == [("https://example.test/product", "product:external-web-product", "external-web-product")]
 
 
+def test_ops_page_shows_worker_toggle_state():
+    """/vanhanh phải hiện đúng trạng thái công tắc worker (mặc định tắt) và thời điểm cập nhật."""
+    with _catalog_web_app() as (app, _server, _product_id):
+        client = app.test_client()
+        response = client.get("/vanhanh")
+    assert response.status_code == 200
+    text = response.text
+    assert "worker" in text.lower()
+    assert "TẮT" in text
+    assert "chỉ áp dụng cho bài đã duyệt và lên lịch" in text.lower()
+
+
+def test_worker_toggle_requires_csrf():
+    with _catalog_web_app(require_auth=True) as (app, _server, _product_id):
+        client = app.test_client()
+        _login_catalog_web(client)
+        response = client.post("/vanhanh/worker-toggle", data={"enabled": "1"})
+    assert response.status_code == 400
+
+
+def test_worker_toggle_enable_persists_and_audits():
+    from acp.core.system_settings import publish_worker_enabled
+
+    with _catalog_web_app(require_auth=True) as (app, _server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        response = client.post("/vanhanh/worker-toggle", data={"_csrf": csrf, "enabled": "1"})
+        assert response.status_code == 302
+
+        conn = db.connect()
+        try:
+            assert publish_worker_enabled(conn) is True
+            audit_row = conn.execute(
+                "SELECT actor, detail FROM audit_log WHERE entity='system_setting' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        assert audit_row is not None
+        assert audit_row["actor"] == "operator"
+        assert "1" in audit_row["detail"]
+
+        page = client.get("/vanhanh")
+    assert "BẬT" in page.text
+
+
+def test_worker_toggle_disable_persists_and_audits():
+    from acp.core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
+
+    with _catalog_web_app(require_auth=True) as (app, _server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        conn = db.connect()
+        try:
+            set_system_setting(conn, PUBLISH_WORKER_ENABLED, "1")
+        finally:
+            conn.close()
+
+        response = client.post("/vanhanh/worker-toggle", data={"_csrf": csrf, "enabled": "0"})
+        assert response.status_code == 302
+
+        conn = db.connect()
+        try:
+            assert publish_worker_enabled(conn) is False
+            audit_row = conn.execute(
+                "SELECT detail FROM audit_log WHERE entity='system_setting' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    assert '"0"' in audit_row["detail"]
+
+
+def test_worker_toggle_rejects_invalid_value():
+    from acp.core.system_settings import publish_worker_enabled
+
+    with _catalog_web_app(require_auth=True) as (app, _server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        response = client.post("/vanhanh/worker-toggle", data={"_csrf": csrf, "enabled": "yes-please"})
+        assert response.status_code == 400
+
+        conn = db.connect()
+        try:
+            assert publish_worker_enabled(conn) is False
+        finally:
+            conn.close()
+
+
 def test_system_setting_schema_is_idempotent_and_unique():
     """A repeated schema upgrade must keep one durable value per setting key."""
     with tempfile.TemporaryDirectory() as directory:
@@ -2442,7 +2529,12 @@ def main():
                       test_catalog_create_post_logs_only_safe_diagnostic_context,
                       test_catalog_sync_and_standalone_link_logs_never_contain_provider_secrets,
                       test_catalog_sync_redirects_with_operator_summary,
-                      test_catalog_standalone_link_uses_product_marker],
+                      test_catalog_standalone_link_uses_product_marker,
+                      test_ops_page_shows_worker_toggle_state,
+                      test_worker_toggle_requires_csrf,
+                      test_worker_toggle_enable_persists_and_audits,
+                      test_worker_toggle_disable_persists_and_audits,
+                      test_worker_toggle_rejects_invalid_value],
               "worker": [test_system_setting_schema_is_idempotent_and_unique,
                          test_publish_worker_setting_defaults_persists_and_audits,
                          test_disabled_publish_worker_keeps_publish_ready_and_runs_other_jobs,
