@@ -295,24 +295,11 @@ def create_app():
         conn = connect()
         try:
             client = AccessTradeClient.from_env()
-            product = ProductService(conn, client).get(product_id)
-            if not product:
-                raise ProductUserError("Không tìm thấy sản phẩm trong catalog")
-            if not product["has_inventory"] or not product["detail_link"]:
-                raise ProductUserError("Sản phẩm không đủ điều kiện tạo link affiliate")
-            link = client.create_product_link(
-                product["detail_link"], post_id=f"product:{product['external_product_id']}",
-                external_product_id=product["external_product_id"])
-            full_url = getattr(link, "full_url", None)
-            short_url = getattr(link, "short_url", None)
-            if not (full_url or short_url):
-                raise ProductUserError("Không thể tạo link affiliate cho sản phẩm")
-            linked_at = now()
-            conn.execute("""UPDATE product
-                            SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='PRODUCT_ONLY',
-                                affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
-                            WHERE id=? AND provider='ACCESSTRADE_TIKTOK'""",
-                         (full_url or short_url, short_url, linked_at, linked_at, product_id))
+            result = ProductService(conn, client).create_product_only_link(
+                product_id, on_link_error=lambda error: _log_catalog_failure(
+                    "create_product_link", error, product_id=product_id))
+            if not result["ok"]:
+                raise ProductUserError(result["error"])
             return _catalog_redirect(synced="Đã tạo link affiliate để sao chép.")
         except Exception as error:
             if not isinstance(error, ProductUserError):

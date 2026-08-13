@@ -87,6 +87,44 @@ class SyncResult:
                 f"Skipped: {self.skipped} | Failed: {self.failed}")
 
 
+MAX_BATCH_ITEMS_DEFAULT = 10
+
+
+@dataclass
+class ProductBatchResult:
+    """Per-product outcome of a bulk catalog action -- never a single pass/fail flag.
+
+    ``successes``/``skipped``/``failures`` are lists of small dicts with a
+    ``product_id`` key plus a safe, operator-facing ``message``/``reason`` --
+    never a raw provider exception (see ``_redacted_batch_error``)."""
+
+    successes: list
+    skipped: list
+    failures: list
+
+    @property
+    def summary(self) -> str:
+        return (f"{len(self.successes)} thành công, {len(self.skipped)} bỏ qua, "
+                f"{len(self.failures)} lỗi")
+
+
+def _dedupe_and_cap(product_ids, max_items):
+    """Preserve input order, drop repeats, then cap -- overflow becomes a skip, not silence."""
+    seen = set()
+    selected = []
+    for product_id in product_ids:
+        if not product_id or product_id in seen:
+            continue
+        seen.add(product_id)
+        selected.append(product_id)
+    if len(selected) <= max_items:
+        return selected, []
+    overflow = selected[max_items:]
+    skipped = [{"product_id": pid, "reason": f"Vượt giới hạn {max_items} sản phẩm mỗi lần xử lý"}
+               for pid in overflow]
+    return selected[:max_items], skipped
+
+
 @dataclass
 class ProductFilters:
     """Safe, local catalog filters shared by the later CLI and web callers."""
@@ -416,3 +454,79 @@ class ProductService:
 
     def get(self, product_id):
         return self.conn.execute("SELECT * FROM product WHERE id=? AND provider=?", (product_id, PROVIDER)).fetchone()
+
+    def _has_active_sales_post(self, product_id):
+        return bool(self.conn.execute(
+            """SELECT 1 FROM post WHERE product_id=? AND post_type='SALES'
+               AND status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED') LIMIT 1""",
+            (product_id,)).fetchone())
+
+    def create_product_only_link(self, product_id: str, on_link_error=None) -> dict:
+        """Create/refresh the copy-paste product-card link (sub1=``product:<external_id>``).
+
+        Deliberately separate from post creation -- see ``create_posts()`` and
+        ``core.pipeline.create_post_for_catalog_product`` -- so this link can never be
+        reused for a Threads post's attribution."""
+        product = self.get(product_id)
+        if not product:
+            return {"ok": False, "product_id": product_id, "error": "Không tìm thấy sản phẩm trong catalog"}
+        if not product["has_inventory"] or not product["detail_link"]:
+            return {"ok": False, "product_id": product_id,
+                    "error": "Sản phẩm không đủ điều kiện tạo link affiliate"}
+        try:
+            link = self.client.create_product_link(
+                product["detail_link"], post_id=f"product:{product['external_product_id']}",
+                external_product_id=product["external_product_id"])
+            full_url = getattr(link, "full_url", None)
+            short_url = getattr(link, "short_url", None)
+            if not (full_url or short_url):
+                raise ValueError("empty product link")
+        except Exception as error:
+            if on_link_error is not None:
+                on_link_error(error)
+            return {"ok": False, "product_id": product_id,
+                    "error": "Không thể tạo link affiliate cho sản phẩm"}
+        linked_at = now()
+        self.conn.execute("""UPDATE product
+                        SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='PRODUCT_ONLY',
+                            affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
+                        WHERE id=? AND provider=?""",
+                          (full_url or short_url, short_url, linked_at, linked_at, product_id, PROVIDER))
+        return {"ok": True, "product_id": product_id, "url": full_url or short_url}
+
+    def create_product_links(self, product_ids, max_items=MAX_BATCH_ITEMS_DEFAULT) -> ProductBatchResult:
+        """Bulk product-card links -- one provider call per selected, eligible product."""
+        selected, skipped = _dedupe_and_cap(product_ids, max_items)
+        successes, failures = [], []
+        for product_id in selected:
+            result = self.create_product_only_link(product_id)
+            if result["ok"]:
+                successes.append({"product_id": product_id, "message": "Đã tạo link affiliate"})
+            else:
+                failures.append({"product_id": product_id, "reason": result["error"]})
+        return ProductBatchResult(successes, skipped, failures)
+
+    def create_posts(self, product_ids, ctx, campaign_code, channel_code=None,
+                     max_items=MAX_BATCH_ITEMS_DEFAULT, on_link_error=None) -> ProductBatchResult:
+        """Bulk review-post drafts -- each reuses the single-item pipeline op untouched, so
+        attribution, image handling, caption generation, and the PENDING_REVIEW/DRAFT stop
+        stay identical to a manual one-at-a-time click."""
+        from . import pipeline  # deferred: pipeline.py imports this module at load time
+
+        selected, skipped = _dedupe_and_cap(product_ids, max_items)
+        successes, failures = [], []
+        for product_id in selected:
+            if self._has_active_sales_post(product_id):
+                skipped.append({"product_id": product_id,
+                                "reason": "Sản phẩm đã có bài đang chờ duyệt hoặc đã lên lịch"})
+                continue
+            result = pipeline.create_post_for_catalog_product(
+                self.conn, ctx, product_id, campaign_code, channel_code,
+                on_link_error=lambda error, pid=product_id: on_link_error(pid, error) if on_link_error else None)
+            if result.get("ok"):
+                successes.append({"product_id": product_id, "post_id": result.get("post_id"),
+                                  "message": "Đã tạo bài chờ duyệt"})
+            else:
+                failures.append({"product_id": product_id,
+                                 "reason": result.get("error") or "Không thể tạo bài"})
+        return ProductBatchResult(successes, skipped, failures)

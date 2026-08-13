@@ -1349,6 +1349,187 @@ def test_stale_lock_owner_cannot_release_new_owner_lease():
         conn.close()
 
 
+class _BatchLinkClient(_CatalogPipelineClient):
+    """Link client that can fail for specific external product IDs, not globally."""
+
+    def __init__(self, fail_external_ids=()):
+        super().__init__()
+        self.fail_external_ids = set(fail_external_ids)
+
+    def create_product_link(self, detail_link, *, post_id, external_product_id):
+        if external_product_id in self.fail_external_ids:
+            from acp.adapters.base import PublishError
+            raise PublishError("provider token=batch-secret")
+        return super().create_product_link(detail_link, post_id=post_id,
+                                            external_product_id=external_product_id)
+
+
+def _batch_conn(extra_products=4):
+    conn = _catalog_pipeline_conn()  # already has "catalog-product"/"external-42"
+    for index in range(extra_products):
+        _insert_catalog_product(conn, product_id=f"batch-{index}", external_id=f"batch-ext-{index}",
+                                name=f"Batch {index}", detail_link=f"https://detail.example/batch-{index}")
+    return conn
+
+
+def test_create_product_links_caps_at_max_items_preserving_order_and_skipping_overflow():
+    """Bulk link creation must never exceed the operator-visible batch limit."""
+    from acp.core.products import ProductService
+
+    conn = _batch_conn(extra_products=4)
+    try:
+        ids = ["batch-0", "batch-1", "batch-2", "batch-3", "catalog-product"]
+        result = ProductService(conn, _BatchLinkClient()).create_product_links(ids, max_items=3)
+
+        assert [item["product_id"] for item in result.successes] == ["batch-0", "batch-1", "batch-2"]
+        assert [item["product_id"] for item in result.skipped] == ["batch-3", "catalog-product"]
+        assert result.failures == []
+    finally:
+        conn.close()
+
+
+def test_create_product_links_dedupes_repeated_ids():
+    """A double-checked checkbox must not create the link twice."""
+    from acp.core.products import ProductService
+
+    conn = _batch_conn(extra_products=1)
+    try:
+        client = _BatchLinkClient()
+        result = ProductService(conn, client).create_product_links(
+            ["batch-0", "batch-0", "batch-0"], max_items=10)
+
+        assert len(client.link_calls) == 1
+        assert len(result.successes) == 1
+        assert result.skipped == []
+    finally:
+        conn.close()
+
+
+def test_create_product_links_uses_product_marker_and_isolates_per_item_failures():
+    """One provider failure must not block sibling links, and must never leak provider text."""
+    from acp.core.products import ProductService
+
+    conn = _batch_conn(extra_products=2)
+    try:
+        conn.execute("UPDATE product SET has_inventory=0 WHERE id='batch-1'")
+        client = _BatchLinkClient()
+        result = ProductService(conn, client).create_product_links(
+            ["batch-0", "batch-1"], max_items=10)
+
+        assert [item["product_id"] for item in result.successes] == ["batch-0"]
+        failure = result.failures[0]
+        assert failure["product_id"] == "batch-1"
+        assert "batch-secret" not in failure["reason"]
+        assert client.link_calls[0]["sub1"] == "product:batch-ext-0"
+
+        product = conn.execute("SELECT affiliate_link_status FROM product WHERE id='batch-0'").fetchone()
+        assert product["affiliate_link_status"] == "PRODUCT_ONLY"
+    finally:
+        conn.close()
+
+
+def test_create_product_links_redacts_provider_errors_and_continues():
+    """A raised provider exception during bulk linking must not stop remaining items."""
+    from acp.core.products import ProductService
+
+    conn = _batch_conn(extra_products=2)
+    try:
+        client = _BatchLinkClient(fail_external_ids=("batch-ext-0",))
+        result = ProductService(conn, client).create_product_links(
+            ["batch-0", "batch-1"], max_items=10)
+
+        assert [item["product_id"] for item in result.successes] == ["batch-1"]
+        failure = result.failures[0]
+        assert failure["product_id"] == "batch-0"
+        assert "batch-secret" not in failure["reason"]
+    finally:
+        conn.close()
+
+
+def test_create_posts_creates_fresh_per_post_links_and_stops_at_review():
+    """Bulk post creation must never reuse a product-marker link across posts."""
+    from acp.core import pipeline
+    from acp.core.products import ProductService
+    import tempfile
+
+    conn = _batch_conn(extra_products=2)
+    client = _BatchLinkClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = ProductService(conn, client).create_posts(
+                ["batch-0", "batch-1"], {"product_client": client, "storage": _CatalogStorage()},
+                "gd2026", "ch1", max_items=10)
+
+        assert len(result.successes) == 2
+        posts = conn.execute("SELECT id, status, product_id FROM post ORDER BY product_id").fetchall()
+        assert len(posts) == 2
+        assert {p["status"] for p in posts} <= {"PENDING_REVIEW", "DRAFT"}
+        sub1_values = {call["sub1"] for call in client.link_calls}
+        assert not any(v.startswith("product:") for v in sub1_values)
+        assert conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0] == 0
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
+def test_create_posts_skips_products_with_existing_active_post():
+    """A product already awaiting review must not receive a second draft."""
+    from acp.core.products import ProductService
+
+    conn = _batch_conn(extra_products=1)
+    try:
+        _insert_catalog_post(conn, post_id="existing-post", product_id="batch-0", status="PENDING_REVIEW")
+        client = _BatchLinkClient()
+        result = ProductService(conn, client).create_posts(
+            ["batch-0"], {"product_client": client, "storage": _CatalogStorage()},
+            "gd2026", "ch1", max_items=10)
+
+        assert result.successes == []
+        assert result.skipped[0]["product_id"] == "batch-0"
+        assert client.link_calls == []
+        assert conn.execute("SELECT COUNT(*) FROM post WHERE product_id='batch-0'").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_create_posts_continues_after_individual_failure_and_rejects_unknown_ids():
+    """A stockout or unknown product must not stop the rest of the batch."""
+    from acp.core import pipeline
+    from acp.core.products import ProductService
+    import tempfile
+
+    conn = _batch_conn(extra_products=1)
+    client = _BatchLinkClient()
+    old_media_dir = pipeline.MEDIA_DIR
+    try:
+        conn.execute("UPDATE product SET has_inventory=0 WHERE id='batch-0'")
+        with tempfile.TemporaryDirectory() as media_dir:
+            pipeline.MEDIA_DIR = media_dir
+            result = ProductService(conn, client).create_posts(
+                ["batch-0", "does-not-exist", "catalog-product"],
+                {"product_client": client, "storage": _CatalogStorage()},
+                "gd2026", "ch1", max_items=10)
+
+        failed_ids = {item["product_id"] for item in result.failures}
+        assert failed_ids == {"batch-0", "does-not-exist"}
+        assert [item["product_id"] for item in result.successes] == ["catalog-product"]
+    finally:
+        pipeline.MEDIA_DIR = old_media_dir
+        conn.close()
+
+
+def test_batch_result_summary_reports_counts():
+    from acp.core.products import ProductBatchResult
+
+    result = ProductBatchResult(
+        successes=[{"product_id": "a"}], skipped=[{"product_id": "b"}, {"product_id": "c"}],
+        failures=[{"product_id": "d"}])
+
+    assert result.summary == "1 thành công, 2 bỏ qua, 1 lỗi"
+
+
 def test_product_sync_command_runs_catalog_sync_and_prints_summary():
     """Removing the CLI catalog sync path would leave a scheduled run invisible to operators."""
     from acp import run
@@ -2500,7 +2681,15 @@ def main():
                           test_sync_retries_recommended_once_when_commission_sort_is_rejected,
                           test_sync_does_not_fallback_commission_sort_on_auth_network_or_server_errors,
                           test_sync_lock_rejects_fresh_lock_and_releases_after_error,
-                          test_stale_lock_owner_cannot_release_new_owner_lease],
+                          test_stale_lock_owner_cannot_release_new_owner_lease,
+                          test_create_product_links_caps_at_max_items_preserving_order_and_skipping_overflow,
+                          test_create_product_links_dedupes_repeated_ids,
+                          test_create_product_links_uses_product_marker_and_isolates_per_item_failures,
+                          test_create_product_links_redacts_provider_errors_and_continues,
+                          test_create_posts_creates_fresh_per_post_links_and_stops_at_review,
+                          test_create_posts_skips_products_with_existing_active_post,
+                          test_create_posts_continues_after_individual_failure_and_rejects_unknown_ids,
+                          test_batch_result_summary_reports_counts],
               "pipeline": [test_catalog_product_creates_fresh_per_post_link_and_pending_review,
                            test_catalog_post_materializes_product_image_before_creating_a_link,
                            test_catalog_link_failure_stops_before_caption_or_post_generation,
