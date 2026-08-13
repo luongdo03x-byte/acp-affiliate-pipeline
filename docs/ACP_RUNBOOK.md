@@ -23,7 +23,35 @@ Mục tiêu: sau khi setup một lần, vận hành ACP chỉ qua `manage.sh`. K
 
 ## 2. Setup một lần
 
-Sau khi ACP 2.0 đã được xác nhận và `~/Downloads/ACP/acp` trỏ đúng release đang chạy:
+**Máy mới (git clone lần đầu):**
+
+```bash
+git clone <repo-url> ~/Downloads/ACP/releases/2.0/acp
+cd ~/Downloads/ACP/releases/2.0/acp
+./manage.sh setup
+```
+
+`setup` tự tạo `.venv`, cài `requirements.txt`, dựng `shared/.env.local`
+từ `.env.example` (tự sinh `ACP_MASTER_KEY` qua `run.py genkey`, tự điền
+`ACP_DB` theo đường dẫn máy này), symlink `acp/.env.local`/`acp/var` vào
+`shared/`, tạo schema CSDL (`init_db()` — chỉ schema, không seed demo
+data), và tạo hai symlink `~/Downloads/ACP/acp` +
+`~/Downloads/ACP/manage.sh`. Idempotent: chạy lại không ghi đè
+`.env.local`/CSDL đã có.
+
+Muốn giữ nguyên kết nối Threads + catalog của máy cũ thay vì bắt đầu
+trắng: copy nguyên `shared/` (scp/rsync, **không** qua git vì có secret
+thật) sang máy mới trước khi chạy `setup` — `setup` thấy `.env.local` đã
+tồn tại thì bỏ qua bước tạo mới.
+
+Sau `setup`, điền các biến bắt buộc mà script không tự sinh được vào
+`shared/.env.local`: `ACP_ADMIN_PASSWORD`, `ACP_SECRET_KEY`, và tuỳ nhu
+cầu `ACCESSTRADE_API_TOKEN`/`ACP_GEMINI_API_KEY`/`ACP_PUBLIC_BASE_URL`.
+Không điền gì thì `./manage.sh start` vẫn chạy được ở chế độ dev cục bộ
+(không đăng nhập, `ACP_ADAPTER=mock`).
+
+**Máy đã có sẵn release cũ (đổi bằng ZIP qua `manage.sh upgrade` thay vì
+git clone trực tiếp):** dùng lại `~/Downloads/ACP/acp` đang trỏ đúng, rồi:
 
 ```bash
 cd ~/Downloads/ACP
@@ -31,7 +59,7 @@ ln -sfn "acp/manage.sh" manage.sh
 chmod +x "$(readlink -f manage.sh)"
 ```
 
-Kiểm tra:
+Kiểm tra cả hai đường:
 
 ```bash
 ./manage.sh status

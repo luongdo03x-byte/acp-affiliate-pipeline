@@ -22,6 +22,7 @@ die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
 Cách dùng:
+  ./manage.sh setup        # lần đầu trên máy mới, sau khi git clone
   ./manage.sh start
   ./manage.sh stop
   ./manage.sh restart
@@ -121,6 +122,72 @@ wait_http() {
         sleep 0.5
     done
     return 1
+}
+
+cmd_setup() {
+    # Bootstrap một lần trên máy mới, chạy từ bên trong release vừa clone
+    # (releases/<version>/acp/manage.sh setup), TRƯỚC KHI $ACTIVE tồn tại --
+    # nên không dùng current_release() ở đây, mà lấy release từ chính vị
+    # trí của script này.
+    require_cmd python3
+    local release
+    release="$(dirname "$SCRIPT_REAL")"
+    [[ -f "$release/run.py" ]] || die "Không thấy run.py cạnh manage.sh -- chạy setup từ trong thư mục release (releases/<version>/acp)"
+    [[ -f "$release/.env.example" ]] || die "Thiếu .env.example trong $release"
+
+    mkdir -p "$SHARED/var"
+
+    # venv trước, vì bước sinh ACP_MASTER_KEY bên dưới cần `run.py genkey`
+    # chạy được (cần gói cryptography đã cài).
+    if [[ -x "$release/.venv/bin/python" ]]; then
+        info "Đã có virtualenv -- bỏ qua cài đặt."
+    else
+        install_release "$release"
+        info "Đã tạo virtualenv + cài dependencies."
+    fi
+
+    # Không bao giờ ghi đè .env.local đã có -- có thể là bản đã copy
+    # nguyên từ máy cũ (kèm token/khoá thật) để giữ nguyên kết nối Threads.
+    if [[ -f "$SHARED/.env.local" ]]; then
+        info "Đã có $SHARED/.env.local -- giữ nguyên, không ghi đè."
+    else
+        cp "$release/.env.example" "$SHARED/.env.local"
+        local db_path="$SHARED/var/acp.db"
+        local master_key
+        master_key="$("$release/.venv/bin/python" "$release/run.py" genkey)"
+        # portable sed -i: dùng file tạm thay vì -i '' (khác nhau giữa GNU/BSD sed).
+        local tmp_env="$SHARED/.env.local.tmp"
+        sed -e "s#^ACP_DB=\$#ACP_DB=$db_path#" \
+            -e "s#^ACP_MASTER_KEY=\$#ACP_MASTER_KEY=$master_key#" \
+            "$SHARED/.env.local" >"$tmp_env"
+        mv "$tmp_env" "$SHARED/.env.local"
+        chmod 600 "$SHARED/.env.local"
+        info "Đã tạo $SHARED/.env.local từ .env.example (ACP_DB + ACP_MASTER_KEY tự điền)."
+        warn "BẮT BUỘC điền tay trước khi dùng thật: ACP_ADMIN_PASSWORD, ACP_SECRET_KEY,"
+        warn "  và tuỳ nhu cầu: ACCESSTRADE_API_TOKEN (catalog), ACP_GEMINI_API_KEY (caption LLM),"
+        warn "  ACP_PUBLIC_BASE_URL/ACP_MEDIA_BASE_URL (cần cho Threads publish thật -- không phải localhost)."
+        warn "  Đăng bài Threads thật còn cần re-auth OAuth riêng (token không tự sinh được) -- xem docs/ACP_RUNBOOK.md."
+    fi
+
+    [[ -L "$release/.env.local" || -f "$release/.env.local" ]] || ln -s "$SHARED/.env.local" "$release/.env.local"
+    [[ -L "$release/var" || -d "$release/var" ]] || ln -s "$SHARED/var" "$release/var"
+
+    # Chỉ tạo schema, không seed dữ liệu demo -- an toàn kể cả khi
+    # shared/var đã có DB được copy/restore từ máy khác.
+    migrate_release "$release"
+    info "Đã đảm bảo schema CSDL."
+
+    if [[ ! -e "$ACTIVE" ]]; then
+        ln -s "$release" "$ACTIVE"
+        info "Đã tạo $ACTIVE -> $release"
+    fi
+    if [[ ! -e "$BASE/manage.sh" ]]; then
+        ln -s "$ACTIVE/manage.sh" "$BASE/manage.sh"
+        info "Đã tạo $BASE/manage.sh"
+    fi
+
+    info "SETUP_OK"
+    info "Tiếp theo: kiểm tra $SHARED/.env.local rồi chạy: $BASE/manage.sh start"
 }
 
 cmd_start() {
@@ -407,6 +474,7 @@ cmd_rollback() {
 }
 
 case "${1:-}" in
+    setup) cmd_setup ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;

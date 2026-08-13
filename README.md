@@ -34,7 +34,36 @@ EPC               1.277đ
 
 ## Quản lý app bằng một lệnh
 
-Sau khi setup release/shared một lần, ưu tiên dùng `manage.sh` thay cho việc mở nhiều terminal và nạp env thủ công:
+### Máy mới (lần đầu, sau khi git clone)
+
+```bash
+git clone <repo-url> ~/Downloads/ACP/releases/2.0/acp
+cd ~/Downloads/ACP/releases/2.0/acp
+./manage.sh setup      # tạo venv, shared/.env.local, symlink, schema CSDL
+```
+
+`setup` tự làm: tạo virtualenv + cài `requirements.txt`, tạo
+`~/Downloads/ACP/shared/.env.local` từ `.env.example` (tự sinh
+`ACP_MASTER_KEY` bằng `run.py genkey`, tự điền `ACP_DB` đúng đường dẫn
+máy này), symlink `acp/.env.local` + `acp/var` vào `shared/`, tạo schema
+CSDL (không seed dữ liệu demo), và tạo hai symlink kích hoạt
+`~/Downloads/ACP/acp` + `~/Downloads/ACP/manage.sh`. An toàn để chạy lại
+nhiều lần — không bao giờ ghi đè `.env.local`/CSDL đã có sẵn.
+
+Chạy xong, `setup` in ra danh sách biến **bắt buộc điền tay** trước khi
+dùng thật (`ACP_ADMIN_PASSWORD`, `ACP_SECRET_KEY`, và tuỳ nhu cầu
+`ACCESSTRADE_API_TOKEN`/`ACP_GEMINI_API_KEY`/`ACP_PUBLIC_BASE_URL`) —
+những thứ không thể tự sinh an toàn được. Không cần điền gì thì
+`./manage.sh start` vẫn chạy được ngay ở chế độ dev cục bộ (không đăng
+nhập, `ACP_ADAPTER=mock`), đủ để xem dashboard/demo.
+
+**Muốn giữ nguyên kết nối Threads + catalog đã có (chuyển máy, không phải
+máy hoàn toàn mới):** copy nguyên thư mục `shared/` (chứa `.env.local` +
+CSDL) từ máy cũ sang máy mới bằng `scp`/`rsync` **trước khi** chạy
+`setup` — không đi qua git vì đây là secret thật. `setup` phát hiện
+`.env.local` đã tồn tại thì giữ nguyên, không tạo mới.
+
+### Vòng đời hằng ngày
 
 ```bash
 ./manage.sh start
@@ -46,15 +75,7 @@ Sau khi setup release/shared một lần, ưu tiên dùng `manage.sh` thay cho v
 ./manage.sh rollback
 ```
 
-Để gọi từ thư mục `~/Downloads/ACP`:
-
-```bash
-cd ~/Downloads/ACP
-ln -sfn "acp/manage.sh" manage.sh
-./manage.sh status
-```
-
-Runtime/secrets vẫn nằm ở `~/Downloads/ACP/shared`, log ở `~/Downloads/ACP/logs`, backup DB ở `~/Downloads/ACP/backups`. `manage.sh test` và bước xác minh upgrade luôn ép adapter/source về mock để không đăng bài thật. Xem `docs/ACP_RUNBOOK.md` cho quy trình đầy đủ.
+Runtime/secrets nằm ở `~/Downloads/ACP/shared`, log ở `~/Downloads/ACP/logs`, backup DB ở `~/Downloads/ACP/backups`. `manage.sh test` và bước xác minh upgrade luôn ép adapter/source về mock để không đăng bài thật. Xem `docs/ACP_RUNBOOK.md` cho quy trình đầy đủ.
 
 ---
 
