@@ -2337,6 +2337,124 @@ def test_catalog_standalone_link_uses_product_marker():
     assert calls == [("https://example.test/product", "product:external-web-product", "external-web-product")]
 
 
+def _add_catalog_products(count, *, prefix="bulk"):
+    conn = db.connect()
+    try:
+        for index in range(count):
+            _insert_catalog_product(
+                conn, product_id=f"{prefix}-{index}", external_id=f"{prefix}-ext-{index}",
+                name=f"Bulk product {index}", detail_link=f"https://example.test/{prefix}-{index}")
+    finally:
+        conn.close()
+
+
+def test_catalog_page_renders_checkboxes_and_bulk_action_controls():
+    """Selection must be possible before either bulk route can be reached."""
+    with _catalog_web_app() as (app, _server, product_id):
+        _add_catalog_products(2)
+        response = app.test_client().get("/sanpham")
+
+    assert response.status_code == 200
+    text = response.text
+    assert f'name="product_id" value="{product_id}"' in text
+    assert 'name="product_id" value="bulk-0"' in text
+    assert "select-all" in text.lower() or "chọn tất cả" in text.lower()
+    assert '/sanpham/batch/affiliate-link' in text
+    assert '/sanpham/batch/tao-bai' in text
+
+
+def test_batch_routes_require_csrf():
+    with _catalog_web_app(require_auth=True) as (app, _server, product_id):
+        client = app.test_client()
+        _login_catalog_web(client)
+        response = client.post("/sanpham/batch/affiliate-link", data={"product_id": product_id})
+    assert response.status_code == 400
+
+
+def test_batch_affiliate_link_rejects_empty_selection():
+    with _catalog_web_app(require_auth=True) as (app, _server, _product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        response = client.post("/sanpham/batch/affiliate-link", data={"_csrf": csrf})
+        assert response.status_code == 302
+        page = client.get(response.headers["Location"])
+    assert "Chưa chọn sản phẩm nào" in page.text
+
+
+def test_batch_affiliate_link_over_limit_reports_skipped_count_and_preserves_filters():
+    """Selecting more than the batch cap must not crash and must report the overflow."""
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        _add_catalog_products(10)
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+
+        class _LinkClient:
+            def create_product_link(self, detail_link, *, post_id, external_product_id):
+                from acp.adapters.accesstrade_client import LinkResult
+                return LinkResult("https://tracking.example/x", "https://short.example/x")
+
+        original_client = server.AccessTradeClient
+        server.AccessTradeClient = type("_Client", (), {"from_env": staticmethod(lambda: _LinkClient())})
+        try:
+            ids = [product_id] + [f"bulk-{i}" for i in range(10)]
+            response = client.post("/sanpham/batch/affiliate-link",
+                                   data={"_csrf": csrf, "q": "váy", "product_id": ids})
+        finally:
+            server.AccessTradeClient = original_client
+        assert response.status_code == 302
+        assert "q=v" in response.headers["Location"] or "q=%C3%A1" in response.headers["Location"] \
+            or "váy" in response.headers["Location"]
+        page = client.get(response.headers["Location"])
+    assert "10 thành công" in page.text
+    assert "1 bỏ qua" in page.text
+
+
+def test_batch_create_posts_summary_explains_stop_at_review():
+    """Operators must see, in the UI, that bulk post creation never auto-publishes."""
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        _add_catalog_products(1)
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        original = server.pipeline.create_post_for_catalog_product
+        server.pipeline.create_post_for_catalog_product = \
+            lambda *_a, **_k: {"ok": True, "post_id": "p1"}
+        try:
+            response = client.post("/sanpham/batch/tao-bai",
+                                   data={"_csrf": csrf, "product_id": [product_id, "bulk-0"]})
+        finally:
+            server.pipeline.create_post_for_catalog_product = original
+        assert response.status_code == 302
+        page = client.get(response.headers["Location"])
+    assert "2 thành công" in page.text
+    assert "duyệt" in page.text.lower()
+
+
+def test_batch_routes_never_leak_provider_errors():
+    with _catalog_web_app(require_auth=True) as (app, server, product_id):
+        client = app.test_client()
+        csrf = _login_catalog_web(client)
+        original_service = server.ProductService
+
+        class _FailingService:
+            def __init__(self, *_):
+                pass
+
+            def create_product_links(self, *_a, **_k):
+                raise RuntimeError("Authorization: Token batch-secret")
+
+        server.ProductService = _FailingService
+        try:
+            response = client.post("/sanpham/batch/affiliate-link",
+                                   data={"_csrf": csrf, "product_id": product_id})
+        finally:
+            server.ProductService = original_service
+        assert response.status_code == 302
+        page = client.get(response.headers["Location"])
+    assert "batch-secret" not in response.headers["Location"]
+    assert "batch-secret" not in page.text
+    assert "Không thể tiếp tục. Vui lòng thử lại." in page.text
+
+
 def test_ops_page_shows_worker_toggle_state():
     """/vanhanh phải hiện đúng trạng thái công tắc worker (mặc định tắt) và thời điểm cập nhật."""
     with _catalog_web_app() as (app, _server, _product_id):
@@ -2719,6 +2837,12 @@ def main():
                       test_catalog_sync_and_standalone_link_logs_never_contain_provider_secrets,
                       test_catalog_sync_redirects_with_operator_summary,
                       test_catalog_standalone_link_uses_product_marker,
+                      test_catalog_page_renders_checkboxes_and_bulk_action_controls,
+                      test_batch_routes_require_csrf,
+                      test_batch_affiliate_link_rejects_empty_selection,
+                      test_batch_affiliate_link_over_limit_reports_skipped_count_and_preserves_filters,
+                      test_batch_create_posts_summary_explains_stop_at_review,
+                      test_batch_routes_never_leak_provider_errors,
                       test_ops_page_shows_worker_toggle_state,
                       test_worker_toggle_requires_csrf,
                       test_worker_toggle_enable_persists_and_audits,

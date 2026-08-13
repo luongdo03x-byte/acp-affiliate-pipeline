@@ -275,7 +275,7 @@ select { color-scheme: dark; }
 .catalog-filters { display: grid; grid-template-columns: minmax(180px, 1.7fr) minmax(140px, 1fr) minmax(110px, .7fr) minmax(130px, .8fr) auto; align-items: end; gap: 10px; }
 .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: 14px; }
 .catalog-card { display: grid; grid-template-columns: 104px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: linear-gradient(180deg, rgba(17,34,54,.94), rgba(13,27,42,.96)); }
-.catalog-card__image { display: grid; min-height: 104px; place-items: center; background: rgba(2,8,23,.3); color: var(--text-faint); font-size: 10px; text-align: center; }
+.catalog-card__image { position: relative; display: grid; min-height: 104px; place-items: center; background: rgba(2,8,23,.3); color: var(--text-faint); font-size: 10px; text-align: center; }
 .catalog-card__image img { width: 100%; height: 100%; min-height: 104px; object-fit: contain; background: #fff; }
 .catalog-card__body { min-width: 0; padding: 12px; }
 .catalog-card__topline, .catalog-card__links, .catalog-card__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
@@ -292,6 +292,13 @@ select { color-scheme: dark; }
 .catalog-card__actions form:last-child { flex: 2; }
 .catalog-card__actions select { min-width: 0; min-height: 31px; padding: 4px 6px; font-size: 10px; }
 .catalog-card__actions button { flex: 0 0 auto; }
+.catalog-batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; padding: 11px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: rgba(2,8,23,.3); }
+.catalog-batch-bar .note { flex: 1 1 260px; margin: 0; }
+.catalog-select-all { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.catalog-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.catalog-batch-actions select { min-height: 31px; padding: 4px 6px; font-size: 10px; }
+.catalog-card__select { position: absolute; top: 6px; left: 6px; z-index: 1; display: flex; padding: 3px; border-radius: 5px; background: rgba(2,8,23,.55); }
+.catalog-card__select input { margin: 0; }
 
 .review-list { display: grid; gap: 15px; }
 .review-card { display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 18px; padding: 18px; background: linear-gradient(180deg, rgba(17,34,54,.96), rgba(13,27,42,.98)); border: 1px solid var(--border); border-radius: var(--radius); }

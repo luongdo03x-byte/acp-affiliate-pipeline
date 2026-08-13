@@ -249,6 +249,24 @@ def create_app():
             values["synced"] = synced
         return redirect(url_for("products", **values))
 
+    # Tên trùng với các field GET của form lọc trong products.html --
+    # ProductFilters.from_request() đọc lại đúng các tên này.
+    _CATALOG_FILTER_FIELDS = ("q", "shop", "inventory", "min_commission_rate", "min_commission_amount",
+                              "min_price", "max_price", "min_units_sold", "affiliate_status",
+                              "post_state", "sort")
+
+    def _batch_redirect(*, summary=None, err=None):
+        values = {name: request.form.get(name, "") for name in _CATALOG_FILTER_FIELDS
+                  if request.form.get(name)}
+        if summary:
+            values["batch"] = summary
+        if err:
+            values["err"] = err
+        return redirect(url_for("products", **values))
+
+    def _batch_product_ids():
+        return [pid.strip() for pid in request.form.getlist("product_id") if pid.strip()]
+
     @app.route("/sanpham")
     def products():
         """Local ACCESSTRADE catalog, with the separate manual Shopee workspace."""
@@ -273,6 +291,7 @@ def create_app():
         return render_template(
             "products.html", page="san-pham", mode="catalog", items=items, filters=filters,
             catalog=catalog, synced=request.args.get("synced"), err=err,
+            batch_summary=request.args.get("batch"),
             pending_review=pending, channels=channels, resolved=None,
             metadata=ProductMetadata(), affiliate_url="")
 
@@ -325,6 +344,43 @@ def create_app():
             if not isinstance(error, ProductUserError):
                 _log_catalog_failure("create_post", error, product_id=product_id)
             return _catalog_redirect(err=_catalog_error(error))
+        finally:
+            conn.close()
+
+    @app.route("/sanpham/batch/affiliate-link", methods=["POST"])
+    def batch_create_affiliate_links():
+        ids = _batch_product_ids()
+        if not ids:
+            return _batch_redirect(err="Chưa chọn sản phẩm nào")
+        conn = connect()
+        try:
+            client = AccessTradeClient.from_env()
+            result = ProductService(conn, client).create_product_links(ids)
+            return _batch_redirect(summary=result.summary)
+        except Exception as error:
+            _log_catalog_failure("batch_create_product_links", error)
+            return _batch_redirect(err=_catalog_error(error))
+        finally:
+            conn.close()
+
+    @app.route("/sanpham/batch/tao-bai", methods=["POST"])
+    def batch_create_posts():
+        ids = _batch_product_ids()
+        if not ids:
+            return _batch_redirect(err="Chưa chọn sản phẩm nào")
+        conn = connect()
+        try:
+            service = ProductService(conn, AccessTradeClient.from_env())
+            result = service.create_posts(
+                ids, factory.build_context(),
+                campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
+                channel_code=request.form.get("channel_code") or None,
+                on_link_error=lambda product_id, error: _log_catalog_failure(
+                    "batch_create_post_link", error, product_id=product_id, status="FAILED"))
+            return _batch_redirect(summary=result.summary)
+        except Exception as error:
+            _log_catalog_failure("batch_create_posts", error)
+            return _batch_redirect(err=_catalog_error(error))
         finally:
             conn.close()
 

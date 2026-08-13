@@ -17,6 +17,7 @@
 
 {% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
 {% if synced %}<div class="alert alert--success"><strong>✓</strong><span>{{ synced }}</span></div>{% endif %}
+{% if batch_summary %}<div class="alert alert--success"><strong>Đã xử lý hàng loạt.</strong><span>{{ batch_summary }}</span></div>{% endif %}
 {% if metadata_state == 'AUTO_COMPLETE' %}
 <div class="alert alert--success"><strong>✓ Đã tự lấy thông tin.</strong><span>Kiểm tra lại rồi tạo bài.</span></div>
 {% elif metadata_state == 'AUTO_PARTIAL' %}
@@ -312,10 +313,36 @@
   <div class="section-heading section-heading--spaced">
     <div><h2>{{ items|length }} sản phẩm trong catalog</h2><p class="note">Dữ liệu đọc từ database cục bộ.</p></div>
   </div>
+
+  <!-- Không lồng trong .catalog-grid: mỗi thẻ sản phẩm bên dưới đã có form
+       thao tác riêng (Tạo link/Tạo bài), form HTML không được phép lồng nhau.
+       Checkbox chọn hàng loạt tham chiếu tới form này qua thuộc tính form=. -->
+  <form id="catalog-batch-form" method="post" class="catalog-batch-bar">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    {% for field, val in [('q', filters.keyword), ('shop', filters.shop_keyword), ('sort', filters.sort)] %}
+    <input type="hidden" name="{{ field }}" value="{{ val or '' }}">
+    {% endfor %}
+    <label class="catalog-select-all">
+      <input type="checkbox" id="catalog-select-all"> Chọn tất cả trên trang này
+    </label>
+    <span class="note">Tối đa 10 sản phẩm mỗi lần. Tạo bài hàng loạt luôn dừng ở bước chờ duyệt — không tự đăng, vẫn phải duyệt tay từng bài ở /duyet.</span>
+    <div class="catalog-batch-actions">
+      <button class="btn btn--small" type="submit" formaction="{{ url_for('batch_create_affiliate_links') }}">Tạo link hàng loạt</button>
+      <select name="channel_code" form="catalog-batch-form" aria-label="Kênh Threads (tạo bài hàng loạt)">
+        <option value="">Kênh tự chọn</option>
+        {% for ch in channels %}<option value="{{ ch.code }}">{{ ch.handle }}</option>{% endfor %}
+      </select>
+      <button class="btn btn--primary btn--small" type="submit" formaction="{{ url_for('batch_create_posts') }}">Tạo bài hàng loạt</button>
+    </div>
+  </form>
+
   <div class="catalog-grid">
     {% for p in items %}
     <article class="catalog-card">
       <div class="catalog-card__image">
+        <label class="catalog-card__select">
+          <input type="checkbox" class="catalog-select-item" name="product_id" value="{{ p.id }}" form="catalog-batch-form">
+        </label>
         {% if p.main_image_url %}<img src="{{ p.main_image_url }}" alt="{{ p.name }}" loading="lazy">{% else %}<span>Chưa có ảnh</span>{% endif %}
       </div>
       <div class="catalog-card__body">
@@ -366,6 +393,17 @@
         if (button) { button.disabled = true; button.textContent = "Đang đồng bộ…"; }
       });
     });
+    // Chỉ tiện chọn nhanh trên client -- server luôn tự kiểm tra lại từng
+    // product_id gửi lên (tồn tại, đủ điều kiện, giới hạn 10), không tin
+    // trạng thái checkbox này cho bất kỳ việc xác thực/uỷ quyền nào.
+    var selectAll = document.getElementById("catalog-select-all");
+    if (selectAll) {
+      selectAll.addEventListener("change", function () {
+        document.querySelectorAll(".catalog-select-item").forEach(function (cb) {
+          cb.checked = selectAll.checked;
+        });
+      });
+    }
     document.querySelectorAll(".catalog-copy").forEach(function (button) {
       button.addEventListener("click", function () {
         var original = button.textContent;
