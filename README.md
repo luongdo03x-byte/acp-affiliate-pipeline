@@ -369,6 +369,27 @@ thì thử lại sau. Sản phẩm hết hàng, không có `detail_link`, hoặc
 `ACP_PRODUCT_REPOST_COOLDOWN_DAYS` sẽ không được auto-prepare. Manual selection
 trên `/sanpham` có thể override cooldown, nhưng vẫn dừng ở bước duyệt tay.
 
+### Thao tác hàng loạt trên catalog
+
+Mỗi thẻ sản phẩm ở `/sanpham` có ô chọn; nút **Chọn tất cả trên trang này** chỉ
+tiện thao tác, server luôn tự kiểm tra lại từng sản phẩm được gửi lên (tồn tại,
+đúng provider, còn hàng, có `detail_link`) chứ không tin trạng thái checkbox.
+Có hai nút thao tác hàng loạt, tối đa 10 sản phẩm mỗi lần (`max_items` mặc định
+của `ProductService.create_product_links`/`create_posts` trong `core/products.py`):
+
+- **Tạo link hàng loạt** — tạo/làm mới link product-card
+  (`sub1=product:<external_product_id>`) cho từng sản phẩm đã chọn, y hệt nút
+  "Tạo link" của một sản phẩm đơn lẻ, chỉ khác là chạy nhiều lần liên tiếp.
+- **Tạo bài hàng loạt** — tạo bài nháp cho từng sản phẩm, gọi lại đúng luồng
+  một-sản-phẩm-một-bài hiện có (link riêng cho từng bài, không tái dùng link
+  product-card) nên vẫn dừng ở `PENDING_REVIEW`/`DRAFT`, **không** tự đăng và
+  **không** tạo job `PUBLISH_POST`. Sản phẩm đã có bài đang hoạt động
+  (DRAFT/PENDING_REVIEW/APPROVED/SCHEDULED) bị bỏ qua để tránh tạo bài trùng.
+
+Một sản phẩm lỗi (hết hàng, thiếu link, provider từ chối...) không chặn các sản
+phẩm còn lại trong lô; kết quả hiển thị dạng "N thành công, N bỏ qua, N lỗi",
+không bao giờ lộ nội dung lỗi thô từ provider.
+
 ### Worker tự đăng theo lịch
 
 Worker đăng bài chạy ngoài Flask, một lượt mỗi phút. Nó chỉ xử lý job

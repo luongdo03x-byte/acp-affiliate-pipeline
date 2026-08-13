@@ -285,6 +285,24 @@ acp-product-sync.timer`. Khóa database của catalog chặn sync chồng nhau; 
 nhận thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song
 song.
 
+### Thao tác hàng loạt trên catalog
+
+`/sanpham` cho chọn nhiều sản phẩm cùng lúc (checkbox trên từng thẻ, có nút chọn
+tất cả trên trang hiện tại — chỉ để tiện thao tác, server luôn tự kiểm tra lại
+từng ID). Hai route:
+
+- `POST /sanpham/batch/affiliate-link` — tạo hàng loạt link product-card
+  (`sub1=product:<external_product_id>`).
+- `POST /sanpham/batch/tao-bai` — tạo hàng loạt bài nháp, dùng lại nguyên luồng
+  một-sản-phẩm-một-bài hiện có nên luôn dừng ở `PENDING_REVIEW`/`DRAFT`, không
+  tự đăng, không tạo job `PUBLISH_POST`.
+
+Cả hai giới hạn 10 sản phẩm/lần (`ProductService.create_product_links`/
+`create_posts`, tham số `max_items`), khử trùng lặp ID, giữ nguyên thứ tự đã
+chọn, và không dừng cả lô khi một sản phẩm lỗi — kết quả trả về dạng "N thành
+công, N bỏ qua, N lỗi" không lộ lỗi provider thô. Sản phẩm đã có bài đang hoạt
+động bị bỏ qua khi tạo bài hàng loạt để tránh trùng bài.
+
 ### Worker tự đăng bài theo lịch
 
 Worker là process riêng chạy một lượt mỗi phút; Flask dashboard không tự quét
