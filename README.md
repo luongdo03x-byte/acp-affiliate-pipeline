@@ -58,10 +58,33 @@ những thứ không thể tự sinh an toàn được. Không cần điền gì
 nhập, `ACP_ADAPTER=mock`), đủ để xem dashboard/demo.
 
 **Muốn giữ nguyên kết nối Threads + catalog đã có (chuyển máy, không phải
-máy hoàn toàn mới):** copy nguyên thư mục `shared/` (chứa `.env.local` +
-CSDL) từ máy cũ sang máy mới bằng `scp`/`rsync` **trước khi** chạy
-`setup` — không đi qua git vì đây là secret thật. `setup` phát hiện
-`.env.local` đã tồn tại thì giữ nguyên, không tạo mới.
+máy hoàn toàn mới)** — hai cách, chọn một:
+
+1. **Mã hoá rồi commit vào git (khuyên dùng, không cần copy tay mỗi lần):**
+
+   ```bash
+   ./manage.sh encrypt-secrets    # hỏi passphrase, tạo secrets/env.local.gpg
+   git add secrets/env.local.gpg
+   git commit -m "chore: cập nhật bản mã hoá shared/.env.local"
+   git push
+   ```
+
+   `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 bằng `gpg`, an
+   toàn để commit — không phải secret dạng chữ thường. Passphrase không
+   bao giờ truyền qua đối số dòng lệnh (gpg tự hỏi qua pinentry) nên
+   không lộ qua shell history; **tự lưu passphrase ở nơi khác git** (mất
+   passphrase là mất luôn khả năng đọc lại). Máy mới chạy `./manage.sh
+   setup` sẽ tự thấy file này, hỏi passphrase, và giải mã ra
+   `shared/.env.local` — khỏi copy tay. **Mỗi lần sửa
+   `shared/.env.local` (đổi token, thêm key mới...) phải chạy lại
+   `encrypt-secrets` rồi commit** — file trong git không tự đồng bộ
+   theo file thật.
+
+2. **Copy tay ngoài git:** copy nguyên thư mục `shared/` (chứa
+   `.env.local` + CSDL) từ máy cũ sang máy mới bằng `scp`/`rsync`
+   **trước khi** chạy `setup` — không đi qua git. `setup` phát hiện
+   `.env.local` đã tồn tại thì giữ nguyên, không tạo mới, không cần
+   passphrase gì cả.
 
 ### Vòng đời hằng ngày
 

@@ -40,9 +40,30 @@ data), và tạo hai symlink `~/Downloads/ACP/acp` +
 `.env.local`/CSDL đã có.
 
 Muốn giữ nguyên kết nối Threads + catalog của máy cũ thay vì bắt đầu
-trắng: copy nguyên `shared/` (scp/rsync, **không** qua git vì có secret
-thật) sang máy mới trước khi chạy `setup` — `setup` thấy `.env.local` đã
-tồn tại thì bỏ qua bước tạo mới.
+trắng, chọn một trong hai:
+
+- **Mã hoá + commit vào git (khỏi copy tay mỗi lần):**
+
+  ```bash
+  ./manage.sh encrypt-secrets      # hỏi passphrase, tạo secrets/env.local.gpg
+  git add secrets/env.local.gpg && git commit -m "chore: cập nhật bản mã hoá .env.local" && git push
+  ```
+
+  `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 (gpg) — an toàn
+  để commit dù repo private hay public, chỉ đọc được với đúng passphrase.
+  Passphrase gpg tự hỏi qua pinentry, không truyền qua đối số/biến môi
+  trường nên không lộ qua shell history; tự lưu passphrase ở nơi khác
+  git (mất là mất luôn). `setup` ở máy mới tự thấy file này và hỏi
+  passphrase để giải mã ra `shared/.env.local`. **Không bao giờ tự tay
+  commit `shared/.env.local` dạng chữ thường** — lịch sử git gần như
+  không xoá được thật sự, kể cả trên repo private (ai từng clone/fork
+  vẫn giữ bản cũ). Sau mỗi lần sửa `shared/.env.local` phải chạy lại
+  `encrypt-secrets` rồi commit — file mã hoá trong git không tự đồng bộ.
+
+- **Copy tay ngoài git:** copy nguyên `shared/` (scp/rsync, **không** qua
+  git vì có secret thật) sang máy mới trước khi chạy `setup` — `setup`
+  thấy `.env.local` đã tồn tại thì bỏ qua cả hai bước trên (tạo mới lẫn
+  giải mã).
 
 Sau `setup`, điền các biến bắt buộc mà script không tự sinh được vào
 `shared/.env.local`: `ACP_ADMIN_PASSWORD`, `ACP_SECRET_KEY`, và tuỳ nhu
