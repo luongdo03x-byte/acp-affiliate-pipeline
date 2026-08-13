@@ -2,6 +2,9 @@
 /.env
 /.env.*
 !/.env.example
+# secrets/*.gpg CỐ Ý được track -- đó là bản mã hoá GPG của .env.local
+# (tạo bằng `./manage.sh encrypt-secrets`), không phải secret dạng chữ
+# thường. Đừng thêm rule ignore /secrets ở đây.
 
 # Runtime
 /var

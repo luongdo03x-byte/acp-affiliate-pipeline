@@ -23,6 +23,7 @@ usage() {
     cat <<'EOF'
 Cách dùng:
   ./manage.sh setup        # lần đầu trên máy mới, sau khi git clone
+  ./manage.sh encrypt-secrets  # mã hoá shared/.env.local để commit vào git
   ./manage.sh start
   ./manage.sh stop
   ./manage.sh restart
@@ -124,6 +125,35 @@ wait_http() {
     return 1
 }
 
+secrets_blob_path() {
+    local release="$1"
+    printf '%s' "$release/secrets/env.local.gpg"
+}
+
+cmd_encrypt_secrets() {
+    # Mã hoá shared/.env.local (secret thật) thành 1 file nhị phân AN TOÀN
+    # ĐỂ COMMIT vào git -- không bao giờ commit .env.local dạng chữ thường.
+    # Passphrase KHÔNG được truyền qua đối số/biến môi trường (sẽ lộ qua
+    # history shell/ps); gpg tự hỏi qua pinentry.
+    require_cmd gpg
+    local release
+    release="$(current_release)"
+    [[ -f "$SHARED/.env.local" ]] || die "Chưa có $SHARED/.env.local để mã hoá"
+
+    local blob
+    blob="$(secrets_blob_path "$release")"
+    mkdir -p "$(dirname "$blob")"
+    local tmp_blob="$blob.tmp"
+    rm -f "$tmp_blob"
+    gpg --symmetric --cipher-algo AES256 --s2k-digest-algo SHA512 \
+        -o "$tmp_blob" "$SHARED/.env.local" || { rm -f "$tmp_blob"; die "Mã hoá thất bại"; }
+    mv "$tmp_blob" "$blob"
+
+    info "SECRETS_ENCRYPTED=$blob"
+    info "Nhớ: git add \"$blob\" && git commit -- rồi lưu passphrase vừa nhập ở nơi"
+    info "khác git (trình quản lý mật khẩu...). Mất passphrase là mất luôn nội dung."
+}
+
 cmd_setup() {
     # Bootstrap một lần trên máy mới, chạy từ bên trong release vừa clone
     # (releases/<version>/acp/manage.sh setup), TRƯỚC KHI $ACTIVE tồn tại --
@@ -148,8 +178,23 @@ cmd_setup() {
 
     # Không bao giờ ghi đè .env.local đã có -- có thể là bản đã copy
     # nguyên từ máy cũ (kèm token/khoá thật) để giữ nguyên kết nối Threads.
+    local secrets_blob
+    secrets_blob="$(secrets_blob_path "$release")"
     if [[ -f "$SHARED/.env.local" ]]; then
         info "Đã có $SHARED/.env.local -- giữ nguyên, không ghi đè."
+    elif [[ -f "$secrets_blob" ]]; then
+        require_cmd gpg
+        info "Tìm thấy $secrets_blob -- nhập passphrase để giải mã (gpg sẽ tự hỏi):"
+        local tmp_env="$SHARED/.env.local.tmp"
+        rm -f "$tmp_env"
+        if gpg --decrypt -o "$tmp_env" "$secrets_blob"; then
+            mv "$tmp_env" "$SHARED/.env.local"
+            chmod 600 "$SHARED/.env.local"
+            info "Đã giải mã $SHARED/.env.local -- giữ nguyên toàn bộ secret/kết nối như máy cũ."
+        else
+            rm -f "$tmp_env"
+            die "Giải mã $secrets_blob thất bại (sai passphrase?) -- chạy lại setup để thử lại."
+        fi
     else
         cp "$release/.env.example" "$SHARED/.env.local"
         local db_path="$SHARED/var/acp.db"
@@ -475,6 +520,7 @@ cmd_rollback() {
 
 case "${1:-}" in
     setup) cmd_setup ;;
+    encrypt-secrets) cmd_encrypt_secrets ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
