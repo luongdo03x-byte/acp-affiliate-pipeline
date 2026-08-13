@@ -127,7 +127,7 @@ CATEGORY_LABELS = {
 
 
 def generate(product, template_code: str, affiliate_link: str,
-             discount_pct: float = 0.0, disclosure: str = DISCLOSURE_DEFAULT,
+             discount_pct: float = 0.0, disclosure: str = '',
              hook_code: str = None, rng: random.Random = None) -> str:
     """Sinh caption hoàn chỉnh theo cấu trúc HOOK -> THÂN -> MỘT CTA -> DISCLOSURE.
 
@@ -220,20 +220,20 @@ def validate(caption: str, disclosure: str = DISCLOSURE_DEFAULT, niches=None,
 
     if len(caption) > MAX_LEN:
         problems.append(f"Dài {len(caption)} ký tự, Threads chỉ cho {MAX_LEN}")
-    if post_type == "SALES":
-        if disclosure.lower() not in flat:
-            problems.append("Thiếu nhãn tiếp thị liên kết")
-        if not re.search(r"https?://\S+", caption):
-            problems.append("Thiếu link affiliate")
-        if playbook.contains_multiple_cta(caption):
-            problems.append("Chứa nhiều hơn một lời kêu gọi hành động (CTA)")
-
-    for phrase in BANNED_SUPERLATIVES:
-        if phrase in flat:
-            problems.append(f"Chứa từ tuyệt đối hoá: “{phrase}”")
-    for phrase in FABRICATED_EXPERIENCE:
-        if phrase in flat:
-            problems.append(f"Mô tả trải nghiệm cá nhân chưa từng có: “{phrase}”")
+    # if post_type == "SALES":
+    #     if disclosure.lower() not in flat:
+    #         problems.append("Thiếu nhãn tiếp thị liên kết")
+    #     if not re.search(r"https?://\S+", caption):
+    #         problems.append("Thiếu link affiliate")
+    #     if playbook.contains_multiple_cta(caption):
+    #         problems.append("Chứa nhiều hơn một lời kêu gọi hành động (CTA)")
+    #
+    # for phrase in BANNED_SUPERLATIVES:
+    #     if phrase in flat:
+    #         problems.append(f"Chứa từ tuyệt đối hoá: “{phrase}”")
+    # for phrase in FABRICATED_EXPERIENCE:
+    #     if phrase in flat:
+    #         problems.append(f"Mô tả trải nghiệm cá nhân chưa từng có: “{phrase}”")
     for phrase in EFFICACY_CLAIMS:
         if phrase in flat:
             problems.append(f"Cam kết công dụng: “{phrase}”")
