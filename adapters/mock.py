@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from .base import (
     ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError,
+    MetaConnectionService, ExchangedToken, PageInfo, InstagramInfo,
 )
 
 SEED_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "seed", "datafeed_sample.json")
@@ -124,6 +125,32 @@ class MockThreads(Publisher):
             "replies": int(views * r.uniform(0.001, 0.01)),
             "reposts": int(views * r.uniform(0.0005, 0.005)),
         }
+
+
+class MockMetaConnectionService(MetaConnectionService):
+    """Fixture cố định: 2 Page giả, Page đầu có 1 Instagram gắn kèm. Không cần
+    mạng, dùng cho dev/test giống MockThreads/MockAccessTrade."""
+
+    def oauth_authorize_url(self, state: str, redirect_uri: str) -> str:
+        return f"https://mock.meta.example/oauth/authorize?state={state}&redirect_uri={redirect_uri}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> ExchangedToken:
+        return ExchangedToken(token=f"mock_user_token_{code}", expires_in=5184000,
+                               meta_user_id="mock_meta_user_1")
+
+    def list_pages(self, user_token: str) -> list:
+        return [
+            PageInfo(external_account_id="1000000000001", name="Fashion Page Test",
+                     page_token="mock_page_token_1"),
+            PageInfo(external_account_id="1000000000002", name="Tech Deals Test",
+                     page_token="mock_page_token_2"),
+        ]
+
+    def instagram_for_page(self, page_id: str, page_token: str):
+        if page_id == "1000000000001":
+            return InstagramInfo(external_account_id="1700000000001",
+                                  username="test.fashion", page_token=page_token)
+        return None
 
 
 def simulate_postbacks(posts, rng: random.Random):

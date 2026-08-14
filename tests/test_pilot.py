@@ -188,6 +188,33 @@ def test_factory():
     check("server.py dùng factory.build_context", "factory.build_context()" in body)
 
 
+def test_mock_meta_connection_service():
+    print("\nMetaConnectionService (mock)")
+    from acp.adapters.base import MetaConnectionService
+    from acp.adapters.mock import MockMetaConnectionService
+
+    svc = MockMetaConnectionService()
+    check("là MetaConnectionService", isinstance(svc, MetaConnectionService))
+
+    url = svc.oauth_authorize_url("state123", "https://acp.example/oauth/meta/callback")
+    check("authorize URL chứa state", "state123" in url, url)
+    check("authorize URL chứa redirect_uri", "acp.example" in url, url)
+
+    exchanged = svc.exchange_code("fake-code", "https://acp.example/oauth/meta/callback")
+    check("exchange_code trả token", bool(exchanged.token))
+    check("exchange_code trả meta_user_id ổn định", exchanged.meta_user_id == "mock_meta_user_1",
+          exchanged.meta_user_id)
+
+    pages = svc.list_pages(exchanged.token)
+    check("mock trả đúng 2 Page", len(pages) == 2, len(pages))
+    check("Page có page_token", all(p.page_token for p in pages))
+
+    ig = svc.instagram_for_page(pages[0].external_account_id, pages[0].page_token)
+    check("Page đầu có Instagram gắn kèm", ig is not None and ig.username)
+    ig2 = svc.instagram_for_page(pages[1].external_account_id, pages[1].page_token)
+    check("Page thứ hai không có Instagram", ig2 is None)
+
+
 # --------------------------------------------------------- single product
 
 def test_single_product_flow():
@@ -931,6 +958,7 @@ if __name__ == "__main__":
     test_link_response_parsing()
     test_transaction_status_mapping()
     test_factory()
+    test_mock_meta_connection_service()
     test_single_product_flow()
     test_shopee_safe_url()
     test_shopee_metadata()
