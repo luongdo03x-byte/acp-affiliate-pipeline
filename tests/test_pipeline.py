@@ -423,6 +423,68 @@ def test_publish_target_cancelled_on_stale_post_status():
     conn.close()
 
 
+def test_legacy_payload_does_not_resurrect_cancelled_target():
+    print("\nJob PUBLISH_POST payload cũ không được hồi sinh publish_target đã CANCELLED")
+    from acp.adapters.base import ContentViolationError as _CVE
+
+    class _ViolationPublisher(MockThreads):
+        def publish(self, channel_row, caption, media=None):
+            raise _CVE("nội dung vi phạm chính sách nền tảng")
+
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(71))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=71)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    res = pipeline.approve_post(conn, post["id"])
+    old_target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{old_target_id}"))
+
+    # Đưa target đầu tiên qua FAILED -> retry -> CANCELLED, giống hệt
+    # test_publish_target_cancelled_on_stale_post_status.
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": _ViolationPublisher()}})
+    old_target = conn.execute("SELECT status FROM publish_target WHERE id=?", (old_target_id,)).fetchone()
+    check("target cũ FAILED sau khi nội dung bị nền tảng từ chối", old_target["status"] == "FAILED", old_target["status"])
+
+    res2 = pipeline.retry_publish_target(conn, old_target_id)
+    check("retry target FAILED được chấp nhận", res2["ok"] and res2["job_id"], res2)
+    conn.execute("UPDATE job_queue SET run_after=? WHERE id=?", (now(), res2["job_id"]))
+    # KHÔNG khôi phục bài về trạng thái đăng được -- drain sẽ khiến target bị CANCELLED.
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=72)}})
+    old_target2 = conn.execute("SELECT status FROM publish_target WHERE id=?", (old_target_id,)).fetchone()
+    check("target cũ CANCELLED (trạng thái cuối, không cho retry)", old_target2["status"] == "CANCELLED", old_target2["status"])
+
+    # Duyệt lại bài từ đầu qua /duyet -- tạo publish_target MỚI, hợp lệ, cho đúng
+    # post_id+channel_id, đúng như tài liệu của _cancel_target_stale_post mô tả.
+    res3 = pipeline.approve_post(conn, post["id"])
+    check("duyệt lại thành công, tạo target mới", res3["ok"], res3)
+    new_target_id = res3["publish_target_id"]
+    check("target mới khác target cũ đã CANCELLED", new_target_id != old_target_id)
+    # Xoá job PUBLISH_POST (có publish_target_id) mà approve_post() vừa tạo, để mô
+    # phỏng ĐÚNG kịch bản bug: chỉ còn một job PUBLISH_POST dạng cũ (thiếu
+    # publish_target_id) kẹt lại trong var/job_queue từ trước khi nâng cấp.
+    conn.execute("DELETE FROM job_queue WHERE idempotency_key=?", (f"pub:{new_target_id}",))
+
+    ch = MockThreads(seed=73)
+    before = len(ch.published)
+    jobs.enqueue(conn, "PUBLISH_POST", {"post_id": post["id"], "channel_id": post["channel_id"]})
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
+
+    old_target3 = conn.execute("SELECT status FROM publish_target WHERE id=?", (old_target_id,)).fetchone()
+    check("target CANCELLED cũ vẫn còn nguyên, không bị hồi sinh", old_target3["status"] == "CANCELLED", old_target3["status"])
+
+    new_target = conn.execute(
+        "SELECT status, external_post_id FROM publish_target WHERE id=?", (new_target_id,)).fetchone()
+    check("target mới (hợp lệ) mới là target được đăng thành công",
+          new_target["status"] == "SUCCESS" and bool(new_target["external_post_id"]), dict(new_target))
+
+    row = conn.execute("SELECT status, thread_id FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("bài PUBLISHED", row["status"] == "PUBLISHED" and bool(row["thread_id"]), dict(row))
+    check("chỉ đăng đúng một lần qua publisher (không đăng trùng)",
+          len(ch.published) - before == 1, len(ch.published) - before)
+    conn.close()
+
+
 def test_retry_publish_target_recovers_running():
     print("\nRetry publish_target khi RUNNING (nghi treo do worker crash)")
     conn = connect()
@@ -549,6 +611,7 @@ if __name__ == "__main__":
     test_publish_post_legacy_payload_compat()
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()
+    test_legacy_payload_does_not_resurrect_cancelled_target()
     test_retry_publish_target_recovers_running()
     test_db_constraints()
     test_publish_target_schema()

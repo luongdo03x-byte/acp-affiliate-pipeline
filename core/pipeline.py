@@ -398,9 +398,18 @@ def _find_or_create_legacy_target(conn, post_id: str, channel_id: str) -> str:
     publish_target (payload chỉ {post_id, channel_id}) có thể còn nằm trong
     job_queue sau khi nâng cấp -- manage.sh upgrade giữ nguyên var/. Dùng lại
     target đã có cho đúng post_id+channel_id nếu có, không thì tạo mới, rồi đi
-    tiếp luồng bình thường."""
+    tiếp luồng bình thường.
+
+    CANCELLED bị loại khỏi lựa chọn: đó là trạng thái cuối, cố ý không cho hồi
+    sinh (xem _cancel_target_stale_post) -- một job payload cũ lạc mất không
+    được phép đăng lại qua một target đã bị huỷ. Lấy target CÒN SỐNG mới nhất
+    (created_at DESC, id là ULID nên dùng làm tiêu chí phụ khi trùng giây) --
+    đúng như cách người vận hành hiểu "target hiện hành" của post/channel này
+    sau khi đã duyệt lại qua /duyet. Nếu mọi target trước đó đều đã CANCELLED
+    (hoặc chưa có target nào), coi như chưa có gì -- tạo mới, y hệt trước đây."""
     existing = conn.execute(
-        "SELECT id FROM publish_target WHERE post_id=? AND channel_id=? ORDER BY created_at LIMIT 1",
+        """SELECT id FROM publish_target WHERE post_id=? AND channel_id=? AND status != 'CANCELLED'
+           ORDER BY created_at DESC, id DESC LIMIT 1""",
         (post_id, channel_id)).fetchone()
     if existing:
         return existing["id"]
