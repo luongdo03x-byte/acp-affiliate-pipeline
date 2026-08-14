@@ -144,6 +144,21 @@ CREATE TABLE IF NOT EXISTS post_metrics (
     updated_at  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS publish_target (
+    id                TEXT PRIMARY KEY,
+    post_id           TEXT NOT NULL REFERENCES post(id),
+    channel_id        TEXT NOT NULL REFERENCES channel(id),
+    status            TEXT NOT NULL DEFAULT 'PENDING',
+    scheduled_at      TEXT,
+    external_post_id  TEXT,
+    last_error        TEXT,
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_publish_target_post   ON publish_target(post_id);
+CREATE INDEX IF NOT EXISTS idx_publish_target_status ON publish_target(status, scheduled_at);
+
 CREATE TABLE IF NOT EXISTS conversion (
     id                  TEXT PRIMARY KEY,
     post_id             TEXT REFERENCES post(id),

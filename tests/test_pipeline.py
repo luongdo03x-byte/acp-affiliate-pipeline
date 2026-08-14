@@ -246,6 +246,36 @@ def test_db_constraints():
     conn.close()
 
 
+def test_publish_target_schema():
+    print("\npublish_target schema")
+    conn = connect()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(publish_target)").fetchall()}
+    expected = {"id", "post_id", "channel_id", "status", "scheduled_at",
+                "external_post_id", "last_error", "attempt_count",
+                "created_at", "updated_at"}
+    check("publish_target có đủ cột", expected <= cols, cols)
+
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+
+    target_id = ulid()
+    conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, created_at, updated_at)
+                    VALUES (?,?,?,?,?)""",
+                 (target_id, post_id, channel["id"], now(), now()))
+    row = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("status mặc định PENDING", row["status"] == "PENDING", row["status"])
+    check("attempt_count mặc định 0", row["attempt_count"] == 0, row["attempt_count"])
+    check("external_post_id mặc định NULL", row["external_post_id"] is None)
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -257,6 +287,7 @@ if __name__ == "__main__":
     test_idempotency_and_double_post()
     test_daily_cap()
     test_db_constraints()
+    test_publish_target_schema()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
