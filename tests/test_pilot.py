@@ -215,6 +215,45 @@ def test_mock_meta_connection_service():
     check("Page thứ hai không có Instagram", ig2 is None)
 
 
+def test_live_meta_connection_service_url_building():
+    print("\nLiveMetaConnectionService (không cần mạng)")
+    import os as _os
+    from acp.adapters.live import LiveMetaConnectionService
+
+    old_id, old_secret = _os.environ.get("META_APP_ID"), _os.environ.get("META_APP_SECRET")
+    _os.environ["META_APP_ID"] = "test_app_id"
+    _os.environ["META_APP_SECRET"] = "test_app_secret"
+    try:
+        svc = LiveMetaConnectionService()
+        url = svc.oauth_authorize_url("state456", "https://acp.example/oauth/meta/callback")
+        check("authorize URL đúng host Meta", "facebook.com" in url, url)
+        check("authorize URL chứa client_id", "test_app_id" in url, url)
+        check("authorize URL chứa state", "state456" in url, url)
+        check("authorize URL chứa quyền pages_show_list", "pages_show_list" in url, url)
+        check("authorize URL chứa quyền instagram_basic", "instagram_basic" in url, url)
+        check("app_secret KHÔNG lộ trong authorize URL", "test_app_secret" not in url, url)
+    finally:
+        if old_id is None:
+            _os.environ.pop("META_APP_ID", None)
+        else:
+            _os.environ["META_APP_ID"] = old_id
+        if old_secret is None:
+            _os.environ.pop("META_APP_SECRET", None)
+        else:
+            _os.environ["META_APP_SECRET"] = old_secret
+
+
+def test_factory_meta_connection_service():
+    print("\nFactory chọn MetaConnectionService")
+    from acp.adapters.base import MetaConnectionService
+    from acp.adapters.mock import MockMetaConnectionService
+    factory.reset_cache()
+    os.environ.pop("ACP_ADAPTER", None)
+    svc = factory.get_meta_connection_service()
+    check("mặc định trả về mock", isinstance(svc, MockMetaConnectionService))
+    check("là MetaConnectionService", isinstance(svc, MetaConnectionService))
+
+
 # --------------------------------------------------------- single product
 
 def test_single_product_flow():
@@ -959,6 +998,8 @@ if __name__ == "__main__":
     test_transaction_status_mapping()
     test_factory()
     test_mock_meta_connection_service()
+    test_live_meta_connection_service_url_building()
+    test_factory_meta_connection_service()
     test_single_product_flow()
     test_shopee_safe_url()
     test_shopee_metadata()

@@ -52,6 +52,14 @@ def get_publishers() -> dict:
     return {"threads": get_channel()}
 
 
+def get_meta_connection_service():
+    if is_live():
+        from .live import LiveMetaConnectionService
+        return LiveMetaConnectionService()
+    from .mock import MockMetaConnectionService
+    return MockMetaConnectionService()
+
+
 def build_context(source_name: str = None) -> dict:
     """Ngữ cảnh truyền vào các job handler."""
     from ..core import storage

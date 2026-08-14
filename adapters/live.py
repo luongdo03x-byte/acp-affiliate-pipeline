@@ -20,10 +20,14 @@ from ..core.crypto import decrypt
 from .base import (
     ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError, AuthError,
+    MetaConnectionService, ExchangedToken, PageInfo, InstagramInfo,
 )
 
 AT_BASE = "https://api.accesstrade.vn/v1"
 THREADS_BASE = "https://graph.threads.net/v1.0"
+FACEBOOK_OAUTH_BASE = "https://www.facebook.com/v19.0/dialog/oauth"
+GRAPH_BASE = "https://graph.facebook.com/v19.0"
+META_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,instagram_basic,business_management"
 
 
 class TokenBucket:
@@ -273,3 +277,59 @@ class ThreadsChannel(Publisher):
         if code in (1346003, 1346013, 36003) or "policy" in str(msg).lower():
             raise ContentViolationError(msg)
         raise PublishError(f"HTTP {r.status_code}: {msg}")
+
+
+class LiveMetaConnectionService(MetaConnectionService):
+    """Gọi Graph API thật. App ID/Secret đọc từ META_APP_ID/META_APP_SECRET --
+    app_secret KHÔNG bao giờ đưa vào authorize URL (đó là bước redirect trình
+    duyệt, ai cũng xem được URL), chỉ dùng ở bước exchange_code server-side."""
+
+    def __init__(self):
+        self.app_id = os.environ.get("META_APP_ID", "")
+        self.app_secret = os.environ.get("META_APP_SECRET", "")
+        self.session = requests.Session()
+
+    def oauth_authorize_url(self, state: str, redirect_uri: str) -> str:
+        params = {
+            "client_id": self.app_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "scope": META_OAUTH_SCOPES,
+            "response_type": "code",
+        }
+        return f"{FACEBOOK_OAUTH_BASE}?{urlencode(params)}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> ExchangedToken:
+        r = self.session.get(f"{GRAPH_BASE}/oauth/access_token", params={
+            "client_id": self.app_id, "client_secret": self.app_secret,
+            "redirect_uri": redirect_uri, "code": code,
+        }, timeout=20)
+        if r.status_code >= 400:
+            raise AuthError(f"Đổi code lấy token thất bại: {r.text[:200]}")
+        body = r.json()
+        me = self.session.get(f"{GRAPH_BASE}/me", params={
+            "access_token": body["access_token"], "fields": "id"}, timeout=20)
+        me.raise_for_status()
+        return ExchangedToken(token=body["access_token"], expires_in=body.get("expires_in", 0),
+                               meta_user_id=me.json()["id"])
+
+    def list_pages(self, user_token: str) -> list:
+        r = self.session.get(f"{GRAPH_BASE}/me/accounts", params={
+            "access_token": user_token, "fields": "id,name,access_token"}, timeout=20)
+        if r.status_code in (401, 403):
+            raise AuthError("Token Meta bị từ chối khi liệt kê Page")
+        r.raise_for_status()
+        return [PageInfo(external_account_id=p["id"], name=p["name"], page_token=p["access_token"])
+                for p in r.json().get("data", [])]
+
+    def instagram_for_page(self, page_id: str, page_token: str):
+        r = self.session.get(f"{GRAPH_BASE}/{page_id}", params={
+            "access_token": page_token, "fields": "instagram_business_account{id,username}"},
+            timeout=20)
+        if r.status_code >= 400:
+            return None
+        ig = r.json().get("instagram_business_account")
+        if not ig:
+            return None
+        return InstagramInfo(external_account_id=ig["id"], username=ig.get("username", ""),
+                              page_token=page_token)
