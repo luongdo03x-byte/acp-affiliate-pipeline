@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
 from .base import (
-    ContentSource, PublishingChannel, RawProduct, PublishResult,
+    ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError,
 )
 
@@ -84,7 +84,7 @@ class MockAccessTrade(ContentSource):
         return [r for r in rows if not since or (r.get("converted_at") or "") >= since]
 
 
-class MockThreads(PublishingChannel):
+class MockThreads(Publisher):
     platform = "threads"
     max_caption_length = 500
 
@@ -94,7 +94,14 @@ class MockThreads(PublishingChannel):
         self._rng = random.Random(seed)
         self.published = []
 
-    def publish(self, channel_row, caption: str, image_url=None) -> PublishResult:
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        # Backward compatibility: accept string (old image_url) or list (new media)
+        if media is None:
+            media = []
+        elif isinstance(media, str):
+            media = [media] if media else []
+        if len(media) > 1:
+            raise ValueError(f"Threads chưa hỗ trợ nhiều ảnh, nhận {len(media)}")
         if self.rate_limited:
             raise RateLimitError("Đã dùng hết 250 bài trong cửa sổ 24 giờ")
         if len(caption) > self.max_caption_length:

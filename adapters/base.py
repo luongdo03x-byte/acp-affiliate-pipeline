@@ -66,13 +66,14 @@ class ContentSource:
         raise NotImplementedError
 
 
-class PublishingChannel:
-    """Kênh đăng bài."""
+class Publisher:
+    """Kênh đăng bài theo platform. `media` luôn là list, kể cả khi chỉ 1 ảnh --
+    chuẩn bị cho carousel Facebook/Instagram mà không phải đổi chữ ký lần hai."""
 
     platform: str = "base"
     max_caption_length: int = 500
 
-    def publish(self, channel_row, caption: str, image_url: Optional[str]) -> PublishResult:
+    def publish(self, channel_row, caption: str, media: list) -> PublishResult:
         raise NotImplementedError
 
     def remaining_quota(self, channel_row) -> int:

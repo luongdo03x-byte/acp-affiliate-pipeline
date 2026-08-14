@@ -276,6 +276,22 @@ def test_publish_target_schema():
     conn.close()
 
 
+def test_publisher_media_list():
+    print("\nPublisher nhận danh sách media")
+    from acp.adapters.base import Publisher
+    ch = MockThreads(seed=1)
+    check("MockThreads là Publisher", isinstance(ch, Publisher))
+
+    result = ch.publish({}, "caption ngắn", media=["https://img.example/a.jpg"])
+    check("publish 1 ảnh trả về PublishResult", bool(result.external_post_id))
+
+    try:
+        ch.publish({}, "caption ngắn", media=["https://img.example/a.jpg", "https://img.example/b.jpg"])
+        check("publish nhiều ảnh với Threads phải báo lỗi", False, "không ném lỗi")
+    except ValueError as e:
+        check("publish nhiều ảnh với Threads phải báo lỗi", True, str(e))
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -288,6 +304,7 @@ if __name__ == "__main__":
     test_daily_cap()
     test_db_constraints()
     test_publish_target_schema()
+    test_publisher_media_list()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

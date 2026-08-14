@@ -18,7 +18,7 @@ import requests
 
 from ..core.crypto import decrypt
 from .base import (
-    ContentSource, PublishingChannel, RawProduct, PublishResult,
+    ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError, AuthError,
 )
 
@@ -168,7 +168,7 @@ class AccessTradeSource(ContentSource):
         }
 
 
-class ThreadsChannel(PublishingChannel):
+class ThreadsChannel(Publisher):
     platform = "threads"
     max_caption_length = 500
 
@@ -196,10 +196,18 @@ class ThreadsChannel(PublishingChannel):
         d = (r.json().get("data") or [{}])[0]
         return int(d.get("config", {}).get("quota_total", 250)) - int(d.get("quota_usage", 0))
 
-    def publish(self, channel_row, caption: str, image_url=None) -> PublishResult:
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        # Backward compatibility: accept string (old image_url) or list (new media)
+        if media is None:
+            media = []
+        elif isinstance(media, str):
+            media = [media] if media else []
+        if len(media) > 1:
+            raise ValueError(f"Threads chưa hỗ trợ nhiều ảnh, nhận {len(media)}")
         if len(caption) > self.max_caption_length:
             raise ContentViolationError(f"Caption {len(caption)} ký tự, Threads chỉ cho {self.max_caption_length}")
         uid, token = channel_row["external_user_id"], self._token(channel_row)
+        image_url = media[0] if media else None
 
         # Bước 1 -- tạo media container.
         payload = {"media_type": "IMAGE" if image_url else "TEXT", "text": caption, "access_token": token}
