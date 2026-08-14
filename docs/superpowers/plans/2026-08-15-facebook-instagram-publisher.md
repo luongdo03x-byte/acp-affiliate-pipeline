@@ -37,7 +37,7 @@ dùng pytest**.
 - Cơ chế native label thật của Meta (Partnership Ads/Branded Content) CHƯA
   được xác nhận chính xác — `_try_apply_native_label` ở bản live PHẢI trả
   `"unavailable"` một cách trung thực (không tự chế endpoint trông hợp lý
-  nhưng chưa kiểm chứng) — xem Task 4/5 để biết lý do.
+  nhưng chưa kiểm chứng) — xem Task 3/4 để biết lý do.
 - Test chạy qua `ACP_ADAPTER=mock ACP_SOURCE=mock python -m acp.tests.test_pipeline`
   và `acp.tests.test_pilot`, từ thư mục **cha** của repo (repo là thư mục
   tên `acp/`). Không dùng pytest.

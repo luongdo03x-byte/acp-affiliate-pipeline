@@ -151,15 +151,24 @@ external_post_id=.., published_at=..)` hiện có vẫn hợp lệ nguyên trạ
 
 ## 7. Native Meta label — đã chốt: vẫn đăng, không label + audit cảnh báo
 
-Sau khi publish thành công, `FacebookPublisher`/`InstagramPublisher` thử áp
-native label bằng một lệnh Graph API riêng (best-effort). **Lỗi ở bước này
-không được làm hỏng post đã đăng thành công** — publish đã xong, label chỉ
-là bước phụ. Set `native_label_status`:
+Cơ chế API chính xác để gắn nhãn native partnership/branded-content của Meta
+cho một bài Facebook/Instagram thông thường (không phải quảng cáo) CHƯA được
+xác nhận qua tài liệu Graph API công khai — Partnership Ads/Branded Content
+thường đi qua Business Manager/Marketing API, không phải một lệnh POST đơn
+lẻ vào bài vừa đăng. Thay vì viết một lệnh gọi API "trông hợp lý" nhưng chưa
+kiểm chứng — có thể đánh lừa người đọc sau này tưởng cơ chế đã được implement
+đúng — `_try_apply_native_label` ở `FacebookPublisher`/`InstagramPublisher`
+**luôn trả về `"unavailable"` một cách vô điều kiện, không gọi Graph API
+nào cả**, kèm comment giải thích ngay tại chỗ. Đây là "honest stub": khi cơ
+chế thật được xác nhận (qua tài liệu Meta hoặc thử nghiệm trực tiếp), việc
+implement thật sẽ thay thế đúng hàm này. `native_label_status` vẫn giữ đủ
+tam trạng thái để chỗ gọi (`publish_post`) và tương lai implement thật không
+phải đổi interface:
 
 ```text
-"applied"     -- áp thành công
-"unavailable" -- API/account không hỗ trợ (permission thiếu, chưa duyệt)
-"failed"      -- lỗi khi gọi (network, response bất thường)
+"applied"     -- áp thành công (chưa có publisher nào set giá trị này hôm nay)
+"unavailable" -- giá trị duy nhất mà bản live hiện tại từng trả về
+"failed"      -- lỗi khi gọi (dành cho khi có lệnh API thật để mà lỗi)
 ```
 
 `Publisher` **không tự ghi `conn`/`audit()`** — giữ đúng ranh giới kiến trúc
