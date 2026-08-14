@@ -1001,6 +1001,132 @@ def test_migration_adds_column():
     c.close()
 
 
+class _FixedMetaService:
+    """Fixture riêng cho test này (KHÔNG dùng MockMetaConnectionService mặc
+    định) -- test_oauth_meta_routes ở Task 5 đi qua factory.get_meta_connection_service()
+    và tạo account bằng fixture mặc định của MockMetaConnectionService trong
+    CÙNG một CSDL tạm dùng chung cho cả file test_pilot.py; nếu test này dùng
+    chung fixture đó, ai chạy trước sẽ khiến người chạy sau thấy 'đã tồn tại'
+    thay vì 'mới import'. Dùng meta_user_id/external_account_id RIÊNG để không
+    bao giờ đụng fixture mặc định, và luôn lọc theo connection_id của CHÍNH
+    lần import này thay vì đếm toàn bảng -- đúng quy ước test_daily_cap đã có
+    trong test_pipeline.py (tính theo số hiện có/delta, không đặt cứng)."""
+
+    def oauth_authorize_url(self, state, redirect_uri):
+        return f"https://mock/authorize?state={state}"
+
+    def exchange_code(self, code, redirect_uri):
+        from acp.adapters.base import ExchangedToken
+        return ExchangedToken(token=f"tok_{code}", expires_in=5184000, meta_user_id="test4_user")
+
+    def list_pages(self, user_token):
+        from acp.adapters.base import PageInfo
+        return [
+            PageInfo("9000000000001", "Fashion Page Test", "tok_page_1"),
+            PageInfo("9000000000002", "Tech Deals Test", "tok_page_2"),
+        ]
+
+    def instagram_for_page(self, page_id, page_token):
+        from acp.adapters.base import InstagramInfo
+        if page_id == "9000000000001":
+            return InstagramInfo("9700000000001", "test.fashion", page_token)
+        return None
+
+
+def test_meta_account_import_and_sync():
+    print("\nImport + đồng bộ account Meta")
+    from acp.core import connections
+
+    conn = connect()
+    svc = _FixedMetaService()
+
+    res = connections.connect_meta_account(conn, svc, "fake-code",
+                                            "https://acp.example/oauth/meta/callback")
+    check("connect_meta_account thành công", res.get("ok"), res)
+    check("import đúng 3 account (2 Page + 1 IG)", res["imported"] == 3, res)
+    check("lần đầu không có account cần cập nhật", res["updated"] == 0, res)
+    connection_id = res["connection_id"]
+
+    fb_rows = conn.execute(
+        "SELECT * FROM channel WHERE platform='facebook' AND connection_id=?", (connection_id,)).fetchall()
+    check("có 2 kênh facebook thuộc đúng connection này", len(fb_rows) == 2, len(fb_rows))
+    ig_rows = conn.execute(
+        "SELECT * FROM channel WHERE platform='instagram' AND connection_id=?", (connection_id,)).fetchall()
+    check("có 1 kênh instagram thuộc đúng connection này", len(ig_rows) == 1, len(ig_rows))
+    check("kênh instagram có username", ig_rows[0]["username"] == "test.fashion", dict(ig_rows[0]))
+    check("kênh facebook có external_account_id", fb_rows[0]["external_account_id"])
+    check("kênh facebook có token riêng, không rỗng", fb_rows[0]["token_encrypted"])
+    check("kênh mới enabled=1", fb_rows[0]["enabled"] == 1)
+    check("kênh mới status=ACTIVE", fb_rows[0]["status"] == "ACTIVE")
+
+    connection = conn.execute("SELECT * FROM meta_connection WHERE meta_user_id=?",
+                              ("test4_user",)).fetchone()
+    check("tạo đúng 1 meta_connection", connection is not None and connection["id"] == connection_id)
+
+    # Đồng bộ lại không được tạo trùng.
+    res2 = connections.sync_meta_accounts(conn, svc, connection_id)
+    check("sync lại không tạo account mới", res2["imported"] == 0, res2)
+    total_channels = conn.execute(
+        "SELECT COUNT(*) FROM channel WHERE connection_id=?", (connection_id,)).fetchone()[0]
+    check("tổng số kênh thuộc connection không đổi sau sync", total_channels == 3, total_channels)
+
+    # Kết nối lại bằng đúng meta_user_id không tạo connection thứ hai.
+    res3 = connections.connect_meta_account(conn, svc, "fake-code-2",
+                                             "https://acp.example/oauth/meta/callback")
+    check("kết nối lại cùng user không tạo connection trùng", res3["connection_id"] == connection_id, res3)
+    n_conn = conn.execute("SELECT COUNT(*) FROM meta_connection WHERE meta_user_id=?",
+                          ("test4_user",)).fetchone()[0]
+    check("chỉ có đúng 1 meta_connection cho user này", n_conn == 1, n_conn)
+
+    conn.close()
+
+
+def test_meta_sync_marks_vanished_account_reconnect_required():
+    print("\nSync đánh dấu account mất quyền, không xoá")
+    from acp.core import connections
+
+    class _ShrinkingMetaService:
+        """Lần đầu trả 2 Page, lần sau chỉ còn 1 -- mô phỏng operator gỡ quyền
+        Page thứ hai trên Meta."""
+        def __init__(self):
+            self.calls = 0
+
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tok", expires_in=1000, meta_user_id="shrink_user")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            self.calls += 1
+            if self.calls == 1:
+                return [PageInfo("2000000000001", "Page A", "tok_a"),
+                        PageInfo("2000000000002", "Page B", "tok_b")]
+            return [PageInfo("2000000000001", "Page A", "tok_a")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    conn = connect()
+    svc = _ShrinkingMetaService()
+    res = connections.connect_meta_account(conn, svc, "code", "https://acp.example/oauth/meta/callback")
+    check("import lần đầu 2 Page", res["imported"] == 2, res)
+
+    res2 = connections.sync_meta_accounts(conn, svc, res["connection_id"])
+    check("sync phát hiện 1 account mất quyền", res2["reconnect_required"] == 1, res2)
+
+    page_a = conn.execute("SELECT status FROM channel WHERE external_account_id=?",
+                          ("2000000000001",)).fetchone()
+    page_b = conn.execute("SELECT status FROM channel WHERE external_account_id=?",
+                          ("2000000000002",)).fetchone()
+    check("Page còn quyền vẫn ACTIVE", page_a["status"] == "ACTIVE", page_a["status"])
+    check("Page mất quyền chuyển NEEDS_REAUTH", page_b["status"] == "NEEDS_REAUTH", page_b["status"])
+    check("Page mất quyền KHÔNG bị xoá", page_b is not None)
+    conn.close()
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1028,6 +1154,8 @@ if __name__ == "__main__":
     test_web_security()
     test_publish_target_retry_route()
     test_production_guard()
+    test_meta_account_import_and_sync()
+    test_meta_sync_marks_vanished_account_reconnect_required()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
