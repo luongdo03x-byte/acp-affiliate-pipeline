@@ -331,13 +331,17 @@ def reject_post(conn, post_id: str, reason: str, actor: str = "operator") -> dic
 
 
 def retry_publish_target(conn, target_id: str, actor: str = "operator") -> dict:
-    """Chỉ retry khi FAILED. Reset về PENDING, enqueue lại đúng target đó --
-    không tạo publish_target mới, không đụng target khác của cùng post."""
+    """Retry khi FAILED, hoặc khi RUNNING (worker có thể đã crash giữa lúc đăng,
+    kẹt lại vĩnh viễn ở RUNNING -- cho retry ở đây là thao tác thủ công, người vận
+    hành tự xác nhận an toàn để thử lại, không phải tự động). Reset về PENDING,
+    enqueue lại đúng target đó -- không tạo publish_target mới, không đụng target
+    khác của cùng post. KHÔNG cho retry từ SUCCESS/PENDING/SCHEDULED/CANCELLED."""
     target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
     if not target:
         return {"ok": False, "error": "Không tìm thấy publish_target"}
-    if target["status"] != "FAILED":
-        return {"ok": False, "error": f"Chỉ retry được target FAILED, hiện tại là {target['status']}"}
+    if target["status"] not in ("FAILED", "RUNNING"):
+        return {"ok": False,
+                "error": f"Chỉ retry được target FAILED hoặc RUNNING (nghi treo), hiện tại là {target['status']}"}
 
     conn.execute("UPDATE publish_target SET status='PENDING', updated_at=? WHERE id=?", (now(), target_id))
     retry_key = f"pub:{target_id}:retry:{target['attempt_count']}"
@@ -375,9 +379,50 @@ def _mark_target_failed(conn, target_id: str, error) -> None:
                  (str(error)[:500], now(), target_id))
 
 
+def _cancel_target_stale_post(conn, target_id: str, post_status: str) -> None:
+    """Bài đứng sau target này không còn ở trạng thái đăng được nữa (ví dụ vừa bị
+    ContentViolationError đẩy về PENDING_REVIEW trong lúc target đang PENDING chờ
+    retry). Đóng target ở CANCELLED kèm lý do thay vì bỏ lửng ở PENDING -- lửng thì
+    /vanhanh không còn cách nào hiển thị lại nút retry (chỉ render cho FAILED) và
+    retry_publish_target cũng không nhận PENDING. CANCELLED là trạng thái cuối, cố
+    ý không cho retry lại: muốn đăng phải duyệt lại qua /duyet để approve_post() tạo
+    publish_target mới, không phải hồi sinh target cũ."""
+    conn.execute("""UPDATE publish_target SET status='CANCELLED', last_error=?, updated_at=?
+                    WHERE id=?""",
+                 (f"Bài không còn ở trạng thái có thể đăng (status hiện tại: {post_status})"[:500],
+                  now(), target_id))
+
+
+def _find_or_create_legacy_target(conn, post_id: str, channel_id: str) -> str:
+    """Tương thích ngược: job PUBLISH_POST được enqueue bởi bản trước khi có
+    publish_target (payload chỉ {post_id, channel_id}) có thể còn nằm trong
+    job_queue sau khi nâng cấp -- manage.sh upgrade giữ nguyên var/. Dùng lại
+    target đã có cho đúng post_id+channel_id nếu có, không thì tạo mới, rồi đi
+    tiếp luồng bình thường."""
+    existing = conn.execute(
+        "SELECT id FROM publish_target WHERE post_id=? AND channel_id=? ORDER BY created_at LIMIT 1",
+        (post_id, channel_id)).fetchone()
+    if existing:
+        return existing["id"]
+    target_id = ulid()
+    conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, created_at, updated_at)
+                    VALUES (?,?,?,'PENDING',?,?)""",
+                 (target_id, post_id, channel_id, now(), now()))
+    audit(conn, "publish_target", target_id, "created_from_legacy_payload",
+          detail={"post_id": post_id, "channel_id": channel_id})
+    return target_id
+
+
 @handler("PUBLISH_POST")
 def publish_post(conn, payload, ctx):
-    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (payload["publish_target_id"],)).fetchone()
+    target_id = payload.get("publish_target_id")
+    if not target_id:
+        post_id, channel_id = payload.get("post_id"), payload.get("channel_id")
+        if not post_id or not channel_id:
+            raise ValueError("Không tìm thấy publish_target")
+        target_id = _find_or_create_legacy_target(conn, post_id, channel_id)
+
+    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
     if not target:
         raise ValueError("Không tìm thấy publish_target")
     # Tuyến phòng thủ chống đăng trùng, khoá theo TARGET chứ không theo post --
@@ -390,6 +435,7 @@ def publish_post(conn, payload, ctx):
     if not post or not channel:
         raise ValueError("publish_target trỏ tới post/channel không tồn tại")
     if post["status"] not in ("SCHEDULED", "APPROVED"):
+        _cancel_target_stale_post(conn, target["id"], post["status"])
         return
 
     if channel["status"] != "ACTIVE":
@@ -404,7 +450,8 @@ def publish_post(conn, payload, ctx):
     conn.execute("UPDATE publish_target SET status='RUNNING', updated_at=? WHERE id=?", (now(), target["id"]))
     try:
         publisher = ctx["publishers"][channel["platform"]]
-        result = publisher.publish(channel, post["caption_final"], media=[post["image_url_composited"]])
+        media = [post["image_url_composited"]] if post["image_url_composited"] else []
+        result = publisher.publish(channel, post["caption_final"], media=media)
     except Exception as e:
         from ..adapters.base import RateLimitError as _RateLimitError
         if isinstance(e, _RateLimitError):
