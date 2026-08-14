@@ -607,6 +607,78 @@ def test_publish_result_native_label_field():
     check("field mới nhận giá trị truyền vào", new_style.native_label_status == "applied")
 
 
+def test_mock_facebook_publisher():
+    print("\nMockFacebookPublisher")
+    from acp.adapters.mock import MockFacebookPublisher
+    from acp.adapters.base import Publisher, ContentViolationError as _CVE
+
+    pub = MockFacebookPublisher(seed=1)
+    check("là Publisher", isinstance(pub, Publisher))
+    check("platform đúng", pub.platform == "facebook")
+
+    result = pub.publish({}, "caption", media=["https://img.example/a.jpg"])
+    check("publish 1 ảnh trả về PublishResult", bool(result.external_post_id))
+    check("native_label_status mặc định applied", result.native_label_status == "applied")
+
+    result2 = pub.publish({}, "caption", media=["https://img.example/a.jpg",
+                                                  "https://img.example/b.jpg"])
+    check("publish nhiều ảnh cũng trả về PublishResult", bool(result2.external_post_id))
+    check("2 lần publish tạo 2 external_post_id khác nhau",
+          result.external_post_id != result2.external_post_id)
+
+    try:
+        pub.publish({}, "caption", media=[])
+        check("0 ảnh phải bị chặn", False, "không ném lỗi")
+    except _CVE:
+        check("0 ảnh phải bị chặn", True)
+
+    try:
+        pub.publish({}, "caption", media=["u"] * 11)
+        check("quá 10 ảnh phải bị chặn", False, "không ném lỗi")
+    except _CVE:
+        check("quá 10 ảnh phải bị chặn", True)
+
+    labeled = MockFacebookPublisher(seed=2, native_label_status="unavailable")
+    r3 = labeled.publish({}, "caption", media=["https://img.example/a.jpg"])
+    check("native_label_status tham số hoá được", r3.native_label_status == "unavailable")
+
+
+def test_mock_instagram_publisher():
+    print("\nMockInstagramPublisher")
+    from acp.adapters.mock import MockInstagramPublisher
+    from acp.adapters.base import Publisher, ContentViolationError as _CVE
+
+    pub = MockInstagramPublisher(seed=1)
+    check("là Publisher", isinstance(pub, Publisher))
+    check("platform đúng", pub.platform == "instagram")
+
+    single = pub.publish({}, "caption", media=["https://img.example/a.jpg"])
+    check("publish 1 ảnh (single) trả về PublishResult", bool(single.external_post_id))
+
+    carousel = pub.publish({}, "caption", media=["https://img.example/a.jpg",
+                                                   "https://img.example/b.jpg",
+                                                   "https://img.example/c.jpg"])
+    check("publish carousel (2-10 ảnh) trả về PublishResult", bool(carousel.external_post_id))
+
+    try:
+        pub.publish({}, "caption", media=[])
+        check("0 ảnh phải bị chặn", False, "không ném lỗi")
+    except _CVE:
+        check("0 ảnh phải bị chặn", True)
+
+    try:
+        pub.publish({}, "caption", media=["u"] * 11)
+        check("quá 10 ảnh phải bị chặn", False, "không ném lỗi")
+    except _CVE:
+        check("quá 10 ảnh phải bị chặn", True)
+
+    try:
+        pub.publish({}, "x" * 2201, media=["https://img.example/a.jpg"])
+        check("caption quá 2200 ký tự phải bị chặn", False, "không ném lỗi")
+    except _CVE:
+        check("caption quá 2200 ký tự phải bị chặn", True)
+
+
 def test_meta_connection_schema():
     print("\nmeta_connection + channel mở rộng")
     conn = connect()
@@ -904,6 +976,8 @@ if __name__ == "__main__":
     test_publish_target_schema()
     test_publisher_media_list()
     test_publish_result_native_label_field()
+    test_mock_facebook_publisher()
+    test_mock_instagram_publisher()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
