@@ -308,10 +308,19 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
                  (caption, scheduled, actor, now(), now(), post_id))
-    enqueue(conn, "PUBLISH_POST", {"post_id": post_id, "channel_id": post["channel_id"]},
-            priority=50, run_after=scheduled, idempotency_key=f"pub:{post_id}")
-    audit(conn, "post", post_id, "approved", actor=actor, detail={"scheduled_at": scheduled})
-    return {"ok": True, "scheduled_at": scheduled}
+
+    target_id = ulid()
+    conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
+                    created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?)""",
+                 (target_id, post_id, post["channel_id"], scheduled, now(), now()))
+    # post_id/channel_id ở lại payload để jobs.py xử lý AuthError/ContentViolationError
+    # (đánh dấu kênh NEEDS_REAUTH, đẩy bài về PENDING_REVIEW) không phải sửa.
+    enqueue(conn, "PUBLISH_POST",
+            {"publish_target_id": target_id, "post_id": post_id, "channel_id": post["channel_id"]},
+            priority=50, run_after=scheduled, idempotency_key=f"pub:{target_id}")
+    audit(conn, "post", post_id, "approved", actor=actor,
+          detail={"scheduled_at": scheduled, "publish_target_id": target_id})
+    return {"ok": True, "scheduled_at": scheduled, "publish_target_id": target_id}
 
 
 def reject_post(conn, post_id: str, reason: str, actor: str = "operator") -> dict:
@@ -341,32 +350,59 @@ def _next_slot(conn, channel_id: str) -> str:
 
 # ------------------------------------------------------------------ chặng 5
 
+def _mark_target_failed(conn, target_id: str, error) -> None:
+    conn.execute("""UPDATE publish_target SET status='FAILED', last_error=?,
+                    attempt_count=attempt_count+1, updated_at=? WHERE id=?""",
+                 (str(error)[:500], now(), target_id))
+
+
 @handler("PUBLISH_POST")
 def publish_post(conn, payload, ctx):
-    post = conn.execute("SELECT * FROM post WHERE id=?", (payload["post_id"],)).fetchone()
-    if not post:
-        raise ValueError("Không tìm thấy bài đăng")
-
-    # Tuyến phòng thủ chống đăng trùng. Timeout mạng rồi retry trong khi bài đã
-    # lên thành công là lỗi nghiêm trọng nhất của loại hệ thống này.
-    if post["thread_id"]:
+    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (payload["publish_target_id"],)).fetchone()
+    if not target:
+        raise ValueError("Không tìm thấy publish_target")
+    # Tuyến phòng thủ chống đăng trùng, khoá theo TARGET chứ không theo post --
+    # cần thiết khi một post có nhiều target độc lập (sub-project D).
+    if target["status"] == "SUCCESS":
         return
+
+    post = conn.execute("SELECT * FROM post WHERE id=?", (target["post_id"],)).fetchone()
+    channel = conn.execute("SELECT * FROM channel WHERE id=?", (target["channel_id"],)).fetchone()
+    if not post or not channel:
+        raise ValueError("publish_target trỏ tới post/channel không tồn tại")
     if post["status"] not in ("SCHEDULED", "APPROVED"):
         return
 
-    channel = conn.execute("SELECT * FROM channel WHERE id=?", (post["channel_id"],)).fetchone()
     if channel["status"] != "ACTIVE":
         from ..adapters.base import AuthError
+        _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đang ở trạng thái {channel['status']}")
         raise AuthError(f"Kênh {channel['code']} đang ở trạng thái {channel['status']}")
 
     if _published_today(conn, channel["id"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError
         raise RateLimitError(f"Kênh {channel['code']} đã đạt trần {channel['daily_post_cap']} bài trong ngày")
 
-    result = ctx["channel"].publish(channel, post["caption_final"], post["image_url_composited"])
+    conn.execute("UPDATE publish_target SET status='RUNNING', updated_at=? WHERE id=?", (now(), target["id"]))
+    try:
+        publisher = ctx["publishers"][channel["platform"]]
+        result = publisher.publish(channel, post["caption_final"], media=[post["image_url_composited"]])
+    except Exception as e:
+        from ..adapters.base import RateLimitError as _RateLimitError
+        if isinstance(e, _RateLimitError):
+            # Hạn mức không phải lỗi -- không tính là FAILED, không tăng attempt_count,
+            # trả target về SCHEDULED để job_queue tự hoãn và thử lại đúng như trước.
+            conn.execute("UPDATE publish_target SET status='SCHEDULED', last_error=?, updated_at=? WHERE id=?",
+                         (str(e)[:500], now(), target["id"]))
+        else:
+            _mark_target_failed(conn, target["id"], e)
+        raise
+
+    conn.execute("""UPDATE publish_target SET status='SUCCESS', external_post_id=?, updated_at=?
+                    WHERE id=?""", (result.external_post_id, now(), target["id"]))
     conn.execute("UPDATE post SET status='PUBLISHED', thread_id=?, published_at=?, updated_at=? WHERE id=?",
                  (result.external_post_id, result.published_at, now(), post["id"]))
-    audit(conn, "post", post["id"], "published", detail={"thread_id": result.external_post_id})
+    audit(conn, "post", post["id"], "published",
+          detail={"thread_id": result.external_post_id, "publish_target_id": target["id"]})
     enqueue(conn, "FETCH_INSIGHTS", {"post_id": post["id"], "channel_id": channel["id"]},
             run_after=(datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds"),
             idempotency_key=f"ins:{post['id']}")
@@ -385,7 +421,8 @@ def fetch_insights(conn, payload, ctx):
     channel = conn.execute("SELECT * FROM channel WHERE id=?", (payload["channel_id"],)).fetchone()
     if not post or not post["thread_id"]:
         return
-    attribution.update_insights(conn, payload["post_id"], ctx["channel"].fetch_insights(channel, post["thread_id"]))
+    publisher = ctx["publishers"][channel["platform"]]
+    attribution.update_insights(conn, payload["post_id"], publisher.fetch_insights(channel, post["thread_id"]))
 
 
 # ------------------------------------------------------------------ chặng 6

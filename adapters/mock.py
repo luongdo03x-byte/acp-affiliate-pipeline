@@ -95,13 +95,7 @@ class MockThreads(Publisher):
         self.published = []
 
     def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
-        if media is None:
-            media = []
-        # Transitional shim: core/pipeline.py still calls publish() with a raw URL string
-        # as positional arg (old signature) until Task 3 updates it to always pass a list.
-        # Remove this shim once pipeline.py is updated.
-        elif isinstance(media, str):
-            media = [media] if media else []
+        media = media or []
         if len(media) > 1:
             raise ValueError(f"Threads chưa hỗ trợ nhiều ảnh, nhận {len(media)}")
         if self.rate_limited:

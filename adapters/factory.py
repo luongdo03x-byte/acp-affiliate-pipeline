@@ -46,12 +46,18 @@ def get_channel():
     return MockThreads(fail_rate=0.08, seed=7)
 
 
+def get_publishers() -> dict:
+    """platform -> Publisher. Chỉ có 'threads' cho tới khi sub-project B/C
+    đăng ký thêm 'facebook'/'instagram'."""
+    return {"threads": get_channel()}
+
+
 def build_context(source_name: str = None) -> dict:
     """Ngữ cảnh truyền vào các job handler."""
     from ..core import storage
     return {
         "source": get_source(source_name),
-        "channel": get_channel(),
+        "publishers": get_publishers(),
         "storage": storage.get_storage(),
     }
 

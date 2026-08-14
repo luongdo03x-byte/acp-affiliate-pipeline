@@ -172,9 +172,13 @@ def test_factory():
     except ValueError:
         check("nguồn sai phải ném lỗi", True)
 
+    from acp.adapters.base import Publisher
+
     ctx = factory.build_context()
-    check("context có đủ source, channel, storage",
-          all(k in ctx for k in ("source", "channel", "storage")), list(ctx))
+    check("context có đủ source, publishers, storage",
+          all(k in ctx for k in ("source", "publishers", "storage")), list(ctx))
+    check("publishers có threads là Publisher",
+          isinstance(ctx["publishers"].get("threads"), Publisher), ctx["publishers"])
 
     # Web và CLI phải đi qua cùng một factory -- lỗi cũ là web hardcode mock.
     srv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "server.py")
@@ -194,7 +198,7 @@ def test_single_product_flow():
     sample = src.fetch_products(limit=200)
     target = next(p for p in sample if p.rating and p.rating >= 4.5 and p.current_price > 0)
 
-    ctx = {"source": src, "channel": None, "storage": _FakeStorage()}
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
     res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
     check("tạo bài thành công", res.get("ok"), res.get("error"))
     check("dừng ở chờ duyệt, KHÔNG đăng", res.get("status") in ("PENDING_REVIEW", "DRAFT"), res.get("status"))

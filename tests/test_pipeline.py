@@ -174,24 +174,28 @@ def test_idempotency_and_double_post():
     ids = pipeline.plan_content(conn, "test", limit=3, rng=random.Random(1))
     check("chấm điểm tạo được job sinh nội dung", len(ids) > 0)
     ch = MockThreads(seed=1)
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
 
     post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
     check("bài sinh ra ở trạng thái chờ duyệt", post is not None)
     res = pipeline.approve_post(conn, post["id"])
     check("duyệt xong thì lên lịch", res["ok"])
-    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{post['id']}"))
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
 
     before = len(ch.published)
     # Ép chạy lại đúng job publish đó -- mô phỏng retry sau khi bài đã lên thành công.
-    jobs.enqueue(conn, "PUBLISH_POST", {"post_id": post["id"], "channel_id": post["channel_id"]})
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    jobs.enqueue(conn, "PUBLISH_POST",
+                 {"publish_target_id": target_id, "post_id": post["id"], "channel_id": post["channel_id"]})
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
     check("chạy lại job publish không đăng bài lần hai", len(ch.published) == before,
           f"{before} → {len(ch.published)}")
 
     row = conn.execute("SELECT status, thread_id FROM post WHERE id=?", (post["id"],)).fetchone()
     check("bài đã có thread_id sau khi đăng", row["status"] == "PUBLISHED" and row["thread_id"])
+    target = conn.execute("SELECT status, external_post_id FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("publish_target cũng SUCCESS", target["status"] == "SUCCESS" and target["external_post_id"])
     conn.close()
 
 
@@ -208,13 +212,13 @@ def test_daily_cap():
 
     ch = MockThreads(seed=5)
     pipeline.plan_content(conn, "test", limit=4, rng=random.Random(2))
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
     for r in conn.execute("SELECT id FROM post WHERE status='PENDING_REVIEW'").fetchall():
         pipeline.approve_post(conn, r["id"])
     conn.execute("UPDATE job_queue SET run_after=? WHERE job_type='PUBLISH_POST' AND status='READY'", (now(),))
     approved = conn.execute("SELECT COUNT(*) FROM post WHERE status='SCHEDULED'").fetchone()[0]
     before = len(ch.published)
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": ch})
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ch}})
     posted = len(ch.published) - before
     check("có đủ bài để thử vượt trần", approved >= 2, f"chỉ có {approved} bài đã lên lịch")
     check("chạm trần thì đăng đúng 1 bài rồi dừng", posted == 1, f"đăng thêm {posted}")
@@ -223,6 +227,69 @@ def test_daily_cap():
         "AND last_error LIKE '%trần%'").fetchone()[0]
     check("phần vượt trần bị hoãn chứ không đánh hỏng", deferred >= 1, f"{deferred} job bị hoãn")
     conn.execute("UPDATE channel SET daily_post_cap = 12")
+    conn.close()
+
+
+def test_publish_target_failure_semantics():
+    print("\npublish_target theo dõi lỗi")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(21))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=21)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    res = pipeline.approve_post(conn, post["id"])
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+    failing = MockThreads(fail_rate=1.0, seed=22)  # luôn PublishError
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": failing}})
+    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("publish_target FAILED sau lỗi mạng", target["status"] == "FAILED", target["status"])
+    check("attempt_count tăng lên", target["attempt_count"] == 1, target["attempt_count"])
+    check("last_error được ghi lại", bool(target["last_error"]))
+
+    ids2 = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(23))
+    check("có job sinh nội dung 2", len(ids2) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=23)}})
+    post2 = conn.execute(
+        "SELECT * FROM post WHERE status='PENDING_REVIEW' AND id != ? LIMIT 1", (post["id"],)).fetchone()
+    res2 = pipeline.approve_post(conn, post2["id"])
+    target2_id = res2["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target2_id}"))
+
+    limited = MockThreads(rate_limited=True, seed=24)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": limited}})
+    target2 = conn.execute("SELECT * FROM publish_target WHERE id=?", (target2_id,)).fetchone()
+    check("rate limit không tăng attempt_count", target2["attempt_count"] == 0, target2["attempt_count"])
+    check("rate limit trả target về SCHEDULED chứ không FAILED",
+          target2["status"] == "SCHEDULED", target2["status"])
+    conn.close()
+
+
+def test_publish_post_authorror_marks_channel():
+    print("\nLỗi xác thực khi publish vẫn đánh dấu kênh (payload giữ channel_id)")
+    from acp.adapters.base import AuthError
+
+    class _AuthFailPublisher(MockThreads):
+        def publish(self, channel_row, caption, media=None):
+            raise AuthError("token thu hồi")
+
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(25))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=25)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    res = pipeline.approve_post(conn, post["id"])
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": _AuthFailPublisher()}})
+
+    channel = conn.execute("SELECT status FROM channel WHERE id=?", (post["channel_id"],)).fetchone()
+    check("job publish AuthError vẫn đánh dấu kênh NEEDS_REAUTH", channel["status"] == "NEEDS_REAUTH", channel["status"])
+    target = conn.execute("SELECT status FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("publish_target FAILED tương ứng", target["status"] == "FAILED", target["status"])
+    conn.execute("UPDATE channel SET status='ACTIVE' WHERE id=?", (post["channel_id"],))
     conn.close()
 
 
@@ -291,10 +358,8 @@ def test_publisher_media_list():
     except ValueError as e:
         check("publish nhiều ảnh với Threads phải báo lỗi", True, str(e))
 
-    # Test backward compatibility: bare string (old pipeline.py calling convention)
-    result_str = ch.publish({}, "caption ngắn", "https://img.example/a.jpg")
-    check("publish chuỗi URL (tương thích ngược) trả về PublishResult", bool(result_str.external_post_id))
-    check("publish chuỗi URL tạo bài khác", result_str.external_post_id != result.external_post_id)
+    result_empty = ch.publish({}, "caption ngắn", media=None)
+    check("publish không ảnh (media=None) trả về PublishResult", bool(result_empty.external_post_id))
 
 
 if __name__ == "__main__":
@@ -307,6 +372,8 @@ if __name__ == "__main__":
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_daily_cap()
+    test_publish_target_failure_semantics()
+    test_publish_post_authorror_marks_channel()
     test_db_constraints()
     test_publish_target_schema()
     test_publisher_media_list()
