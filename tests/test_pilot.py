@@ -254,6 +254,22 @@ def test_factory_meta_connection_service():
     check("là MetaConnectionService", isinstance(svc, MetaConnectionService))
 
 
+def test_factory_meta_connection_service_live_routing():
+    print("\nFactory chọn LiveMetaConnectionService khi ACP_ADAPTER=live")
+    from acp.adapters.live import LiveMetaConnectionService
+    factory.reset_cache()
+    os.environ["ACP_ADAPTER"] = "live"
+    os.environ["META_APP_ID"] = "test_live_app_id"
+    os.environ["META_APP_SECRET"] = "test_live_app_secret"
+    try:
+        svc = factory.get_meta_connection_service()
+        check("ACP_ADAPTER=live trả về LiveMetaConnectionService", isinstance(svc, LiveMetaConnectionService))
+    finally:
+        os.environ.pop("ACP_ADAPTER", None)
+        os.environ.pop("META_APP_ID", None)
+        os.environ.pop("META_APP_SECRET", None)
+
+
 # --------------------------------------------------------- single product
 
 def test_single_product_flow():
@@ -1000,6 +1016,7 @@ if __name__ == "__main__":
     test_mock_meta_connection_service()
     test_live_meta_connection_service_url_building()
     test_factory_meta_connection_service()
+    test_factory_meta_connection_service_live_routing()
     test_single_product_flow()
     test_shopee_safe_url()
     test_shopee_metadata()
