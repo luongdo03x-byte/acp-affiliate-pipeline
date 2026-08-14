@@ -74,7 +74,11 @@ def plan_content(conn, campaign_code: str, limit: int = 10, rng=None) -> list:
     """Chấm điểm, chọn top-K, tạo job sinh nội dung cho từng sản phẩm."""
     rng = rng or random.Random()
     campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
-    channels = conn.execute("SELECT * FROM channel WHERE status='ACTIVE'").fetchall()
+    # Chỉ Threads: chưa có publisher đăng ký cho facebook/instagram (sub-project
+    # sau mới thêm), và enabled=0 nghĩa là operator đã tắt kênh -- không được
+    # sinh content/job cho những kênh này (spec §8.2, §10).
+    channels = conn.execute(
+        "SELECT * FROM channel WHERE status='ACTIVE' AND platform='threads' AND enabled=1").fetchall()
     templates = conn.execute("SELECT * FROM caption_template WHERE is_active=1").fetchall()
     if not campaign or not channels or not templates:
         return []
@@ -171,11 +175,18 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
     if not campaign:
         return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
     channel = conn.execute(
+        # Nhánh có channel_code giữ nguyên, không lọc platform -- gọi rõ tên kênh
+        # thì tôn trọng lựa chọn đó (sau này facebook/instagram có publisher thật
+        # vẫn dùng lại được hàm này). Nhánh mặc định (không truyền channel_code)
+        # chỉ được rơi vào Threads -- kênh facebook/instagram import về chưa có
+        # publisher đăng ký, để lọt vào đây thì bài kẹt vĩnh viễn ở SCHEDULED.
         "SELECT * FROM channel WHERE code=? AND status='ACTIVE'" if channel_code
-        else "SELECT * FROM channel WHERE status='ACTIVE' ORDER BY code LIMIT 1",
+        else "SELECT * FROM channel WHERE status='ACTIVE' AND platform='threads' ORDER BY code LIMIT 1",
         (channel_code,) if channel_code else ()).fetchone()
     if not channel:
         return {"ok": False, "error": "Không có kênh nào đang hoạt động"}
+    if not channel["enabled"]:
+        return {"ok": False, "error": f"Kênh {channel['code']} đã bị tắt (disabled), không thể tạo bài"}
     template = conn.execute(
         "SELECT * FROM caption_template WHERE code=? AND is_active=1" if template_code
         else "SELECT * FROM caption_template WHERE is_active=1 ORDER BY code LIMIT 1",
@@ -455,9 +466,28 @@ def publish_post(conn, payload, ctx):
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đang ở trạng thái {channel['status']}")
         raise AuthError(f"Kênh {channel['code']} đang ở trạng thái {channel['status']}")
 
+    if not channel["enabled"]:
+        # Operator bấm "Tắt" ở /kenh thì kỳ vọng dừng đăng NGAY, kể cả target đã
+        # SCHEDULED từ trước khi tắt -- không chỉ chặn job MỚI (spec chỉ bắt buộc
+        # chặn job mới, đây là hardening theo yêu cầu operator).
+        from ..adapters.base import AuthError
+        _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đã bị tắt (disabled)")
+        raise AuthError(f"Kênh {channel['code']} đã bị tắt (disabled)")
+
     if _published_today(conn, channel["id"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError
         raise RateLimitError(f"Kênh {channel['code']} đã đạt trần {channel['daily_post_cap']} bài trong ngày")
+
+    if channel["platform"] not in ctx["publishers"]:
+        # Chưa có publisher đăng ký cho platform này (facebook/instagram trước khi
+        # sub-project sau đăng ký) -- đây là lỗi cấu hình, không phải lỗi tạm thời,
+        # retry không giúp gì. ContentViolationError để jobs.py xử lý KHÔNG retry
+        # (đẩy bài về PENDING_REVIEW cho người xem lại) thay vì Exception chung
+        # chung sẽ bị retry vô ích rồi lộ ra KeyError khó hiểu ở /vanhanh.
+        from ..adapters.base import ContentViolationError
+        msg = f"Không có publisher đã đăng ký cho nền tảng {channel['platform']}"
+        _mark_target_failed(conn, target["id"], msg)
+        raise ContentViolationError(msg)
 
     conn.execute("UPDATE publish_target SET status='RUNNING', updated_at=? WHERE id=?", (now(), target["id"]))
     try:

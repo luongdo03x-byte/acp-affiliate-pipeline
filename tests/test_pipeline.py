@@ -2,6 +2,7 @@
 
     python3 -m acp.tests.test_pipeline
 """
+import json
 import os
 import random
 import sys
@@ -650,6 +651,183 @@ def test_disabled_channel_blocks_new_publish():
     conn.close()
 
 
+def test_default_channel_fallback_skips_facebook():
+    print("\nKênh mặc định (không truyền channel_code) không được rơi vào Facebook/Instagram")
+    conn = connect()
+    # "ch1" (kênh Threads có sẵn từ setup()) tình cờ đứng trước "facebook_..."
+    # theo thứ tự chữ cái nên tạm ẩn đi để cô lập đúng tình huống thật: mã kênh
+    # Threads thật (vd "threads_be", xem run.py) luôn đứng SAU "facebook_...".
+    conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE code='ch1'")
+    fb_id, th_id = ulid(), ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (fb_id, "facebook_1000000000001", "facebook", "FB Page", "ACTIVE", 1, now()))
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (th_id, "threads_default_test", "threads", "@default", "ACTIVE", 1, now()))
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+        check("tạo bài thành công", res.get("ok"), res.get("error"))
+        picked = conn.execute(
+            "SELECT platform FROM channel WHERE id=(SELECT channel_id FROM post WHERE id=?)",
+            (res["post_id"],)).fetchone()
+        check("kênh mặc định là Threads, không phải Facebook",
+              picked is not None and picked["platform"] == "threads", dict(picked) if picked else None)
+    finally:
+        # Không DELETE: post vừa tạo có FK channel_id trỏ vào (có thể) fb_id, xoá
+        # sẽ vi phạm ràng buộc. Vô hiệu hoá bằng NEEDS_REAUTH để không rò rỉ vào
+        # các test khác chạy sau (chỉ lọc status='ACTIVE').
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?)", (fb_id, th_id))
+        conn.execute("UPDATE channel SET status='ACTIVE' WHERE code='ch1'")
+        conn.close()
+
+
+def test_create_post_blocked_for_disabled_channel():
+    print("\nTạo bài (create_post_for_product) bị chặn khi kênh đích đã tắt (enabled=0)")
+    conn = connect()
+    conn.execute("UPDATE channel SET enabled=0 WHERE code='ch1'")
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        before = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test",
+                                                channel_code="ch1")
+        check("tạo bài bị từ chối khi kênh đích đã tắt", res.get("ok") is False, res)
+        after = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+        check("không tạo post nào khi bị từ chối", after == before, (before, after))
+    finally:
+        conn.execute("UPDATE channel SET enabled=1 WHERE code='ch1'")
+        conn.close()
+
+
+def test_plan_content_filters_to_threads_only():
+    print("\nplan_content chỉ nhắm kênh Threads, không pha loãng quota bởi Facebook/Instagram")
+    conn = connect()
+    # Đo bằng cách RÌNH gọi pipeline.enqueue (không dựa vào id trả về của
+    # plan_content/job đã ghi xuống DB) -- idempotency_key của GENERATE_CONTENT
+    # chỉ khoá theo product_id+variant, KHÔNG theo channel_id, nên nếu chỉ đếm
+    # job thật sự được tạo, việc kênh facebook (niches rỗng giống ch1) chọn
+    # trùng đúng những sản phẩm ch1 đã enqueue trước đó trong cùng vòng lặp sẽ
+    # khiến enqueue() trả về 0 (trùng key) và bug bị che giấu dù code chưa sửa.
+    # Rình lời gọi enqueue() nắm được channel_id ở MỌI lần thử, kể cả lần bị
+    # dedup, nên phép đo miễn nhiễm với hiệu ứng đó -- và cho phép đếm ĐÚNG số
+    # lần thử nhắm kênh Threads để so sánh quota trước/sau khi thêm Facebook.
+    original_enqueue = pipeline.enqueue
+
+    def _threads_attempts():
+        calls = []
+
+        def _spy(conn_, job_type, payload, **kw):
+            calls.append((job_type, payload.get("channel_id")))
+            return original_enqueue(conn_, job_type, payload, **kw)
+
+        pipeline.enqueue = _spy
+        try:
+            pipeline.plan_content(conn, "test", limit=10, rng=random.Random(99))
+        finally:
+            pipeline.enqueue = original_enqueue
+        return [cid for jt, cid in calls if jt == "GENERATE_CONTENT"]
+
+    baseline = _threads_attempts()  # chỉ có ch1 (Threads) tồn tại lúc này
+    check("có lần thử enqueue GENERATE_CONTENT (baseline)", len(baseline) > 0, baseline)
+
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (fb_id, "facebook_plan_test", "facebook", "FB Page", "ACTIVE", 1, now()))
+    try:
+        with_facebook = _threads_attempts()
+        check("không lần thử nào nhắm kênh Facebook vừa import",
+              all(cid != fb_id for cid in with_facebook), with_facebook)
+        threads_attempts_with_fb = [cid for cid in with_facebook if cid != fb_id]
+        check("quota per_channel của Threads không bị pha loãng bởi kênh Facebook",
+              len(threads_attempts_with_fb) == len(baseline),
+              (len(baseline), len(threads_attempts_with_fb)))
+    finally:
+        conn.execute("DELETE FROM channel WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_publish_post_missing_publisher_fails_immediately():
+    print("\npublish_post: chưa có publisher đăng ký cho platform thì FAILED ngay, không đốt lượt retry")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "facebook_missing_pub", "facebook", "FB Page", "ACTIVE", 1, 12, 90, now()))
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        created = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test",
+                                                    channel_code="facebook_missing_pub")
+        check("tạo bài cho kênh facebook (chỉ định channel_code tường minh) thành công",
+              created.get("ok"), created)
+
+        res = pipeline.approve_post(conn, created["post_id"])
+        check("duyệt bài thành công", res.get("ok"), res)
+        target_id = res["publish_target_id"]
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=99)}})
+
+        job = conn.execute("SELECT status, attempt_count FROM job_queue WHERE idempotency_key=?",
+                           (f"pub:{target_id}",)).fetchone()
+        check("job PUBLISH_POST FAILED ngay từ lần thử đầu tiên (không retry)",
+              job is not None and job["status"] == "FAILED" and job["attempt_count"] == 1,
+              dict(job) if job else None)
+
+        tgt = conn.execute("SELECT status, last_error FROM publish_target WHERE id=?", (target_id,)).fetchone()
+        check("publish_target FAILED", tgt["status"] == "FAILED", tgt["status"])
+        check("last_error rõ ràng (nêu tên platform), không phải KeyError cụt lủn",
+              bool(tgt["last_error"]) and "facebook" in tgt["last_error"] and "publisher" in tgt["last_error"].lower(),
+              tgt["last_error"])
+    finally:
+        conn.close()
+
+
+def test_publish_post_blocks_disabled_channel():
+    print("\npublish_post từ chối đăng khi kênh bị tắt sau khi target đã SCHEDULED")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(81))
+    check("có job sinh nội dung", len(ids) > 0)
+    job = conn.execute("SELECT payload FROM job_queue WHERE id=?", (ids[0],)).fetchone()
+    gen_payload = json.loads(job["payload"])
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=81)}})
+    # Lấy đúng bài vừa sinh ra từ job trên (product_id+channel_id) -- KHÔNG chọn
+    # "PENDING_REVIEW đầu tiên tìm thấy" một cách mù quáng: DB dùng chung xuyên
+    # suốt cả file test này có thể còn sót bài PENDING_REVIEW từ test khác (ví
+    # dụ test_disabled_channel_blocks_new_publish cố ý không approve xong bài nó
+    # tạo), nhặt nhầm bài đó thì caption không hợp lệ, approve_post sẽ báo lỗi
+    # sai chủ đề với test này.
+    post = conn.execute(
+        "SELECT * FROM post WHERE product_id=? AND channel_id=? AND status='PENDING_REVIEW' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (gen_payload["product_id"], gen_payload["channel_id"])).fetchone()
+    check("tìm được đúng bài vừa sinh", post is not None, gen_payload)
+    res = pipeline.approve_post(conn, post["id"])
+    check("duyệt thành công trước khi tắt kênh", res.get("ok"), res)
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+    conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (post["channel_id"],))
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=82)}})
+        target = conn.execute("SELECT status, last_error FROM publish_target WHERE id=?", (target_id,)).fetchone()
+        check("target FAILED (không SUCCESS) khi kênh đã bị tắt trước lúc đăng",
+              target["status"] == "FAILED", target["status"])
+        check("last_error nêu rõ lý do kênh bị tắt",
+              "tắt" in (target["last_error"] or "").lower(), target["last_error"])
+    finally:
+        conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (post["channel_id"],))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -673,6 +851,11 @@ if __name__ == "__main__":
     test_publisher_media_list()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
+    test_default_channel_fallback_skips_facebook()
+    test_create_post_blocked_for_disabled_channel()
+    test_plan_content_filters_to_threads_only()
+    test_publish_post_missing_publisher_fails_immediately()
+    test_publish_post_blocks_disabled_channel()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
