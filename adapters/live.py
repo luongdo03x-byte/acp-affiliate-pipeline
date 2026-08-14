@@ -7,6 +7,7 @@ Ba chi tiết dễ sai đã xử lý sẵn ở đây:
   3. Threads yêu cầu image_url truy cập công khai -> ảnh phải nằm trên object
      storage có URL công khai, không phải đường dẫn local.
 """
+import json
 import os
 import threading
 import time
@@ -28,6 +29,25 @@ THREADS_BASE = "https://graph.threads.net/v1.0"
 FACEBOOK_OAUTH_BASE = "https://www.facebook.com/v19.0/dialog/oauth"
 GRAPH_BASE = "https://graph.facebook.com/v19.0"
 META_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,instagram_basic,business_management"
+
+
+def _raise_for_meta_api(r):
+    """Dùng chung cho FacebookPublisher/InstagramPublisher -- cùng taxonomy lỗi
+    Graph API mà ThreadsChannel._raise_for_api đã áp dụng cho Threads."""
+    if r.status_code < 400:
+        return
+    try:
+        err = r.json().get("error", {})
+    except ValueError:
+        err = {}
+    code, msg = err.get("code"), err.get("message", r.text[:200])
+    if r.status_code in (401, 403) or code in (190, 102):
+        raise AuthError(msg)
+    if r.status_code == 429 or code in (4, 17, 32, 613):
+        raise RateLimitError(msg)
+    if code in (1346003, 1346013, 36003) or "policy" in str(msg).lower():
+        raise ContentViolationError(msg)
+    raise PublishError(f"HTTP {r.status_code}: {msg}")
 
 
 class TokenBucket:
@@ -333,3 +353,68 @@ class LiveMetaConnectionService(MetaConnectionService):
             return None
         return InstagramInfo(external_account_id=ig["id"], username=ig.get("username", ""),
                               page_token=page_token)
+
+
+class FacebookPublisher(Publisher):
+    """Publish ảnh đơn hoặc nhiều ảnh lên Facebook Page. Giới hạn 1-10 ảnh --
+    con số cần xác nhận lại với giới hạn thật của Facebook lúc go-live."""
+
+    platform = "facebook"
+    max_caption_length = 63206
+
+    def __init__(self):
+        self.session = requests.Session()
+
+    def _token(self, channel_row) -> str:
+        tok = decrypt(channel_row["token_encrypted"])
+        if not tok:
+            raise AuthError(f"Kênh {channel_row['code']} chưa có token hợp lệ")
+        return tok
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if not (1 <= len(media) <= 10):
+            raise ContentViolationError(f"Facebook cần 1-10 ảnh, nhận {len(media)}")
+        token = self._token(channel_row)
+        page_id = channel_row["external_account_id"]
+
+        if len(media) == 1:
+            r = self.session.post(f"{GRAPH_BASE}/{page_id}/photos", data={
+                "url": media[0], "caption": caption, "published": "true",
+                "access_token": token,
+            }, timeout=30)
+            _raise_for_meta_api(r)
+            body = r.json()
+            post_id = body.get("post_id") or body["id"]
+        else:
+            media_fbids = []
+            for url in media:
+                pr = self.session.post(f"{GRAPH_BASE}/{page_id}/photos", data={
+                    "url": url, "published": "false", "access_token": token,
+                }, timeout=30)
+                _raise_for_meta_api(pr)
+                media_fbids.append(pr.json()["id"])
+            attach = {f"attached_media[{i}]": json.dumps({"media_fbid": fbid})
+                      for i, fbid in enumerate(media_fbids)}
+            fr = self.session.post(f"{GRAPH_BASE}/{page_id}/feed", data={
+                "message": caption, "access_token": token, **attach,
+            }, timeout=30)
+            _raise_for_meta_api(fr)
+            post_id = fr.json()["id"]
+
+        return PublishResult(
+            external_post_id=post_id,
+            published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            native_label_status=self._try_apply_native_label(),
+        )
+
+    def _try_apply_native_label(self) -> str:
+        """Cơ chế API chính xác chưa xác nhận được (xem ghi chú Task 3 trong
+        plan) -- trả 'unavailable' trung thực, không tự chế endpoint."""
+        return "unavailable"
+
+    def remaining_quota(self, channel_row) -> int:
+        # Không dùng ở đâu trong pipeline hiện tại (giống ThreadsChannel);
+        # Facebook không có endpoint hạn mức đơn giản như Threads
+        # threads_publishing_limit -- trả hằng số lớn cho tới khi cần thật.
+        return 999

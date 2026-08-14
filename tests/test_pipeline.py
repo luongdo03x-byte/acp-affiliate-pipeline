@@ -679,6 +679,38 @@ def test_mock_instagram_publisher():
         check("caption quá 2200 ký tự phải bị chặn", True)
 
 
+def test_facebook_publisher_validates_before_network():
+    print("\nFacebookPublisher validate trước khi gọi mạng")
+    from acp.adapters.live import FacebookPublisher
+    from acp.adapters.base import Publisher, ContentViolationError as _CVE, AuthError as _AuthError
+
+    pub = FacebookPublisher()
+    check("là Publisher", isinstance(pub, Publisher))
+    check("platform đúng", pub.platform == "facebook")
+
+    # Validate media TRƯỚC khi chạm self.session -- test này chạy được không
+    # cần mạng vì raise xảy ra trước bất kỳ lệnh gọi requests nào.
+    try:
+        pub.publish({"code": "fb1", "token_encrypted": None}, "caption", media=[])
+        check("0 ảnh phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _CVE:
+        check("0 ảnh phải bị chặn trước khi gọi mạng", True)
+
+    try:
+        pub.publish({"code": "fb1", "token_encrypted": None}, "caption", media=["u"] * 11)
+        check("quá 10 ảnh phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _CVE:
+        check("quá 10 ảnh phải bị chặn trước khi gọi mạng", True)
+
+    # Token rỗng cũng phải chặn trước khi gọi mạng, đúng pattern ThreadsChannel.
+    try:
+        pub.publish({"code": "fb1", "token_encrypted": None}, "caption",
+                     media=["https://img.example/a.jpg"])
+        check("token rỗng phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _AuthError:
+        check("token rỗng phải bị chặn trước khi gọi mạng", True)
+
+
 def test_meta_connection_schema():
     print("\nmeta_connection + channel mở rộng")
     conn = connect()
@@ -978,6 +1010,7 @@ if __name__ == "__main__":
     test_publish_result_native_label_field()
     test_mock_facebook_publisher()
     test_mock_instagram_publisher()
+    test_facebook_publisher_validates_before_network()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
