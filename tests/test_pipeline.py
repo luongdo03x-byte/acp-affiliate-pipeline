@@ -828,6 +828,49 @@ def test_publish_post_blocks_disabled_channel():
         conn.close()
 
 
+def test_disabled_channel_does_not_corrupt_status():
+    print("\npublish_post: tắt kênh (enabled=0) không được đẩy channel.status sang NEEDS_REAUTH")
+    conn = connect()
+    # Tạo thẳng một post PENDING_REVIEW gắn với kênh đang ACTIVE + enabled --
+    # không phụ thuộc vào plan_content/scoring/idempotency-key (dễ vỡ khi chạy
+    # sau nhiều test khác đã tiêu thụ hết sản phẩm "recent" -- xem
+    # test_disabled_channel_blocks_new_publish để biết cách làm tương tự).
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    caption = f"Giá tốt hôm nay https://shope.ee/test-link — {content.DISCLOSURE_DEFAULT}"
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, status, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,'PENDING_REVIEW',?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  caption, content.DISCLOSURE_DEFAULT, caption, now(), now()))
+
+    res = pipeline.approve_post(conn, post_id)
+    check("duyệt thành công trước khi tắt kênh (kênh đang ACTIVE, enabled)", res.get("ok"), res)
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+    # Operator bấm "Tắt" ở /kenh -- kênh vẫn ACTIVE (token còn tốt), chỉ enabled=0.
+    conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (channel["id"],))
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=92)}})
+
+        target = conn.execute("SELECT status FROM publish_target WHERE id=?", (target_id,)).fetchone()
+        check("publish_target FAILED (không SUCCESS) khi kênh đã bị tắt",
+              target["status"] == "FAILED", target["status"])
+
+        ch_after = conn.execute("SELECT status, enabled FROM channel WHERE id=?", (channel["id"],)).fetchone()
+        check("channel.status VẪN LÀ ACTIVE -- tắt kênh không phải lỗi xác thực, không được "
+              "đẩy sang NEEDS_REAUTH (Threads không có cơ chế tự phục hồi từ trạng thái này)",
+              ch_after["status"] == "ACTIVE", ch_after["status"])
+        check("channel.enabled vẫn là 0 (sanity check, không ai tự bật lại)",
+              ch_after["enabled"] == 0, ch_after["enabled"])
+    finally:
+        conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (channel["id"],))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -856,6 +899,7 @@ if __name__ == "__main__":
     test_plan_content_filters_to_threads_only()
     test_publish_post_missing_publisher_fails_immediately()
     test_publish_post_blocks_disabled_channel()
+    test_disabled_channel_does_not_corrupt_status()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

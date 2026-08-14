@@ -470,9 +470,19 @@ def publish_post(conn, payload, ctx):
         # Operator bấm "Tắt" ở /kenh thì kỳ vọng dừng đăng NGAY, kể cả target đã
         # SCHEDULED từ trước khi tắt -- không chỉ chặn job MỚI (spec chỉ bắt buộc
         # chặn job mới, đây là hardening theo yêu cầu operator).
-        from ..adapters.base import AuthError
+        #
+        # KHÔNG dùng AuthError ở đây: jobs.py bắt AuthError bằng cách đẩy
+        # channel.status sang NEEDS_REAUTH -- đúng cho token hỏng (nhánh status
+        # != ACTIVE ở trên), nhưng SAI cho tắt kênh thủ công. Facebook/Instagram
+        # còn có connections.py tự đồng bộ đưa NEEDS_REAUTH về ACTIVE, Threads thì
+        # không có cơ chế phục hồi nào -- kênh sẽ kẹt NEEDS_REAUTH vĩnh viễn dù
+        # token vẫn tốt, chỉ vì operator từng tắt/bật. Dùng ContentViolationError
+        # (như nhánh "chưa có publisher" bên dưới): FAILED ngay, không retry,
+        # không đụng channel.status -- đúng bản chất "thao tác thủ công có chủ
+        # đích", không phải lỗi xác thực.
+        from ..adapters.base import ContentViolationError
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đã bị tắt (disabled)")
-        raise AuthError(f"Kênh {channel['code']} đã bị tắt (disabled)")
+        raise ContentViolationError(f"Kênh {channel['code']} đã bị tắt (disabled)")
 
     if _published_today(conn, channel["id"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError
