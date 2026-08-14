@@ -903,6 +903,46 @@ def test_oauth_meta_routes():
         os.environ.pop(var, None)
 
 
+def test_channel_enable_disable_route():
+    print("\nRoute bật/tắt kênh")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/kenh/{ch['id']}/disable", data={"_csrf": csrf})
+    check("tắt kênh thành công", r.status_code == 302, r.status_code)
+    conn = connect()
+    row = conn.execute("SELECT enabled FROM channel WHERE id=?", (ch["id"],)).fetchone()
+    check("kênh đã tắt (enabled=0)", row["enabled"] == 0, row["enabled"])
+    conn.close()
+
+    r2 = c.post(f"/kenh/{ch['id']}/enable", data={"_csrf": csrf})
+    check("bật lại kênh thành công", r2.status_code == 302, r2.status_code)
+    conn = connect()
+    row2 = conn.execute("SELECT enabled FROM channel WHERE id=?", (ch["id"],)).fetchone()
+    check("kênh đã bật lại (enabled=1)", row2["enabled"] == 1, row2["enabled"])
+    conn.close()
+
+    r3 = c.post("/kenh/khong-ton-tai/disable", data={"_csrf": csrf})
+    check("tắt kênh không tồn tại vẫn redirect, không sập trang", r3.status_code == 302, r3.status_code)
+
+    page = c.get("/kenh")
+    check("trang /kenh vẫn render 200 sau các thao tác trên", page.status_code == 200, page.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_production_guard():
     print("\nChặn cấu hình thiếu an toàn ở production")
     os.environ["ACP_ENV"] = "production"
@@ -1200,6 +1240,7 @@ if __name__ == "__main__":
     test_web_security()
     test_publish_target_retry_route()
     test_oauth_meta_routes()
+    test_channel_enable_disable_route()
     test_production_guard()
     test_meta_account_import_and_sync()
     test_meta_sync_marks_vanished_account_reconnect_required()

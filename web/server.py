@@ -322,18 +322,40 @@ def create_app():
             saved = row["handle"] if row else cid
 
         rows = []
-        for ch in conn.execute("SELECT * FROM channel ORDER BY code").fetchall():
+        for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
             rows.append(dict(ch, niches=nl,
                              pool=len(scoring.score_candidates(conn, limit=9999, niches=nl)),
                              published=conn.execute(
                                  "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED'",
                                  (ch["id"],)).fetchone()[0]))
+        by_platform = {}
+        for row in rows:
+            by_platform.setdefault(row["platform"], []).append(row)
+        has_meta_connection = bool(conn.execute("SELECT 1 FROM meta_connection LIMIT 1").fetchone())
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
         conn.close()
-        return render_template("channels.html", page="kenh", channels=rows,
-                               all_niches=niche_mod.NICHES, saved=saved, pending_review=pending)
+        return render_template("channels.html", page="kenh", by_platform=by_platform,
+                               all_niches=niche_mod.NICHES, saved=saved, pending_review=pending,
+                               has_meta_connection=has_meta_connection,
+                               summary=request.args.get("summary"))
+
+    @app.route("/kenh/<channel_id>/enable", methods=["POST"])
+    def channel_enable(channel_id):
+        conn = connect()
+        conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (channel_id,))
+        pipeline.audit(conn, "channel", channel_id, "enabled", actor="operator")
+        conn.close()
+        return redirect(url_for("channels"))
+
+    @app.route("/kenh/<channel_id>/disable", methods=["POST"])
+    def channel_disable(channel_id):
+        conn = connect()
+        conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (channel_id,))
+        pipeline.audit(conn, "channel", channel_id, "disabled", actor="operator")
+        conn.close()
+        return redirect(url_for("channels"))
 
     # ----------------------------------------------------------- duyệt bài
 
