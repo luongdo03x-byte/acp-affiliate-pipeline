@@ -17,6 +17,7 @@ from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
 from ..adapters import factory
+from ..adapters.base import AuthError
 from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl,
@@ -270,7 +271,8 @@ def create_app():
 
         conn = connect()
         channel = conn.execute(
-            "SELECT code FROM channel WHERE code=? AND status='ACTIVE'", (channel_code,)).fetchone()
+            "SELECT code FROM channel WHERE code=? AND status='ACTIVE' AND platform='threads'",
+            (channel_code,)).fetchone()
         if not channel:
             conn.close()
             return _render_affiliate(
@@ -545,14 +547,27 @@ def create_app():
         code = request.args.get("code", "")
         state = request.args.get("state", "")
         expected = session.get("meta_oauth_state", "")
-        if not code or not state or not expected or not hmac.compare_digest(state, expected):
+        # So bytes chứ không so str: hmac.compare_digest ném TypeError nếu một
+        # trong hai str chứa ký tự ngoài ASCII -- state đến từ query string do
+        # người dùng/kẻ tấn công kiểm soát, non-ASCII từng làm callback 500.
+        if (not code or not state or not expected
+                or not hmac.compare_digest(state.encode(), expected.encode())):
             abort(400, "State OAuth không hợp lệ")
         session.pop("meta_oauth_state", None)
 
         redirect_uri = request.host_url.rstrip("/") + "/oauth/meta/callback"
         svc = factory.get_meta_connection_service()
         conn = connect()
-        res = connections.connect_meta_account(conn, svc, code, redirect_uri, actor="operator")
+        try:
+            res = connections.connect_meta_account(conn, svc, code, redirect_uri, actor="operator")
+        except AuthError as e:
+            # exchange_code/list_pages thất bại trước khi có connection_id -- chưa
+            # có meta_connection nào để đánh dấu NEEDS_REAUTH, chỉ báo lỗi.
+            conn.close()
+            return redirect(url_for("channels", err=f"Kết nối Meta thất bại: {e}"))
+        except Exception as e:
+            conn.close()
+            return redirect(url_for("channels", err=f"Lỗi không mong muốn khi kết nối Meta: {e}"))
         conn.close()
         if not res.get("ok"):
             return redirect(url_for("channels", err=res.get("error")))
@@ -561,15 +576,41 @@ def create_app():
 
     @app.route("/kenh/meta/sync", methods=["POST"])
     def kenh_meta_sync():
+        """Đồng bộ lại TẤT CẢ connection Meta đã có -- một operator có thể đã
+        kết nối nhiều tài khoản Meta khác nhau (upsert theo meta_user_id, xem
+        core/connections.py), nút "Đồng bộ lại" phải làm mới cả loạt chứ không
+        chỉ connection gần nhất."""
         conn = connect()
-        connection = conn.execute("SELECT id FROM meta_connection ORDER BY created_at DESC LIMIT 1").fetchone()
-        if not connection:
+        rows = conn.execute("SELECT id FROM meta_connection").fetchall()
+        if not rows:
             conn.close()
             return redirect(url_for("channels", err="Chưa kết nối Meta"))
         svc = factory.get_meta_connection_service()
-        res = connections.sync_meta_accounts(conn, svc, connection["id"], actor="operator")
+        imported = updated = reconnect_required = 0
+        errors = []
+        for row in rows:
+            try:
+                res = connections.sync_meta_accounts(conn, svc, row["id"], actor="operator")
+            except AuthError as e:
+                conn.execute("UPDATE meta_connection SET status='NEEDS_REAUTH', updated_at=? WHERE id=?",
+                             (now(), row["id"]))
+                errors.append(str(e))
+                continue
+            except Exception as e:
+                errors.append(str(e))
+                continue
+            if not res.get("ok"):
+                errors.append(res.get("error"))
+                continue
+            imported += res.get("imported", 0)
+            updated += res.get("updated", 0)
+            reconnect_required += res.get("reconnect_required", 0)
         conn.close()
-        return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
+        if errors and not (imported or updated):
+            return redirect(url_for("channels", err="; ".join(str(e) for e in errors)))
+        return redirect(url_for("channels",
+                                summary=f"Đã import {imported} account, cập nhật {updated}"
+                                        + (f", {reconnect_required} cần kết nối lại" if reconnect_required else "")))
 
     @app.route("/api/funnel")
     def api_funnel():

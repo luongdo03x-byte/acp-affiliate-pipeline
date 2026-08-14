@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -1237,6 +1238,245 @@ def test_meta_sync_marks_vanished_account_reconnect_required():
     conn.close()
 
 
+def test_oauth_meta_callback_auth_error_no_500():
+    print("\nCallback OAuth Meta: AuthError khi đổi code không được sập thành 500")
+    from acp.adapters.base import AuthError as _AuthError
+
+    class _FailingExchangeService:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return f"https://mock/authorize?state={state}"
+
+        def exchange_code(self, code, redirect_uri):
+            raise _AuthError("token Meta hết hạn khi đổi code")
+
+        def list_pages(self, user_token):
+            return []
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    with c.session_transaction() as sess:
+        sess["meta_oauth_state"] = "state-ok"
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _FailingExchangeService()
+    try:
+        r = c.get("/oauth/meta/callback?code=abc&state=state-ok", follow_redirects=False)
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("callback AuthError không 500", r.status_code == 302, r.status_code)
+    check("callback AuthError redirect về /kenh kèm err=",
+          "/kenh" in r.location and "err=" in r.location, r.location)
+
+
+def test_kenh_meta_sync_auth_error_marks_needs_reauth():
+    print("\nĐồng bộ Meta: AuthError không sập 500, đánh dấu connection NEEDS_REAUTH")
+    from acp.adapters.base import AuthError as _AuthError
+
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    mc_id = ulid()
+    conn.execute("""INSERT INTO meta_connection (id, provider, token_encrypted, meta_user_id,
+                    status, created_at, updated_at) VALUES (?,'meta',?,?,'ACTIVE',?,?)""",
+                 (mc_id, crypto.encrypt("user_token"), "auth_err_user", now(), now()))
+    conn.close()
+
+    class _FailingSyncService:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            raise AssertionError("không dùng trong test này")
+
+        def list_pages(self, user_token):
+            raise _AuthError("token Meta bị thu hồi")
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _FailingSyncService()
+    try:
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        r = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("sync AuthError không 500", r.status_code == 302, r.status_code)
+    check("sync AuthError redirect kèm err=", "err=" in r.location, r.location)
+    conn = connect()
+    row = conn.execute("SELECT status FROM meta_connection WHERE id=?", (mc_id,)).fetchone()
+    check("connection chuyển NEEDS_REAUTH sau AuthError", row["status"] == "NEEDS_REAUTH", row["status"])
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_oauth_meta_callback_nonascii_state_clean_400():
+    print("\nCallback OAuth Meta: state không phải ASCII trả 400 sạch, không sập 500")
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    with c.session_transaction() as sess:
+        sess["meta_oauth_state"] = "state-ascii-only"
+
+    r = c.get("/oauth/meta/callback?code=abc&state=" + quote("tiếng-việt-é"))
+    check("state non-ASCII trả 400 sạch, không 500", r.status_code == 400, r.status_code)
+
+
+def test_kenh_meta_sync_syncs_all_connections():
+    print("\nĐồng bộ Meta đồng bộ lại TẤT CẢ connection, không chỉ cái gần nhất")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    from acp.core import connections
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    class _ServiceA:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tokA_multi", expires_in=1000, meta_user_id="multi_user_A")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            return [PageInfo("8100000000001", "Page A1", "tokA1")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    class _ServiceB:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/y"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tokB_multi", expires_in=1000, meta_user_id="multi_user_B")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            return [PageInfo("8200000000001", "Page B1", "tokB1")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    conn = connect()
+    res_a = connections.connect_meta_account(conn, _ServiceA(), "code-a",
+                                              "https://acp.example/oauth/meta/callback")
+    res_b = connections.connect_meta_account(conn, _ServiceB(), "code-b",
+                                              "https://acp.example/oauth/meta/callback")
+    check("kết nối A thành công", res_a.get("ok"), res_a)
+    check("kết nối B thành công", res_b.get("ok"), res_b)
+
+    # Đặt last_sync_at cũ để phát hiện được cả hai connection đều được sync
+    # LẠI thật sự (không chỉ connection tạo sau cùng).
+    old_ts = "2020-01-01T00:00:00+00:00"
+    conn.execute("UPDATE channel SET last_sync_at=? WHERE connection_id IN (?,?)",
+                 (old_ts, res_a["connection_id"], res_b["connection_id"]))
+    conn.close()
+
+    class _CombinedService:
+        """sync_meta_accounts tự giải mã user_token đã lưu theo từng connection
+        rồi gọi list_pages(user_token) -- một mock DUY NHẤT phân biệt được
+        connection nào đang được đồng bộ qua chính token đó."""
+
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/z"
+
+        def exchange_code(self, code, redirect_uri):
+            raise AssertionError("không dùng trong test này")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            if user_token == "tokA_multi":
+                return [PageInfo("8100000000001", "Page A1", "tokA1_v2")]
+            return [PageInfo("8200000000001", "Page B1", "tokB1_v2")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _CombinedService()
+    try:
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        r = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("sync route thành công (redirect /kenh)", r.status_code == 302 and "/kenh" in r.location, r.location)
+    conn = connect()
+    ch_a = conn.execute("SELECT last_sync_at FROM channel WHERE connection_id=?",
+                        (res_a["connection_id"],)).fetchone()
+    ch_b = conn.execute("SELECT last_sync_at FROM channel WHERE connection_id=?",
+                        (res_b["connection_id"],)).fetchone()
+    check("connection A được sync lại (last_sync_at cập nhật)", ch_a["last_sync_at"] != old_ts, ch_a["last_sync_at"])
+    check("connection B được sync lại (last_sync_at cập nhật)", ch_b["last_sync_at"] != old_ts, ch_b["last_sync_at"])
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_create_affiliate_product_rejects_non_threads_channel():
+    print("\ncreate_affiliate_product từ chối kênh không phải Threads dù ACTIVE+enabled")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (ulid(), "fb_reject_test", "facebook", "FB Reject", "ACTIVE", 1, now()))
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "Váy hoa nữ test",
+        "current_price": "289000",
+        "image_url": "https://img.example/product.jpg",
+        "channel_code": "fb_reject_test",
+    })
+    check("gửi mã kênh Facebook bị từ chối như kênh không tồn tại/không hoạt động",
+          r.status_code == 400, r.status_code)
+    check("thông báo lỗi đúng như kênh không tồn tại/không hoạt động",
+          "Kênh Threads không tồn tại hoặc không hoạt động" in r.get_data(as_text=True),
+          r.get_data(as_text=True)[:300])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1269,6 +1509,11 @@ if __name__ == "__main__":
     test_production_guard()
     test_meta_account_import_and_sync()
     test_meta_sync_marks_vanished_account_reconnect_required()
+    test_oauth_meta_callback_auth_error_no_500()
+    test_kenh_meta_sync_auth_error_marks_needs_reauth()
+    test_oauth_meta_callback_nonascii_state_clean_400()
+    test_kenh_meta_sync_syncs_all_connections()
+    test_create_affiliate_product_rejects_non_threads_channel()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
