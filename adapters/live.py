@@ -418,3 +418,93 @@ class FacebookPublisher(Publisher):
         # Facebook không có endpoint hạn mức đơn giản như Threads
         # threads_publishing_limit -- trả hằng số lớn cho tới khi cần thật.
         return 999
+
+
+class InstagramPublisher(Publisher):
+    """Container model giống Threads: tạo container -> poll -> publish. Nhiều
+    ảnh thì tạo child container is_carousel_item=true trước, rồi container
+    CAROUSEL tham chiếu tới children."""
+
+    platform = "instagram"
+    max_caption_length = 2200
+
+    def __init__(self, poll_interval: float = 3.0, poll_timeout: float = 60.0):
+        self.poll_interval = poll_interval
+        self.poll_timeout = poll_timeout
+        self.session = requests.Session()
+
+    def _token(self, channel_row) -> str:
+        tok = decrypt(channel_row["token_encrypted"])
+        if not tok:
+            raise AuthError(f"Kênh {channel_row['code']} chưa có token hợp lệ")
+        return tok
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if len(media) == 0 or len(media) > 10:
+            raise ContentViolationError(
+                f"Instagram cần 1 ảnh (single) hoặc 2-10 ảnh (carousel), nhận {len(media)}")
+        if len(caption) > self.max_caption_length:
+            raise ContentViolationError(
+                f"Caption {len(caption)} ký tự, Instagram chỉ cho {self.max_caption_length}")
+
+        # Token/auth check phải chạy TRƯỚC khi đọc các trường channel_row khác
+        # và trước bất kỳ lệnh gọi mạng nào (cùng ràng buộc như FacebookPublisher
+        # -- xem ghi chú Task 3/4 trong plan).
+        token = self._token(channel_row)
+        ig_id = channel_row["external_account_id"]
+
+        if len(media) == 1:
+            creation_id = self._create_container(ig_id, token, {
+                "image_url": media[0], "caption": caption})
+        else:
+            children = []
+            for url in media:
+                child_id = self._create_container(ig_id, token, {
+                    "image_url": url, "is_carousel_item": "true"})
+                children.append(child_id)
+            creation_id = self._create_container(ig_id, token, {
+                "media_type": "CAROUSEL", "children": ",".join(children), "caption": caption})
+
+        self._poll_until_finished(creation_id, token)
+
+        p = self.session.post(f"{GRAPH_BASE}/{ig_id}/media_publish", data={
+            "creation_id": creation_id, "access_token": token,
+        }, timeout=30)
+        _raise_for_meta_api(p)
+        media_id = p.json()["id"]
+
+        return PublishResult(
+            external_post_id=media_id,
+            published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            native_label_status=self._try_apply_native_label(),
+        )
+
+    def _create_container(self, ig_id: str, token: str, params: dict) -> str:
+        r = self.session.post(f"{GRAPH_BASE}/{ig_id}/media",
+                               data={**params, "access_token": token}, timeout=30)
+        _raise_for_meta_api(r)
+        return r.json()["id"]
+
+    def _poll_until_finished(self, creation_id: str, token: str) -> None:
+        deadline = time.monotonic() + self.poll_timeout
+        while time.monotonic() < deadline:
+            s = self.session.get(f"{GRAPH_BASE}/{creation_id}",
+                                  params={"fields": "status_code", "access_token": token},
+                                  timeout=20)
+            _raise_for_meta_api(s)
+            status = s.json().get("status_code")
+            if status == "FINISHED":
+                return
+            if status == "ERROR":
+                raise PublishError(f"Container {creation_id} lỗi khi xử lý")
+            time.sleep(self.poll_interval)
+        raise PublishError(f"Container {creation_id} chưa sẵn sàng sau {self.poll_timeout:.0f}s")
+
+    def _try_apply_native_label(self) -> str:
+        """Cơ chế API chính xác chưa xác nhận được (xem ghi chú Task 4 trong
+        plan) -- trả 'unavailable' trung thực, không tự chế endpoint."""
+        return "unavailable"
+
+    def remaining_quota(self, channel_row) -> int:
+        return 999

@@ -711,6 +711,42 @@ def test_facebook_publisher_validates_before_network():
         check("token rỗng phải bị chặn trước khi gọi mạng", True)
 
 
+def test_instagram_publisher_validates_before_network():
+    print("\nInstagramPublisher validate trước khi gọi mạng")
+    from acp.adapters.live import InstagramPublisher
+    from acp.adapters.base import Publisher, ContentViolationError as _CVE, AuthError as _AuthError
+
+    pub = InstagramPublisher()
+    check("là Publisher", isinstance(pub, Publisher))
+    check("platform đúng", pub.platform == "instagram")
+
+    try:
+        pub.publish({"code": "ig1", "token_encrypted": None}, "caption", media=[])
+        check("0 ảnh phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _CVE:
+        check("0 ảnh phải bị chặn trước khi gọi mạng", True)
+
+    try:
+        pub.publish({"code": "ig1", "token_encrypted": None}, "caption", media=["u"] * 11)
+        check("quá 10 ảnh phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _CVE:
+        check("quá 10 ảnh phải bị chặn trước khi gọi mạng", True)
+
+    try:
+        pub.publish({"code": "ig1", "token_encrypted": None}, "x" * 2201,
+                     media=["https://img.example/a.jpg"])
+        check("caption quá 2200 ký tự phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _CVE:
+        check("caption quá 2200 ký tự phải bị chặn trước khi gọi mạng", True)
+
+    try:
+        pub.publish({"code": "ig1", "token_encrypted": None}, "caption",
+                     media=["https://img.example/a.jpg"])
+        check("token rỗng phải bị chặn trước khi gọi mạng", False, "không ném lỗi")
+    except _AuthError:
+        check("token rỗng phải bị chặn trước khi gọi mạng", True)
+
+
 def test_meta_connection_schema():
     print("\nmeta_connection + channel mở rộng")
     conn = connect()
@@ -1011,6 +1047,7 @@ if __name__ == "__main__":
     test_mock_facebook_publisher()
     test_mock_instagram_publisher()
     test_facebook_publisher_validates_before_network()
+    test_instagram_publisher_validates_before_network()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
