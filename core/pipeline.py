@@ -521,6 +521,9 @@ def publish_post(conn, payload, ctx):
                  (result.external_post_id, result.published_at, now(), post["id"]))
     audit(conn, "post", post["id"], "published",
           detail={"thread_id": result.external_post_id, "publish_target_id": target["id"]})
+    if result.native_label_status != "not_attempted":
+        audit(conn, "publish_target", target["id"], "native_label_requested",
+              detail={"status": result.native_label_status, "platform": channel["platform"]})
     enqueue(conn, "FETCH_INSIGHTS", {"post_id": post["id"], "channel_id": channel["id"]},
             run_after=(datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds"),
             idempotency_key=f"ins:{post['id']}")

@@ -747,6 +747,74 @@ def test_instagram_publisher_validates_before_network():
         check("token rỗng phải bị chặn trước khi gọi mạng", True)
 
 
+def test_publish_post_audits_native_label_status():
+    print("\npublish_post ghi audit native_label_requested")
+    from acp.adapters.base import Publisher, PublishResult
+
+    class _LabelledPublisher(Publisher):
+        platform = "facebook"
+
+        def publish(self, channel_row, caption, media=None):
+            return PublishResult(external_post_id="fb_post_1",
+                                  published_at=now(), native_label_status="unavailable")
+
+    conn = connect()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,'ACTIVE',1,999,0,?)""",
+                 (channel_id, "fb_audit_test", "facebook", "Audit Test Page", now()))
+
+    # Cần caption hợp lệ (có link + nhãn tiếp thị mặc định) để qua được
+    # content.validate() trong approve_post -- xem quy ước tương tự ở
+    # test_disabled_channel_does_not_corrupt_status.
+    caption = f"Giá tốt hôm nay https://shope.ee/audit-test — {content.DISCLOSURE_DEFAULT}"
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, status, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,'PENDING_REVIEW',?,?)""",
+                 (post_id, product["id"], channel_id, campaign["id"], "A",
+                  caption, content.DISCLOSURE_DEFAULT, caption, now(), now()))
+
+    res = pipeline.approve_post(conn, post_id)
+    check("approve_post thành công", res["ok"], res)
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                 (now(), f"pub:{res['publish_target_id']}"))
+    jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                          "publishers": {"facebook": _LabelledPublisher()}})
+
+    audit_row = conn.execute(
+        "SELECT * FROM audit_log WHERE entity='publish_target' AND action='native_label_requested' "
+        "AND entity_id=?", (res["publish_target_id"],)).fetchone()
+    check("có audit native_label_requested", audit_row is not None)
+    check("audit ghi đúng outcome", "unavailable" in (audit_row["detail"] or ""),
+          audit_row["detail"] if audit_row else None)
+
+    conn.close()
+
+
+def test_publish_post_no_native_label_audit_for_threads():
+    print("\npublish_post KHÔNG ghi audit native label cho Threads (not_attempted)")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(51))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=51)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    res = pipeline.approve_post(conn, post["id"])
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                 (now(), f"pub:{res['publish_target_id']}"))
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=51)}})
+
+    audit_row = conn.execute(
+        "SELECT * FROM audit_log WHERE entity='publish_target' AND action='native_label_requested' "
+        "AND entity_id=?", (res["publish_target_id"],)).fetchone()
+    check("Threads (native_label_status mặc định not_attempted) không tạo audit thừa",
+          audit_row is None, dict(audit_row) if audit_row else None)
+    conn.close()
+
+
 def test_meta_connection_schema():
     print("\nmeta_connection + channel mở rộng")
     conn = connect()
@@ -1048,6 +1116,8 @@ if __name__ == "__main__":
     test_mock_instagram_publisher()
     test_facebook_publisher_validates_before_network()
     test_instagram_publisher_validates_before_network()
+    test_publish_post_audits_native_label_status()
+    test_publish_post_no_native_label_audit_for_threads()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
