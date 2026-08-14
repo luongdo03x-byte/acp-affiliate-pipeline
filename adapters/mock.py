@@ -95,9 +95,11 @@ class MockThreads(Publisher):
         self.published = []
 
     def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
-        # Backward compatibility: accept string (old image_url) or list (new media)
         if media is None:
             media = []
+        # Transitional shim: core/pipeline.py still calls publish() with a raw URL string
+        # as positional arg (old signature) until Task 3 updates it to always pass a list.
+        # Remove this shim once pipeline.py is updated.
         elif isinstance(media, str):
             media = [media] if media else []
         if len(media) > 1:

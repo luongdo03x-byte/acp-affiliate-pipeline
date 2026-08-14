@@ -291,6 +291,11 @@ def test_publisher_media_list():
     except ValueError as e:
         check("publish nhiều ảnh với Threads phải báo lỗi", True, str(e))
 
+    # Test backward compatibility: bare string (old pipeline.py calling convention)
+    result_str = ch.publish({}, "caption ngắn", "https://img.example/a.jpg")
+    check("publish chuỗi URL (tương thích ngược) trả về PublishResult", bool(result_str.external_post_id))
+    check("publish chuỗi URL tạo bài khác", result_str.external_post_id != result.external_post_id)
+
 
 if __name__ == "__main__":
     conn = setup(); conn.close()
