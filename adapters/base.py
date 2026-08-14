@@ -32,6 +32,7 @@ class RawProduct:
 class PublishResult:
     external_post_id: str
     published_at: str
+    native_label_status: str = "not_attempted"  # applied / unavailable / failed
 
 
 class PublishError(Exception):

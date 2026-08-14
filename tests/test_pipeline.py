@@ -596,6 +596,17 @@ def test_publisher_media_list():
     check("publish không ảnh (media=None) trả về PublishResult", bool(result_empty.external_post_id))
 
 
+def test_publish_result_native_label_field():
+    print("\nPublishResult có native_label_status")
+    from acp.adapters.base import PublishResult
+    old_style = PublishResult(external_post_id="p1", published_at="2026-01-01T00:00:00")
+    check("constructor cũ (không native_label_status) vẫn hợp lệ",
+          old_style.native_label_status == "not_attempted", old_style.native_label_status)
+    new_style = PublishResult(external_post_id="p2", published_at="2026-01-01T00:00:00",
+                               native_label_status="applied")
+    check("field mới nhận giá trị truyền vào", new_style.native_label_status == "applied")
+
+
 def test_meta_connection_schema():
     print("\nmeta_connection + channel mở rộng")
     conn = connect()
@@ -892,6 +903,7 @@ if __name__ == "__main__":
     test_db_constraints()
     test_publish_target_schema()
     test_publisher_media_list()
+    test_publish_result_native_label_field()
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
