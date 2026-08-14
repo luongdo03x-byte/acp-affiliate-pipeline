@@ -271,6 +271,39 @@ def test_factory_meta_connection_service_live_routing():
         os.environ.pop("META_APP_SECRET", None)
 
 
+def test_factory_registers_facebook_instagram_publishers():
+    print("\nFactory đăng ký đủ facebook/instagram publisher")
+    from acp.adapters.base import Publisher
+    from acp.adapters.mock import MockFacebookPublisher, MockInstagramPublisher
+    factory.reset_cache()
+    os.environ.pop("ACP_ADAPTER", None)
+
+    publishers = factory.get_publishers()
+    check("có đủ 3 platform", set(publishers) == {"threads", "facebook", "instagram"},
+          set(publishers))
+    check("facebook là MockFacebookPublisher (mặc định mock)",
+          isinstance(publishers["facebook"], MockFacebookPublisher))
+    check("instagram là MockInstagramPublisher (mặc định mock)",
+          isinstance(publishers["instagram"], MockInstagramPublisher))
+    check("cả hai đều là Publisher",
+          isinstance(publishers["facebook"], Publisher) and isinstance(publishers["instagram"], Publisher))
+
+    os.environ["ACP_ADAPTER"] = "live"
+    os.environ["META_APP_ID"] = "test_app_id"
+    os.environ["META_APP_SECRET"] = "test_app_secret"
+    try:
+        from acp.adapters.live import FacebookPublisher, InstagramPublisher
+        live_publishers = factory.get_publishers()
+        check("ACP_ADAPTER=live trả về FacebookPublisher thật",
+              isinstance(live_publishers["facebook"], FacebookPublisher))
+        check("ACP_ADAPTER=live trả về InstagramPublisher thật",
+              isinstance(live_publishers["instagram"], InstagramPublisher))
+    finally:
+        os.environ.pop("ACP_ADAPTER", None)
+        os.environ.pop("META_APP_ID", None)
+        os.environ.pop("META_APP_SECRET", None)
+
+
 # --------------------------------------------------------- single product
 
 def test_single_product_flow():
@@ -1493,6 +1526,7 @@ if __name__ == "__main__":
     test_live_meta_connection_service_url_building()
     test_factory_meta_connection_service()
     test_factory_meta_connection_service_live_routing()
+    test_factory_registers_facebook_instagram_publishers()
     test_single_product_flow()
     test_shopee_safe_url()
     test_shopee_metadata()

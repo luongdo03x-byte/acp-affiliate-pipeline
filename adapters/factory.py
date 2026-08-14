@@ -47,9 +47,17 @@ def get_channel():
 
 
 def get_publishers() -> dict:
-    """platform -> Publisher. Chỉ có 'threads' cho tới khi sub-project B/C
-    đăng ký thêm 'facebook'/'instagram'."""
-    return {"threads": get_channel()}
+    """platform -> Publisher. Đủ 3 platform kể từ sub-project C."""
+    publishers = {"threads": get_channel()}
+    if is_live():
+        from .live import FacebookPublisher, InstagramPublisher
+        publishers["facebook"] = FacebookPublisher()
+        publishers["instagram"] = InstagramPublisher()
+    else:
+        from .mock import MockFacebookPublisher, MockInstagramPublisher
+        publishers["facebook"] = MockFacebookPublisher()
+        publishers["instagram"] = MockInstagramPublisher()
+    return publishers
 
 
 def get_meta_connection_service():
