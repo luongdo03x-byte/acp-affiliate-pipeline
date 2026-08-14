@@ -390,11 +390,25 @@ def create_app():
                 FROM channel c""", (now(),)).fetchall()],
             posts_by_status=[dict(r) for r in conn.execute(
                 "SELECT status, COUNT(*) AS n FROM post GROUP BY status ORDER BY n DESC").fetchall()],
+            publish_targets=[dict(r) for r in conn.execute("""
+                SELECT pt.*, pr.name AS product_name, ch.handle AS channel_handle
+                FROM publish_target pt
+                JOIN post p ON p.id = pt.post_id
+                JOIN product pr ON pr.id = p.product_id
+                JOIN channel ch ON ch.id = pt.channel_id
+                ORDER BY pt.updated_at DESC LIMIT 20""").fetchall()],
             audit=[dict(r) for r in conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT 12").fetchall()],
         )
         conn.close()
         return render_template("ops.html", page="van-hanh", **data)
+
+    @app.route("/vanhanh/<target_id>/retry", methods=["POST"])
+    def retry_publish_target_route(target_id):
+        conn = connect()
+        res = pipeline.retry_publish_target(conn, target_id, actor="operator")
+        conn.close()
+        return redirect(url_for("ops", err=None if res.get("ok") else res.get("error")))
 
     @app.route("/vanhanh/work", methods=["POST"])
     def ops_work():

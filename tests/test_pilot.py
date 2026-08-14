@@ -426,6 +426,34 @@ def test_web_security():
         os.environ.pop(var, None)
 
 
+def test_publish_target_retry_route():
+    print("\nRoute thử lại publish target")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    check("route thử lại yêu cầu đăng nhập",
+          c.post("/vanhanh/khong-ton-tai/retry").status_code == 302)
+
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    check("trang vận hành mở được sau đăng nhập", c.get("/vanhanh").status_code == 200)
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/vanhanh/khong-ton-tai/retry", data={"_csrf": csrf})
+    check("route thử lại target không tồn tại vẫn redirect (không sập trang)", r.status_code == 302, r.status_code)
+    check("báo lỗi target không tồn tại qua query", "err=" in r.location, r.location)
+
+    r2 = c.post("/vanhanh/khong-ton-tai/retry", data={})
+    check("thiếu CSRF bị chặn", r2.status_code == 400, r2.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 class _FakeHttpResponse:
     def __init__(self, status=200, headers=None, body=b"", url="https://shopee.vn/x"):
         self.status_code = status
@@ -909,6 +937,7 @@ if __name__ == "__main__":
     test_dark_premium_template_contract()
     test_shopee_edge_hardening()
     test_web_security()
+    test_publish_target_retry_route()
     test_production_guard()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
