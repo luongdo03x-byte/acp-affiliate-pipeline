@@ -14,8 +14,11 @@ Cho phép ACP thực sự đăng bài lên Facebook Page và Instagram Professio
 account (không còn dừng ở kết nối/import như B) — bằng cách thêm
 `FacebookPublisher`/`InstagramPublisher` đúng interface `Publisher` đã có từ
 A, đăng ký vào registry, xử lý ảnh đơn/carousel, và thử áp native Meta label
-theo đúng scope PTYC §29 — **không sửa `core/pipeline.py`, không sửa
-`core/jobs.py`**, vì cả hai đã generic theo platform từ A.
+theo đúng scope PTYC §29 — **không sửa logic routing/exception-handling của
+`core/pipeline.py::publish_post`, không sửa `core/jobs.py`**, vì cả hai đã
+generic theo platform từ A. Phần MỞ RỘNG duy nhất trong `publish_post` là
+một đoạn nhỏ, cộng thêm (đọc `result.native_label_status`, ghi audit) —
+xem §7; không đụng routing/exception-handling hiện có.
 
 ## 2. Phạm vi
 
@@ -246,15 +249,18 @@ Phải tiếp tục pass nguyên trạng.
 [ ] Native label thất bại không chặn publish, có audit
 [ ] PublishResult mở rộng không phá ThreadsPublisher hiện có
 [ ] factory.get_publishers() có đủ 3 platform theo đúng ACP_ADAPTER
-[ ] core/pipeline.py, core/jobs.py không bị sửa
+[ ] core/jobs.py không bị sửa; core/pipeline.py chỉ thêm đúng đoạn đọc
+    native_label_status + ghi audit, routing/exception-handling không đổi
 [ ] Threads/Shopee/ACCESSTRADE/MetaConnectionService không regression
 [ ] tests đạt, git diff --check sạch, không commit secrets
 ```
 
 ## 13. Quyết định đã chốt
 
-1. Không sửa `core/pipeline.py`/`core/jobs.py` — interface `Publisher` từ A
-   đã đủ generic, C chỉ thêm class mới + đăng ký factory.
+1. Không sửa `core/jobs.py`; không sửa routing/exception-handling của
+   `core/pipeline.py::publish_post` — interface `Publisher` từ A đã đủ
+   generic. Ngoại lệ additive duy nhất: đoạn đọc `native_label_status` +
+   ghi audit (§7), không đụng logic dispatch/exception hiện có.
 2. Native label thất bại: **vẫn đăng, không label, ghi audit cảnh báo** —
    không chặn publish, không có cổng tương tác (D's việc).
 3. `Publisher` không tự chạm `conn`/`audit()` — outcome trả qua
