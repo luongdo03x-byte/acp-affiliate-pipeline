@@ -595,6 +595,31 @@ def test_publisher_media_list():
     check("publish không ảnh (media=None) trả về PublishResult", bool(result_empty.external_post_id))
 
 
+def test_meta_connection_schema():
+    print("\nmeta_connection + channel mở rộng")
+    conn = connect()
+    mc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meta_connection)").fetchall()}
+    expected_mc = {"id", "provider", "token_encrypted", "meta_user_id", "status",
+                   "expires_at", "created_at", "updated_at"}
+    check("meta_connection có đủ cột", expected_mc <= mc_cols, mc_cols)
+
+    ch_cols = {r["name"] for r in conn.execute("PRAGMA table_info(channel)").fetchall()}
+    expected_ch_new = {"connection_id", "external_account_id", "username", "enabled", "last_sync_at"}
+    check("channel có đủ cột mở rộng", expected_ch_new <= ch_cols, ch_cols)
+
+    mc_id = ulid()
+    conn.execute("""INSERT INTO meta_connection (id, provider, token_encrypted, meta_user_id,
+                    status, created_at, updated_at) VALUES (?,'meta',?,?,'ACTIVE',?,?)""",
+                 (mc_id, crypto.encrypt("user_token"), "mock_user_1", now(), now()))
+    row = conn.execute("SELECT * FROM meta_connection WHERE id=?", (mc_id,)).fetchone()
+    check("meta_connection lưu và đọc lại đúng", row["meta_user_id"] == "mock_user_1")
+
+    channel = conn.execute("SELECT * FROM channel LIMIT 1").fetchone()
+    check("channel cũ (Threads) có enabled mặc định 1", channel["enabled"] == 1, channel["enabled"])
+    check("channel cũ có connection_id NULL", channel["connection_id"] is None)
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -616,6 +641,7 @@ if __name__ == "__main__":
     test_db_constraints()
     test_publish_target_schema()
     test_publisher_media_list()
+    test_meta_connection_schema()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

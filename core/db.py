@@ -159,6 +159,17 @@ CREATE TABLE IF NOT EXISTS publish_target (
 CREATE INDEX IF NOT EXISTS idx_publish_target_post   ON publish_target(post_id);
 CREATE INDEX IF NOT EXISTS idx_publish_target_status ON publish_target(status, scheduled_at);
 
+CREATE TABLE IF NOT EXISTS meta_connection (
+    id              TEXT PRIMARY KEY,
+    provider        TEXT NOT NULL DEFAULT 'meta',
+    token_encrypted BLOB NOT NULL,
+    meta_user_id    TEXT,
+    status          TEXT NOT NULL DEFAULT 'ACTIVE',
+    expires_at      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversion (
     id                  TEXT PRIMARY KEY,
     post_id             TEXT REFERENCES post(id),
@@ -248,6 +259,11 @@ def transaction(conn: sqlite3.Connection):
 MIGRATIONS = [
     # (bảng, cột, câu lệnh) -- chạy được nhiều lần, bỏ qua nếu cột đã có.
     ("channel", "niches", "ALTER TABLE channel ADD COLUMN niches TEXT NOT NULL DEFAULT '[]'"),
+    ("channel", "connection_id", "ALTER TABLE channel ADD COLUMN connection_id TEXT REFERENCES meta_connection(id)"),
+    ("channel", "external_account_id", "ALTER TABLE channel ADD COLUMN external_account_id TEXT"),
+    ("channel", "username", "ALTER TABLE channel ADD COLUMN username TEXT"),
+    ("channel", "enabled", "ALTER TABLE channel ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"),
+    ("channel", "last_sync_at", "ALTER TABLE channel ADD COLUMN last_sync_at TEXT"),
 ]
 
 

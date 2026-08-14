@@ -913,6 +913,9 @@ def test_migration_adds_column():
     row = c.execute("SELECT code, daily_post_cap, niches FROM channel").fetchone()
     check("dữ liệu cũ còn nguyên", row["code"] == "cu" and row["daily_post_cap"] == 9)
     check("cột mới có giá trị mặc định rỗng", row["niches"] == "[]", row["niches"])
+    row2 = c.execute("SELECT enabled, connection_id FROM channel").fetchone()
+    check("cột enabled có giá trị mặc định 1 trên dữ liệu cũ", row2["enabled"] == 1, row2["enabled"])
+    check("cột connection_id NULL trên dữ liệu cũ", row2["connection_id"] is None)
     c.close()
 
 
