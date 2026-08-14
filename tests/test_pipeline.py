@@ -293,6 +293,41 @@ def test_publish_post_authorror_marks_channel():
     conn.close()
 
 
+def test_retry_publish_target():
+    print("\nThử lại publish_target lỗi")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(31))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=31)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    res = pipeline.approve_post(conn, post["id"])
+    target_id = res["publish_target_id"]
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?", (now(), f"pub:{target_id}"))
+
+    failing = MockThreads(fail_rate=1.0, seed=32)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": failing}})
+    target = conn.execute("SELECT status FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("target FAILED trước khi retry", target["status"] == "FAILED", target["status"])
+
+    bad = pipeline.retry_publish_target(conn, "khong-ton-tai")
+    check("retry target không tồn tại báo lỗi", bad["ok"] is False)
+
+    res2 = pipeline.retry_publish_target(conn, target_id)
+    check("retry tạo job mới", res2["ok"] and res2["job_id"], res2)
+    again = pipeline.retry_publish_target(conn, target_id)
+    check("retry lần hai khi đang PENDING bị chặn", again["ok"] is False, again)
+
+    conn.execute("UPDATE job_queue SET run_after=? WHERE id=?", (now(), res2["job_id"]))
+    ok_publisher = MockThreads(seed=33)  # publisher khác, không lỗi -- mô phỏng sự cố đã hết
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": ok_publisher}})
+    target = conn.execute("SELECT status, external_post_id FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    check("retry thành công thì target SUCCESS", target["status"] == "SUCCESS" and target["external_post_id"], dict(target))
+
+    n_targets = conn.execute("SELECT COUNT(*) FROM publish_target WHERE post_id=?", (post["id"],)).fetchone()[0]
+    check("retry không tạo publish_target mới", n_targets == 1, n_targets)
+    conn.close()
+
+
 def test_db_constraints():
     print("\nRàng buộc cơ sở dữ liệu")
     import sqlite3
@@ -374,6 +409,7 @@ if __name__ == "__main__":
     test_daily_cap()
     test_publish_target_failure_semantics()
     test_publish_post_authorror_marks_channel()
+    test_retry_publish_target()
     test_db_constraints()
     test_publish_target_schema()
     test_publisher_media_list()

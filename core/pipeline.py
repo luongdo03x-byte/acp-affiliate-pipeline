@@ -330,6 +330,25 @@ def reject_post(conn, post_id: str, reason: str, actor: str = "operator") -> dic
     return {"ok": True}
 
 
+def retry_publish_target(conn, target_id: str, actor: str = "operator") -> dict:
+    """Chỉ retry khi FAILED. Reset về PENDING, enqueue lại đúng target đó --
+    không tạo publish_target mới, không đụng target khác của cùng post."""
+    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    if not target:
+        return {"ok": False, "error": "Không tìm thấy publish_target"}
+    if target["status"] != "FAILED":
+        return {"ok": False, "error": f"Chỉ retry được target FAILED, hiện tại là {target['status']}"}
+
+    conn.execute("UPDATE publish_target SET status='PENDING', updated_at=? WHERE id=?", (now(), target_id))
+    retry_key = f"pub:{target_id}:retry:{target['attempt_count']}"
+    job_id = enqueue(conn, "PUBLISH_POST",
+                      {"publish_target_id": target_id, "post_id": target["post_id"], "channel_id": target["channel_id"]},
+                      priority=50, idempotency_key=retry_key)
+    audit(conn, "publish_target", target_id, "retry", actor=actor,
+          detail={"attempt_count": target["attempt_count"]})
+    return {"ok": True, "job_id": job_id}
+
+
 def _next_slot(conn, channel_id: str) -> str:
     """Giãn cách tối thiểu giữa hai bài cùng kênh. Trần mềm 8-15 bài/ngày không
     phải để né gì -- đăng dày hơn thì chất lượng feed giảm và người theo dõi bỏ đi."""
