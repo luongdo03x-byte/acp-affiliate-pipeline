@@ -121,6 +121,42 @@ def test_conversion_dedup():
     conn.close()
 
 
+def test_update_insights_empty_dict_noop():
+    print("\nupdate_insights bỏ qua dict rỗng (FB/IG chưa trả insight thật)")
+    conn = connect()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+
+    # Publisher fallback (Publisher.fetch_insights mặc định) trả {} -- không được
+    # tạo ra một dòng post_metrics toàn số 0 trông như thể đã đo đạc thật.
+    attribution.update_insights(conn, post_id, {})
+    row = conn.execute("SELECT * FROM post_metrics WHERE post_id=?", (post_id,)).fetchone()
+    check("dict rỗng không tạo dòng post_metrics", row is None, row)
+
+    # Đã có số liệu thật từ trước -- một lần gọi rỗng về sau (vd. lần fetch tiếp
+    # theo lỗi mạng) không được xoá sạch về 0.
+    attribution.update_insights(conn, post_id, {"views": 100, "likes": 5, "replies": 2, "reposts": 1})
+    row = conn.execute("SELECT * FROM post_metrics WHERE post_id=?", (post_id,)).fetchone()
+    check("dict có số liệu thật vẫn ghi đúng views/likes/replies/reposts",
+          row is not None and (row["views"], row["likes"], row["replies"], row["reposts"]) == (100, 5, 2, 1),
+          dict(row) if row else None)
+
+    attribution.update_insights(conn, post_id, {})
+    row = conn.execute("SELECT * FROM post_metrics WHERE post_id=?", (post_id,)).fetchone()
+    check("dict rỗng gọi sau đó không ghi đè số liệu thật đã có về 0",
+          (row["views"], row["likes"], row["replies"], row["reposts"]) == (100, 5, 2, 1),
+          dict(row) if row else None)
+    conn.close()
+
+
 def test_job_retry_semantics():
     print("\nNgữ nghĩa retry")
 
@@ -1097,6 +1133,7 @@ if __name__ == "__main__":
     test_scoring()
     test_subid_roundtrip()
     test_conversion_dedup()
+    test_update_insights_empty_dict_noop()
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_daily_cap()
