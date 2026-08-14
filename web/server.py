@@ -22,6 +22,7 @@ from ..adapters.shopee_affiliate import (
     ProductMetadata, ResolvedAffiliateUrl,
 )
 from ..core import attribution, jobs, pipeline, scoring, storage
+from ..core import connections
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -493,6 +494,59 @@ def create_app():
     @app.route("/oauth/threads/delete/status")
     def oauth_delete_status():
         return jsonify(status="completed", code=request.args.get("code", "")), 200
+
+    # ------------------------------------------------ OAuth Meta (Facebook/IG)
+
+    @app.route("/oauth/meta/start")
+    def oauth_meta_start():
+        """Bắt đầu Facebook Login. Khác Threads: route này và callback đều bắt
+        buộc đăng nhập ACP trước, dù nằm dưới prefix /oauth/ công khai --
+        kiểm tra thủ công ở đây vì đây là hành động quản trị (thêm account có
+        thể publish), không phải webhook/redirect không mang session như
+        Threads deauthorize."""
+        if admin_password and not session.get("uid"):
+            return redirect(url_for("login", next="/oauth/meta/start"))
+        state = secrets.token_urlsafe(24)
+        session["meta_oauth_state"] = state
+        redirect_uri = request.host_url.rstrip("/") + "/oauth/meta/callback"
+        svc = factory.get_meta_connection_service()
+        return redirect(svc.oauth_authorize_url(state, redirect_uri))
+
+    @app.route("/oauth/meta/callback")
+    def oauth_meta_callback():
+        if admin_password and not session.get("uid"):
+            return redirect(url_for("login", next="/oauth/meta/start"))
+        err = request.args.get("error_description") or request.args.get("error")
+        if err:
+            return redirect(url_for("channels", err=err))
+        code = request.args.get("code", "")
+        state = request.args.get("state", "")
+        expected = session.get("meta_oauth_state", "")
+        if not code or not state or not expected or not hmac.compare_digest(state, expected):
+            abort(400, "State OAuth không hợp lệ")
+        session.pop("meta_oauth_state", None)
+
+        redirect_uri = request.host_url.rstrip("/") + "/oauth/meta/callback"
+        svc = factory.get_meta_connection_service()
+        conn = connect()
+        res = connections.connect_meta_account(conn, svc, code, redirect_uri, actor="operator")
+        conn.close()
+        if not res.get("ok"):
+            return redirect(url_for("channels", err=res.get("error")))
+        return redirect(url_for("channels",
+                                summary=f"Đã import {res['imported']} account, cập nhật {res['updated']}"))
+
+    @app.route("/kenh/meta/sync", methods=["POST"])
+    def kenh_meta_sync():
+        conn = connect()
+        connection = conn.execute("SELECT id FROM meta_connection ORDER BY created_at DESC LIMIT 1").fetchone()
+        if not connection:
+            conn.close()
+            return redirect(url_for("channels", err="Chưa kết nối Meta"))
+        svc = factory.get_meta_connection_service()
+        res = connections.sync_meta_accounts(conn, svc, connection["id"], actor="operator")
+        conn.close()
+        return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
     @app.route("/api/funnel")
     def api_funnel():

@@ -857,6 +857,52 @@ def test_shopee_edge_hardening():
         check("chặn URL ảnh trả HTML", True)
 
 
+def test_oauth_meta_routes():
+    print("\nRoute OAuth Meta")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    check("/oauth/meta/start yêu cầu đăng nhập",
+          c.get("/oauth/meta/start", follow_redirects=False).status_code == 302)
+
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    start = c.get("/oauth/meta/start", follow_redirects=False)
+    check("start redirect sang Meta", start.status_code == 302, start.status_code)
+    check("start redirect chứa state", "state=" in start.location, start.location)
+    with c.session_transaction() as sess:
+        check("state được lưu vào session", bool(sess.get("meta_oauth_state")))
+        real_state = sess["meta_oauth_state"]
+
+    bad = c.get(f"/oauth/meta/callback?code=abc&state=sai-state", follow_redirects=False)
+    check("callback state sai bị từ chối", bad.status_code == 400, bad.status_code)
+
+    ok = c.get(f"/oauth/meta/callback?code=abc&state={real_state}", follow_redirects=False)
+    check("callback state đúng thành công, redirect /kenh", ok.status_code == 302 and "/kenh" in ok.location,
+          (ok.status_code, ok.location))
+
+    conn = connect()
+    n_channels = conn.execute("SELECT COUNT(*) FROM channel WHERE platform IN ('facebook','instagram')").fetchone()[0]
+    check("import được account qua route thật", n_channels == 3, n_channels)
+    connection = conn.execute("SELECT id FROM meta_connection LIMIT 1").fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    sync = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    check("đồng bộ lại thành công, redirect /kenh", sync.status_code == 302 and "/kenh" in sync.location,
+          (sync.status_code, sync.location))
+
+    no_csrf = c.post("/kenh/meta/sync", data={})
+    check("đồng bộ thiếu CSRF bị chặn", no_csrf.status_code == 400, no_csrf.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_production_guard():
     print("\nChặn cấu hình thiếu an toàn ở production")
     os.environ["ACP_ENV"] = "production"
@@ -1153,6 +1199,7 @@ if __name__ == "__main__":
     test_shopee_edge_hardening()
     test_web_security()
     test_publish_target_retry_route()
+    test_oauth_meta_routes()
     test_production_guard()
     test_meta_account_import_and_sync()
     test_meta_sync_marks_vanished_account_reconnect_required()
