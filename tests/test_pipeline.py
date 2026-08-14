@@ -620,6 +620,36 @@ def test_meta_connection_schema():
     conn.close()
 
 
+def test_disabled_channel_blocks_new_publish():
+    print("\nKênh tắt (enabled=0) không tạo publish job mới")
+    conn = connect()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (channel["id"],))
+
+    # Tạo thẳng một post PENDING_REVIEW gắn với kênh đã tắt -- không phụ
+    # thuộc vào chấm điểm/random để chắc chắn đúng kênh cần test.
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, status, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,'PENDING_REVIEW',?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+
+    res = pipeline.approve_post(conn, post_id)
+    check("approve_post từ chối kênh đã tắt", res["ok"] is False, res)
+    check("không tạo publish_target khi bị từ chối",
+          conn.execute("SELECT COUNT(*) FROM publish_target WHERE post_id=?",
+                       (post_id,)).fetchone()[0] == 0)
+    check("post vẫn ở PENDING_REVIEW, chưa bị đổi sang SCHEDULED",
+          conn.execute("SELECT status FROM post WHERE id=?", (post_id,)).fetchone()["status"]
+          == "PENDING_REVIEW")
+
+    conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (channel["id"],))
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -642,6 +672,7 @@ if __name__ == "__main__":
     test_publish_target_schema()
     test_publisher_media_list()
     test_meta_connection_schema()
+    test_disabled_channel_blocks_new_publish()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

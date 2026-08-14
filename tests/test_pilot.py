@@ -943,6 +943,30 @@ def test_channel_enable_disable_route():
         os.environ.pop(var, None)
 
 
+def test_product_dropdown_only_shows_threads():
+    print("\nDropdown /sanpham chỉ hiện kênh Threads")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (ulid(), "fb_test_dropdown", "facebook", "Fake Page", "ACTIVE", 1, now()))
+    conn.close()
+
+    page = c.get("/sanpham")
+    body = page.get_data(as_text=True)
+    check("dropdown KHÔNG chứa kênh facebook mới tạo", "Fake Page" not in body, "leaked into dropdown")
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_production_guard():
     print("\nChặn cấu hình thiếu an toàn ở production")
     os.environ["ACP_ENV"] = "production"
@@ -1241,6 +1265,7 @@ if __name__ == "__main__":
     test_publish_target_retry_route()
     test_oauth_meta_routes()
     test_channel_enable_disable_route()
+    test_product_dropdown_only_shows_threads()
     test_production_guard()
     test_meta_account_import_and_sync()
     test_meta_sync_marks_vanished_account_reconnect_required()

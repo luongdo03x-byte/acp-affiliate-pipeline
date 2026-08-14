@@ -299,6 +299,9 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
+    channel = conn.execute("SELECT enabled FROM channel WHERE id=?", (post["channel_id"],)).fetchone()
+    if channel and not channel["enabled"]:
+        return {"ok": False, "error": "Kênh của bài này đang bị tắt (disabled), không thể duyệt"}
     caption = caption_override or post["caption_final"]
     problems = content.validate(caption, niches=channel_niches(conn, post["channel_id"]))
     if problems:

@@ -143,7 +143,8 @@ def create_app():
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
         channels = [dict(r) for r in conn.execute(
-            "SELECT code, handle FROM channel WHERE status='ACTIVE' ORDER BY code").fetchall()]
+            "SELECT code, handle FROM channel WHERE status='ACTIVE' AND platform='threads' "
+            "ORDER BY code").fetchall()]
         conn.close()
         return pending, channels
 
