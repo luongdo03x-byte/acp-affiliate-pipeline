@@ -19,7 +19,7 @@ db.DB_PATH = os.environ["ACP_DB"]
 
 from acp.adapters.base import ContentViolationError, PublishError, RateLimitError  # noqa: E402
 from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockInstagramPublisher, MockThreads  # noqa: E402
-from acp.core import attribution, content, crypto, imaging, jobs, pipeline, scoring  # noqa: E402
+from acp.core import attribution, content, crypto, imaging, jobs, media_library, pipeline, scoring  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 PASS, FAIL = [], []
@@ -1994,6 +1994,85 @@ def test_media_asset_and_post_media_schema():
     conn.close()
 
 
+def test_media_library_validates_and_stores_uploaded_bytes():
+    print("\nmedia_library.materialize_uploaded_file xác thực đúng ảnh thật, lưu file cục bộ")
+    from io import BytesIO
+    from PIL import Image
+
+    class _FakeFileStorage:
+        def __init__(self, data: bytes):
+            self._data = data
+        def read(self):
+            return self._data
+
+    img = Image.new("RGB", (10, 10), (200, 100, 50))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    tmp_dir = tempfile.mkdtemp()
+
+    local_path = media_library.materialize_uploaded_file(_FakeFileStorage(buf.getvalue()), tmp_dir)
+    check("file được lưu đúng thư mục", local_path.startswith(tmp_dir), local_path)
+    check("file lưu đúng đuôi .png theo định dạng thật", local_path.endswith(".png"), local_path)
+    check("file tồn tại thật trên đĩa", os.path.exists(local_path), local_path)
+
+    try:
+        media_library.materialize_uploaded_file(_FakeFileStorage(b"khong phai anh"), tmp_dir)
+        check("dữ liệu không phải ảnh bị từ chối", False, "lọt qua xác thực")
+    except media_library.MediaValidationError:
+        check("dữ liệu không phải ảnh bị từ chối", True)
+
+
+def test_media_library_create_list_delete_asset():
+    print("\nmedia_library: tạo/liệt kê/xoá asset, chặn xoá khi còn post_media tham chiếu")
+    from PIL import Image
+    from io import BytesIO
+
+    class _FakeStorage:
+        def put(self, local_path):
+            return f"https://fake-storage.example/{os.path.basename(local_path)}"
+
+    img = Image.new("RGB", (10, 10), (10, 20, 30))
+    buf = BytesIO()
+    img.save(buf, format="JPEG")
+    tmp_dir = tempfile.mkdtemp()
+    local_path = os.path.join(tmp_dir, "test_asset.jpg")
+    with open(local_path, "wb") as fh:
+        fh.write(buf.getvalue())
+
+    conn = connect()
+    asset = media_library.create_media_asset(conn, local_path, "upload", _FakeStorage())
+    check("create_media_asset trả đúng dict", asset["source"] == "upload" and asset["url"], asset)
+    row = conn.execute("SELECT * FROM media_asset WHERE id=?", (asset["id"],)).fetchone()
+    check("media_asset được ghi vào CSDL", row is not None and row["url"] == asset["url"], dict(row) if row else None)
+
+    assets = media_library.list_media_assets(conn)
+    check("list_media_assets thấy asset vừa tạo", any(a["id"] == asset["id"] for a in assets), len(assets))
+
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+    conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",
+                 (post_id, asset["id"], 1))
+
+    res = media_library.delete_media_asset(conn, asset["id"])
+    check("xoá bị chặn khi còn post_media tham chiếu", res["ok"] is False and "1" in res["error"], res)
+    still_there = conn.execute("SELECT 1 FROM media_asset WHERE id=?", (asset["id"],)).fetchone()
+    check("asset vẫn còn trong CSDL sau khi xoá bị chặn", still_there is not None)
+
+    conn.execute("DELETE FROM post_media WHERE post_id=? AND media_asset_id=?", (post_id, asset["id"]))
+    res2 = media_library.delete_media_asset(conn, asset["id"])
+    check("xoá thành công khi không còn ai dùng", res2["ok"], res2)
+    gone = conn.execute("SELECT 1 FROM media_asset WHERE id=?", (asset["id"],)).fetchone()
+    check("asset đã bị xoá khỏi CSDL", gone is None)
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2056,6 +2135,8 @@ if __name__ == "__main__":
     test_approve_post_validates_fresh_caption_facebook_not_stale_db_value()
     test_publish_post_uses_resolved_caption_per_target()
     test_media_asset_and_post_media_schema()
+    test_media_library_validates_and_stores_uploaded_bytes()
+    test_media_library_create_list_delete_asset()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
