@@ -1785,6 +1785,78 @@ def test_approve_post_validates_each_caption_group_separately():
         conn.close()
 
 
+def test_approve_post_group_niches_not_leaked_across_groups():
+    print("\napprove_post: niches của 1 nhóm KHÔNG được lẫn sang nhóm khác (phân biệt với union kiểu D1)")
+    conn = connect()
+    b_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (b_id, "b_group_isolation_test", "facebook", "B Group Isolation", "ACTIVE", 1, 12, 0,
+                  json.dumps(["my-pham"]), now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(115))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=115)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+        a_id = post["channel_id"]  # channel A: không có niches nào (mặc định '[]')
+
+        link = "https://go.isclix.com/x?sub1=abc"
+        # Kênh A (không niches) nhận caption chứa "trị mụn" -- cụm này CHỈ bị
+        # cấm với niche "my-pham", A không có niche đó nên phải QUA được. Kênh
+        # B có niches=["my-pham"] nhưng nhận caption hoàn toàn sạch, không
+        # chứa cụm cấm nào -- B cũng phải qua. Nếu code lỡ hợp (union) niches
+        # của TOÀN BỘ kênh được chọn (kiểu D1 cũ) thay vì chỉ niches trong
+        # từng nhóm riêng, "my-pham" từ B sẽ lẫn sang nhóm của A và chặn oan
+        # caption của A -- test này phân biệt được 2 hành vi, không giống
+        # test_approve_post_validates_each_caption_group_separately (ở đó A
+        # không có caption riêng nên không thể lộ ra sự khác biệt).
+        caption_a = f"Kem trị mụn hiệu quả\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        caption_b = f"Ưu đãi hôm nay\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[a_id, b_id],
+                                    caption_overrides={a_id: caption_a, b_id: caption_b})
+        check("cả 2 kênh đều qua -- niches của B không lẫn sang nhóm của A", res["ok"], res)
+
+        targets = conn.execute("SELECT channel_id FROM publish_target WHERE post_id=?", (post["id"],)).fetchall()
+        check("tạo đủ 2 publish_target (không bị chặn oan)", len(targets) == 2, [dict(t) for t in targets])
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (b_id,))
+        conn.close()
+
+
+def test_approve_post_validates_fresh_caption_facebook_not_stale_db_value():
+    print("\napprove_post: validate dùng caption_facebook MỚI truyền vào lần này, không phải giá trị cũ đã lưu")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_fresh_not_stale_test", "facebook", "FB Fresh Not Stale", "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(116))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=116)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+
+        # Gài sẵn giá trị caption_facebook CŨ trong CSDL, cố tình thiếu link
+        # affiliate để chắc chắn nó không qua được validate nếu bị dùng nhầm.
+        conn.execute("UPDATE post SET caption_facebook=? WHERE id=?",
+                     ("Caption cũ thiếu link affiliate", post["id"]))
+
+        link = "https://go.isclix.com/x?sub1=abc"
+        fresh_caption = f"Caption facebook MỚI truyền vào lần duyệt này\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[fb_id], caption_facebook=fresh_caption)
+        check("duyệt thành công -- validate phải dùng caption_facebook MỚI, không phải giá trị cũ trong CSDL",
+              res["ok"], res)
+
+        post_after = conn.execute("SELECT caption_facebook FROM post WHERE id=?", (post["id"],)).fetchone()
+        check("CSDL lưu đúng giá trị MỚI, không còn giá trị cũ",
+              post_after["caption_facebook"] == fresh_caption, dict(post_after))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -1842,6 +1914,8 @@ if __name__ == "__main__":
     test_approve_post_empty_string_clears_platform_caption()
     test_approve_post_channel_overrides_saved_to_publish_target()
     test_approve_post_validates_each_caption_group_separately()
+    test_approve_post_group_niches_not_leaked_across_groups()
+    test_approve_post_validates_fresh_caption_facebook_not_stale_db_value()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
