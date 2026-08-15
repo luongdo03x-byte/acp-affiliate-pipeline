@@ -611,6 +611,108 @@ def test_sibling_target_not_cancelled_after_first_target_publishes():
         conn.close()
 
 
+def test_content_violation_does_not_unpublish_already_published_post():
+    print("\nKênh B bị từ chối nội dung KHÔNG được rút bài đã đăng thành công ở kênh A")
+    from acp.adapters.base import ContentViolationError as _CVE
+
+    class _ViolationPublisher(MockFacebookPublisher):
+        def publish(self, channel_row, caption, media=None):
+            raise _CVE("nội dung vi phạm chính sách nền tảng")
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_violation_test", "facebook", "FB Violation Test", "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(141))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=141)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+
+        # Target A (threads) chạy trước và thành công -> post.status = PUBLISHED.
+        res = pipeline.approve_post(conn, post["id"])
+        check("duyệt thành công", res["ok"], res)
+        target_a_id = res["publish_target_id"]
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                     (now(), f"pub:{target_a_id}"))
+
+        # Target B (facebook) thủ công, run_after đặt XA trong tương lai để chắc
+        # chắn không chạy chung lượt drain với target A.
+        future = (datetime.fromisoformat(now()) + timedelta(hours=1)).isoformat(timespec="seconds")
+        target_b_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        scheduled_at, created_at, updated_at)
+                        VALUES (?,?,?,'SCHEDULED',?,?,?)""",
+                     (target_b_id, post["id"], fb_id, future, now(), now()))
+        jobs.enqueue(conn, "PUBLISH_POST",
+                     {"publish_target_id": target_b_id, "post_id": post["id"], "channel_id": fb_id},
+                     run_after=future, idempotency_key=f"pub:{target_b_id}")
+
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=142),
+                                             "facebook": MockFacebookPublisher(seed=143)}})
+        post_after_a = conn.execute("SELECT status, published_at FROM post WHERE id=?",
+                                    (post["id"],)).fetchone()
+        check("post.status = PUBLISHED sau khi target A thành công",
+              post_after_a["status"] == "PUBLISHED", post_after_a["status"])
+        check("published_at đã được ghi", bool(post_after_a["published_at"]), post_after_a["published_at"])
+
+        # Lượt 2: target B bị nền tảng từ chối nội dung.
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                     (now(), f"pub:{target_b_id}"))
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=144),
+                                             "facebook": _ViolationPublisher(seed=145)}})
+
+        post_after_b = conn.execute("SELECT status, published_at FROM post WHERE id=?",
+                                    (post["id"],)).fetchone()
+        check("post VẪN là PUBLISHED, không bị đẩy về PENDING_REVIEW vì kênh B vi phạm",
+              post_after_b["status"] == "PUBLISHED", post_after_b["status"])
+        check("published_at vẫn còn nguyên", bool(post_after_b["published_at"]), post_after_b["published_at"])
+
+        target_b_after = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (target_b_id,)).fetchone()
+        check("target B FAILED (vi phạm vẫn được ghi lại ở đúng target)",
+              target_b_after["status"] == "FAILED", dict(target_b_after))
+        check("target B có last_error giải thích lý do", bool(target_b_after["last_error"]),
+              target_b_after["last_error"])
+        target_a_after = conn.execute(
+            "SELECT status FROM publish_target WHERE id=?", (target_a_id,)).fetchone()
+        check("target A vẫn SUCCESS", target_a_after["status"] == "SUCCESS", target_a_after["status"])
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_generate_content_writes_post_channel_selection():
+    print("\nBài do pipeline TỰ ĐỘNG sinh cũng phải có post_channel_selection")
+    conn = connect()
+    before = {r["id"] for r in conn.execute("SELECT id FROM post").fetchall()}
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(151))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=151)}})
+    new_ids = [r["id"] for r in conn.execute("SELECT id FROM post").fetchall() if r["id"] not in before]
+    check("pipeline tự động tạo được ít nhất 1 bài mới", len(new_ids) >= 1, new_ids)
+
+    for post_id in new_ids:
+        post = conn.execute("SELECT channel_id FROM post WHERE id=?", (post_id,)).fetchone()
+        rows = conn.execute("SELECT channel_id FROM post_channel_selection WHERE post_id=?",
+                            (post_id,)).fetchall()
+        check("có đúng 1 dòng post_channel_selection cho bài tự động",
+              len(rows) == 1, [dict(r) for r in rows])
+        check("channel_id khớp post.channel_id",
+              len(rows) == 1 and rows[0]["channel_id"] == post["channel_id"],
+              (post["channel_id"], [dict(r) for r in rows]))
+
+    # Đọc lại qua đúng helper mà /duyet dùng để dựng checklist.
+    sels = pipeline.post_channel_selections(conn, new_ids)
+    check("post_channel_selections() trả checklist không rỗng cho mọi bài tự động",
+          all(sels.get(pid) for pid in new_ids), {k: len(v) for k, v in sels.items()})
+    conn.close()
+
+
 def test_fetch_insights_idempotency_key_per_target_not_per_post():
     print("\nFETCH_INSIGHTS của 2 target cùng post không bị coi trùng idempotency")
     conn = connect()
@@ -1554,6 +1656,8 @@ if __name__ == "__main__":
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()
     test_sibling_target_not_cancelled_after_first_target_publishes()
+    test_content_violation_does_not_unpublish_already_published_post()
+    test_generate_content_writes_post_channel_selection()
     test_fetch_insights_idempotency_key_per_target_not_per_post()
     test_approve_post_multi_channel_creates_n_targets()
     test_approve_post_channel_ids_none_falls_back_to_post_channel_id()
