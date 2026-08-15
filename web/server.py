@@ -378,20 +378,32 @@ def create_app():
             LEFT JOIN caption_template t ON t.id = p.caption_template_id
             WHERE p.status IN ('PENDING_REVIEW', 'DRAFT')
             ORDER BY p.created_at DESC""").fetchall()]
+        selections = pipeline.post_channel_selections(conn, [r["id"] for r in rows])
+        for r in rows:
+            r["selected_channels"] = selections.get(r["id"], [])
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p JOIN product pr ON pr.id = p.product_id
             WHERE p.status IN ('SCHEDULED','PUBLISHED','REJECTED')
             ORDER BY p.updated_at DESC LIMIT 8""").fetchall()]
         conn.close()
-        return render_template("review.html", page="duyet", posts=rows, recent=recent)
+        return render_template("review.html", page="duyet", posts=rows, recent=recent,
+                               platform_labels=PLATFORM_LABELS)
 
     @app.route("/duyet/<post_id>/<action>", methods=["POST"])
     def review_action(post_id, action):
         conn = connect()
         if action == "approve":
-            res = pipeline.approve_post(conn, post_id, actor="operator",
-                                        caption_override=request.form.get("caption") or None)
+            channel_ids = request.form.getlist("channel_ids")
+            if not channel_ids:
+                # Checklist rỗng nghĩa là operator bỏ tích hết -- CHẶN, không
+                # được âm thầm rơi về fallback 1-kênh của approve_post() (đó
+                # là dành cho caller cũ gọi trực tiếp, không phải cho form này).
+                res = {"ok": False, "error": "Chọn ít nhất 1 kênh trước khi duyệt"}
+            else:
+                res = pipeline.approve_post(conn, post_id, actor="operator",
+                                            caption_override=request.form.get("caption") or None,
+                                            channel_ids=channel_ids)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
         else:
