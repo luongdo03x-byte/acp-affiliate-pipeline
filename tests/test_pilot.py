@@ -977,8 +977,8 @@ def test_channel_enable_disable_route():
         os.environ.pop(var, None)
 
 
-def test_product_dropdown_only_shows_threads():
-    print("\nDropdown /sanpham chỉ hiện kênh Threads")
+def test_product_checklist_shows_all_platforms():
+    print("\nChecklist /sanpham hiện đủ các nền tảng (threads/facebook/instagram), không chỉ Threads")
     os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
     os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
     from acp.web.server import create_app
@@ -990,12 +990,15 @@ def test_product_dropdown_only_shows_threads():
     conn = connect()
     conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
                     VALUES (?,?,?,?,?,?,?)""",
-                 (ulid(), "fb_test_dropdown", "facebook", "Fake Page", "ACTIVE", 1, now()))
+                 (ulid(), "fb_test_checklist", "facebook", "Fake Page", "ACTIVE", 1, now()))
     conn.close()
 
     page = c.get("/sanpham")
     body = page.get_data(as_text=True)
-    check("dropdown KHÔNG chứa kênh facebook mới tạo", "Fake Page" not in body, "leaked into dropdown")
+    check("checklist CÓ chứa kênh facebook (D1: đa nền tảng, không chỉ Threads)",
+          "Fake Page" in body, "không thấy trong checklist")
+    check("checklist dùng tên trường channel_codes (checkbox, không phải select đơn)",
+          'name="channel_codes"' in body, body[:300])
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)
@@ -1473,8 +1476,8 @@ def test_kenh_meta_sync_syncs_all_connections():
         os.environ.pop(var, None)
 
 
-def test_create_affiliate_product_rejects_non_threads_channel():
-    print("\ncreate_affiliate_product từ chối kênh không phải Threads dù ACTIVE+enabled")
+def test_create_affiliate_product_accepts_facebook_channel():
+    print("\ncreate_affiliate_product CHẤP NHẬN kênh Facebook qua checklist channel_codes (D1)")
     os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
     os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
     from acp.web.server import create_app
@@ -1486,8 +1489,33 @@ def test_create_affiliate_product_rejects_non_threads_channel():
     conn = connect()
     conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
                     VALUES (?,?,?,?,?,?,?)""",
-                 (ulid(), "fb_reject_test", "facebook", "FB Reject", "ACTIVE", 1, now()))
+                 (ulid(), "fb_accept_test", "facebook", "FB Accept", "ACTIVE", 1, now()))
     conn.close()
+
+    # Tránh gọi HTTP thật ra ngoài -- image_url dùng miền img.example (RFC 2606,
+    # không bao giờ resolve DNS), giống cách test_web_security() đã làm với
+    # _FakeManualShopee. Mục tiêu test này là kiểm chứng route/pipeline chấp
+    # nhận channel_codes Facebook, không phải kiểm chứng tải ảnh qua mạng thật.
+    from acp.adapters.base import RawProduct
+
+    class _FakeManualShopeeAccept:
+        name = "manual_shopee"
+
+        def validate_confirmed_urls(self, affiliate_url, product_url):
+            pass
+
+        def prepare_product(self, confirmed, media_dir):
+            return RawProduct(
+                external_product_id="789", name=confirmed.name,
+                current_price=confirmed.current_price, original_price=confirmed.original_price,
+                commission_value=0, commission_rate=None, category_code="khac",
+                product_url=confirmed.product_url, merchant="shopee.vn",
+                image_url_original=confirmed.image_url, image_path_local=None)
+
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeAccept()
 
     with c.session_transaction() as sess:
         csrf = sess["csrf"]
@@ -1498,13 +1526,10 @@ def test_create_affiliate_product_rejects_non_threads_channel():
         "name": "Váy hoa nữ test",
         "current_price": "289000",
         "image_url": "https://img.example/product.jpg",
-        "channel_code": "fb_reject_test",
+        "channel_codes": ["fb_accept_test"],
     })
-    check("gửi mã kênh Facebook bị từ chối như kênh không tồn tại/không hoạt động",
-          r.status_code == 400, r.status_code)
-    check("thông báo lỗi đúng như kênh không tồn tại/không hoạt động",
-          "Kênh Threads không tồn tại hoặc không hoạt động" in r.get_data(as_text=True),
-          r.get_data(as_text=True)[:300])
+    check("gửi mã kênh Facebook được chấp nhận, redirect sang /duyet",
+          r.status_code == 302 and "/duyet" in r.location, (r.status_code, getattr(r, "location", "")))
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)
@@ -1539,7 +1564,7 @@ if __name__ == "__main__":
     test_publish_target_retry_route()
     test_oauth_meta_routes()
     test_channel_enable_disable_route()
-    test_product_dropdown_only_shows_threads()
+    test_product_checklist_shows_all_platforms()
     test_production_guard()
     test_meta_account_import_and_sync()
     test_meta_sync_marks_vanished_account_reconnect_required()
@@ -1547,7 +1572,7 @@ if __name__ == "__main__":
     test_kenh_meta_sync_auth_error_marks_needs_reauth()
     test_oauth_meta_callback_nonascii_state_clean_400()
     test_kenh_meta_sync_syncs_all_connections()
-    test_create_affiliate_product_rejects_non_threads_channel()
+    test_create_affiliate_product_accepts_facebook_channel()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

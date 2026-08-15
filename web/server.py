@@ -31,6 +31,8 @@ MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # Đường không cần đăng nhập. Media phải mở vì Meta tự tải ảnh về khi publish.
 PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz")
 
+PLATFORM_LABELS = {"threads": "Threads", "facebook": "Facebook", "instagram": "Instagram"}
+
 
 def _fmt_vnd(v):
     try:
@@ -143,21 +145,24 @@ def create_app():
         conn = connect()
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        # D1: đa nền tảng -- bỏ lọc platform='threads', chỉ còn lọc kênh đang
+        # dùng được (ACTIVE + enabled). Thêm enabled=1 (thiếu ở bản cũ) vì kênh
+        # bị tắt ở /kenh thì không nên chọn được để tạo bài mới.
         channels = [dict(r) for r in conn.execute(
-            "SELECT code, handle FROM channel WHERE status='ACTIVE' AND platform='threads' "
-            "ORDER BY code").fetchall()]
+            "SELECT code, platform, handle FROM channel WHERE status='ACTIVE' AND enabled=1 "
+            "ORDER BY platform, code").fetchall()]
         conn.close()
         return pending, channels
 
     def _render_affiliate(*, affiliate_url="", resolved=None, metadata=None,
-                          err=None, warning=None, selected_channel=None, status=200):
+                          err=None, warning=None, selected_channels=None, status=200):
         pending, channels = _product_common_context()
         return render_template(
             "products.html", page="san-pham", mode="affiliate", items=[], q="", err=err,
             source_name="manual_shopee", pending_review=pending, channels=channels,
             affiliate_url=affiliate_url, resolved=resolved,
             metadata=metadata or ProductMetadata(), metadata_warning=warning,
-            selected_channel=selected_channel,
+            selected_channels=selected_channels or [], platform_labels=PLATFORM_LABELS,
         ), status
 
     @app.route("/sanpham")
@@ -183,20 +188,24 @@ def create_app():
             "products.html", page="san-pham", mode="search", items=items, q=q, err=err,
             source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
             pending_review=pending, channels=channels, resolved=None,
-            metadata=ProductMetadata(), affiliate_url="")
+            metadata=ProductMetadata(), affiliate_url="", platform_labels=PLATFORM_LABELS)
 
     @app.route("/sanpham/tao-bai", methods=["POST"])
     def create_from_product():
         external_id = request.form.get("external_product_id", "").strip()
         source_name = request.form.get("nguon") or None
         q = request.form.get("q", "")
+        channel_codes = request.form.getlist("channel_codes")
         if not external_id:
             return redirect(url_for("products", q=q, err="Thiếu mã sản phẩm"))
+        if not channel_codes:
+            return redirect(url_for("products", q=q, err="Chọn ít nhất 1 kênh"))
         conn = connect()
         try:
             res = pipeline.create_post_for_product(
                 conn, factory.build_context(source_name), external_id,
-                campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"))
+                campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
+                channel_codes=channel_codes)
         except Exception as e:
             conn.close()
             return redirect(url_for("products", q=q, err=str(e)))
@@ -232,7 +241,7 @@ def create_app():
         name = request.form.get("name", "").strip()
         image_url = request.form.get("image_url", "").strip()
         shop = request.form.get("shop", "").strip() or None
-        channel_code = request.form.get("channel_code", "").strip()
+        channel_codes = request.form.getlist("channel_codes")
 
         def _positive_int(value):
             text = str(value or "").strip().replace(" ", "")
@@ -261,23 +270,17 @@ def create_app():
             missing.append("giá lớn hơn 0")
         if not image_url:
             missing.append("URL ảnh")
-        if not channel_code:
-            missing.append("kênh Threads")
+        if not channel_codes:
+            missing.append("ít nhất 1 kênh")
         if missing:
             return _render_affiliate(
                 affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
-                selected_channel=channel_code,
+                selected_channels=channel_codes,
                 err="Thiếu hoặc không hợp lệ: " + ", ".join(missing), status=400)
 
         conn = connect()
-        channel = conn.execute(
-            "SELECT code FROM channel WHERE code=? AND status='ACTIVE' AND platform='threads'",
-            (channel_code,)).fetchone()
-        if not channel:
-            conn.close()
-            return _render_affiliate(
-                affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
-                selected_channel=channel_code, err="Kênh Threads không tồn tại hoặc không hoạt động.", status=400)
+        # Validate từng kênh nằm ở _create_post_from_raw_product (chung cho
+        # web lẫn mọi caller khác) -- không lặp lại logic ở đây nữa.
 
         try:
             source.validate_confirmed_urls(affiliate_url, product_url)
@@ -291,23 +294,23 @@ def create_app():
                 conn, {"storage": storage.get_storage()}, source, raw,
                 affiliate_url=affiliate_url,
                 campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
-                channel_code=channel_code)
+                channel_codes=channel_codes)
         except AffiliateImportError as exc:
             conn.close()
             return _render_affiliate(
                 affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
-                selected_channel=channel_code, err=str(exc), status=400)
+                selected_channels=channel_codes, err=str(exc), status=400)
         except Exception:
             conn.close()
             return _render_affiliate(
                 affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
-                selected_channel=channel_code,
+                selected_channels=channel_codes,
                 err="Không thể tạo bài nháp. Kiểm tra dữ liệu và thử lại.", status=500)
         conn.close()
         if not res.get("ok"):
             return _render_affiliate(
                 affiliate_url=affiliate_url, resolved=resolved, metadata=metadata,
-                selected_channel=channel_code, err=res.get("error") or "Không thể tạo bài nháp.", status=400)
+                selected_channels=channel_codes, err=res.get("error") or "Không thể tạo bài nháp.", status=400)
         return redirect(url_for("review"))
 
     # ------------------------------------------------------------- kênh
