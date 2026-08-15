@@ -1639,6 +1639,91 @@ def test_create_affiliate_product_accepts_facebook_channel():
         os.environ.pop(var, None)
 
 
+def test_duyet_approve_saves_caption_platform_and_override():
+    print("\n/duyet approve lưu đúng caption theo platform + override theo account, đăng đúng caption")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_duyet_caption_test", "facebook", "FB Duyệt Caption", "ACTIVE", 1, 12, 0, now()))
+    # Kênh Threads riêng cho test này: "ch1" của setup() có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH ở lúc chạy chung cả suite
+    # (xem test_duyet_approve_route_end_to_end() ở trên, cùng lý do), nên
+    # không dùng lại "ch1" làm kênh chính ở đây.
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_duyet_caption_test", "@duyet_caption_test", "uid_duyet_caption_test",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    # Tạo post qua create_post_for_product(channel_codes=[...]) (đã có từ D1)
+    # để post_channel_selection có SẴN cả Threads lẫn Facebook ngay từ lúc
+    # tạo -- nhờ vậy /duyet render field caption_facebook NGAY LẦN GET ĐẦU
+    # TIÊN, kiểm tra được tên field template render khớp với tên route đọc
+    # (D1 từng lọt 1 lỗi Critical vì route/template lệch nhau mà không test
+    # nào bắt được, xem đầu Task 6) mà không cần approve trước rồi mới có.
+    # Kênh Threads đứng đầu -> kênh chính (post.channel_id) là Threads,
+    # giống kịch bản thường gặp nhất.
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "gd2026",
+        channel_codes=["th_duyet_caption_test", "fb_duyet_caption_test"])
+    check("tạo bài đa kênh (facebook + threads) thành công", res.get("ok"), res.get("error"))
+    post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+    conn.close()
+
+    # Kiểm tra TEMPLATE thực sự render đúng tên field mà route sẽ đọc --
+    # không chỉ POST thẳng bằng tên field đúng sẵn.
+    page_before = c.get("/duyet")
+    body_before = page_before.get_data(as_text=True)
+    check("form /duyet render field caption_facebook (post có kênh facebook trong lựa chọn)",
+          'name="caption_facebook"' in body_before, body_before[:2000])
+    check("form /duyet render đúng field caption_override_<channel_id> cho account facebook",
+          f'name="caption_override_{fb_id}"' in body_before, body_before[:2000])
+
+    # caption_facebook đi qua content.validate() y hệt caption gốc (đủ nhãn
+    # tiếp thị liên kết + link) -- ghép từ nhãn mặc định và đúng link đã có
+    # trong caption gốc của bài (post["caption_final"] đã qua validate lúc
+    # tạo bài nên chắc chắn có 1 dòng link).
+    link_line = next(l for l in post["caption_final"].split("\n") if l.startswith("http"))
+    fb_caption = f"Caption Facebook riêng nhập từ /duyet. {content.DISCLOSURE_DEFAULT}\n\n{link_line}"
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [post["channel_id"], fb_id],
+        "caption_facebook": fb_caption,
+        f"caption_override_{fb_id}": "",
+    })
+    check("duyệt thành công, redirect về /duyet", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+
+    conn = connect()
+    post_after = conn.execute("SELECT caption_facebook FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("post.caption_facebook lưu đúng giá trị từ form",
+          post_after["caption_facebook"] == fb_caption, dict(post_after))
+    target_fb = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                             (post["id"], fb_id)).fetchone()
+    check("target facebook không có override (form gửi rỗng)", target_fb["caption_override"] is None, dict(target_fb))
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1678,6 +1763,7 @@ if __name__ == "__main__":
     test_kenh_meta_sync_syncs_all_connections()
     test_create_affiliate_product_accepts_facebook_channel()
     test_duyet_approve_route_end_to_end()
+    test_duyet_approve_saves_caption_platform_and_override()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

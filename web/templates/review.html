@@ -23,12 +23,26 @@
     {% if p.status == 'DRAFT' and p.reject_reason %}<div class="alert alert--error"><strong>Không đạt kiểm tra tự động.</strong><span>{{ p.reject_reason }}</span></div>{% endif %}
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-      <div class="field"><label for="caption-{{ p.id }}">Caption</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
+      <div class="field"><label for="caption-{{ p.id }}">Caption (gốc)</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
+      {% set platforms = p.selected_channels | map(attribute='platform') | unique | list %}
+      {% if 'facebook' in platforms %}
+      <div class="field"><label for="caption-fb-{{ p.id }}">Caption riêng cho Facebook (để trống = dùng caption gốc)</label>
+        <textarea id="caption-fb-{{ p.id }}" name="caption_facebook" rows="4">{{ p.caption_facebook or '' }}</textarea></div>
+      {% endif %}
+      {% if 'instagram' in platforms %}
+      <div class="field"><label for="caption-ig-{{ p.id }}">Caption riêng cho Instagram (để trống = dùng caption gốc)</label>
+        <textarea id="caption-ig-{{ p.id }}" name="caption_instagram" rows="4">{{ p.caption_instagram or '' }}</textarea></div>
+      {% endif %}
       <div class="field">
         <label>Kênh sẽ đăng (bỏ tích để không đăng lên kênh đó)</label>
         <div class="niche-grid">
         {% for sel in p.selected_channels %}
-          <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ sel.id }}" checked><span>[{{ platform_labels[sel.platform] }}] {{ sel.handle }}<small>{{ sel.code }}</small></span></label>
+          <div class="channel-caption-row">
+            <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ sel.id }}" checked><span>[{{ platform_labels[sel.platform] }}] {{ sel.handle }}<small>{{ sel.code }}</small></span></label>
+            <details><summary>✎ caption riêng cho account này</summary>
+              <textarea name="caption_override_{{ sel.id }}" rows="3" placeholder="Để trống = dùng caption theo platform/gốc"></textarea>
+            </details>
+          </div>
         {% endfor %}
         </div>
       </div>

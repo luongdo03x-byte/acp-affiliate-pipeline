@@ -410,9 +410,21 @@ def create_app():
                 # là dành cho caller cũ gọi trực tiếp, không phải cho form này).
                 res = {"ok": False, "error": "Chọn ít nhất 1 kênh trước khi duyệt"}
             else:
+                # request.form.get(...) không kèm default: None nếu field
+                # không có trong form (giữ nguyên giá trị cũ), chuỗi rỗng nếu
+                # có mặt nhưng để trống (xoá override) -- đúng ngữ nghĩa
+                # approve_post() cần, xem D2 spec §8.
+                caption_overrides = {}
+                for cid in channel_ids:
+                    val = request.form.get(f"caption_override_{cid}", "").strip()
+                    if val:
+                        caption_overrides[cid] = val
                 res = pipeline.approve_post(conn, post_id, actor="operator",
                                             caption_override=request.form.get("caption") or None,
-                                            channel_ids=channel_ids)
+                                            channel_ids=channel_ids,
+                                            caption_facebook=request.form.get("caption_facebook"),
+                                            caption_instagram=request.form.get("caption_instagram"),
+                                            caption_overrides=caption_overrides or None)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
         else:
