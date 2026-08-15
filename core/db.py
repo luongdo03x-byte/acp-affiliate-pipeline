@@ -166,6 +166,21 @@ CREATE TABLE IF NOT EXISTS post_channel_selection (
     PRIMARY KEY (post_id, channel_id)
 );
 
+CREATE TABLE IF NOT EXISTS media_asset (
+    id          TEXT PRIMARY KEY,
+    url         TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_media (
+    post_id         TEXT NOT NULL REFERENCES post(id),
+    media_asset_id  TEXT NOT NULL REFERENCES media_asset(id),
+    position        INTEGER NOT NULL,
+    PRIMARY KEY (post_id, media_asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id, position);
+
 CREATE TABLE IF NOT EXISTS meta_connection (
     id              TEXT PRIMARY KEY,
     provider        TEXT NOT NULL DEFAULT 'meta',

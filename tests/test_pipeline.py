@@ -1958,6 +1958,42 @@ def test_publish_post_uses_resolved_caption_per_target():
         conn.close()
 
 
+def test_media_asset_and_post_media_schema():
+    print("\nbảng media_asset + post_media đã có trong schema")
+    conn = connect()
+    asset_cols = {r["name"] for r in conn.execute("PRAGMA table_info(media_asset)").fetchall()}
+    check("media_asset có đủ cột", {"id", "url", "source", "created_at"} <= asset_cols, asset_cols)
+    pm_cols = {r["name"] for r in conn.execute("PRAGMA table_info(post_media)").fetchall()}
+    check("post_media có đủ cột", {"post_id", "media_asset_id", "position"} <= pm_cols, pm_cols)
+
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+    asset_id = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (asset_id, "https://cdn.example/a.jpg", "upload", now()))
+    conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",
+                 (post_id, asset_id, 1))
+    row = conn.execute("SELECT position FROM post_media WHERE post_id=? AND media_asset_id=?",
+                       (post_id, asset_id)).fetchone()
+    check("post_media lưu đúng position", row["position"] == 1, dict(row))
+
+    import sqlite3
+    try:
+        conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",
+                     (post_id, asset_id, 2))
+        check("PK (post_id, media_asset_id) chặn trùng lặp", False, "insert trùng lọt qua")
+    except sqlite3.IntegrityError as e:
+        check("PK (post_id, media_asset_id) chặn trùng lặp", "UNIQUE constraint failed" in str(e), str(e))
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2019,6 +2055,7 @@ if __name__ == "__main__":
     test_approve_post_group_niches_not_leaked_across_groups()
     test_approve_post_validates_fresh_caption_facebook_not_stale_db_value()
     test_publish_post_uses_resolved_caption_per_target()
+    test_media_asset_and_post_media_schema()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
