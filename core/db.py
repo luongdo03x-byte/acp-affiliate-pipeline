@@ -271,6 +271,9 @@ MIGRATIONS = [
     ("channel", "username", "ALTER TABLE channel ADD COLUMN username TEXT"),
     ("channel", "enabled", "ALTER TABLE channel ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"),
     ("channel", "last_sync_at", "ALTER TABLE channel ADD COLUMN last_sync_at TEXT"),
+    ("post", "caption_facebook", "ALTER TABLE post ADD COLUMN caption_facebook TEXT"),
+    ("post", "caption_instagram", "ALTER TABLE post ADD COLUMN caption_instagram TEXT"),
+    ("publish_target", "caption_override", "ALTER TABLE publish_target ADD COLUMN caption_override TEXT"),
 ]
 
 

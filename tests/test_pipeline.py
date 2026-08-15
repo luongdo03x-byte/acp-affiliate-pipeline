@@ -1636,6 +1636,17 @@ def test_disabled_channel_does_not_corrupt_status():
         conn.close()
 
 
+def test_caption_override_columns_exist():
+    print("\ncột caption theo platform/account đã có trong schema")
+    conn = connect()
+    post_cols = {r["name"] for r in conn.execute("PRAGMA table_info(post)").fetchall()}
+    check("post có cột caption_facebook", "caption_facebook" in post_cols, post_cols)
+    check("post có cột caption_instagram", "caption_instagram" in post_cols, post_cols)
+    target_cols = {r["name"] for r in conn.execute("PRAGMA table_info(publish_target)").fetchall()}
+    check("publish_target có cột caption_override", "caption_override" in target_cols, target_cols)
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -1686,6 +1697,7 @@ if __name__ == "__main__":
     test_publish_post_missing_publisher_fails_immediately()
     test_publish_post_blocks_disabled_channel()
     test_disabled_channel_does_not_corrupt_status()
+    test_caption_override_columns_exist()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
