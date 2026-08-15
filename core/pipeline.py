@@ -463,7 +463,16 @@ def publish_post(conn, payload, ctx):
     channel = conn.execute("SELECT * FROM channel WHERE id=?", (target["channel_id"],)).fetchone()
     if not post or not channel:
         raise ValueError("publish_target trỏ tới post/channel không tồn tại")
-    if post["status"] not in ("SCHEDULED", "APPROVED"):
+    # Blocklist chứ không phải allowlist: kể từ sub-project D một post có thể
+    # có N target trên N kênh khác nhau. Target đầu tiên publish thành công sẽ
+    # đẩy post.status sang PUBLISHED (dưới đây) -- các target còn lại (kênh
+    # khác) vẫn phải được publish bình thường, KHÔNG được coi PUBLISHED là
+    # "bài không còn đăng được" như trước đây (khi 1 post luôn chỉ có 1
+    # target). Chỉ thực sự huỷ khi post bị bounce khỏi trạng thái duyệt được:
+    # PENDING_REVIEW (một target khác gặp ContentViolationError), REJECTED,
+    # hoặc DRAFT (chưa từng qua duyệt). "APPROVED" trong điều kiện cũ chưa
+    # từng được set ở bất kỳ đâu trong code -- bỏ, không mất hành vi nào.
+    if post["status"] in ("PENDING_REVIEW", "REJECTED", "DRAFT"):
         _cancel_target_stale_post(conn, target["id"], post["status"])
         return
 

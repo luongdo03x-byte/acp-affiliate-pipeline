@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import tempfile
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -17,7 +18,7 @@ from acp.core import db  # noqa: E402
 db.DB_PATH = os.environ["ACP_DB"]
 
 from acp.adapters.base import ContentViolationError, PublishError, RateLimitError  # noqa: E402
-from acp.adapters.mock import MockAccessTrade, MockThreads  # noqa: E402
+from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockThreads  # noqa: E402
 from acp.core import attribution, content, crypto, jobs, pipeline, scoring  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
@@ -500,6 +501,71 @@ def test_publish_target_cancelled_on_stale_post_status():
     res3 = pipeline.retry_publish_target(conn, target_id)
     check("retry bị chặn rõ ràng khi target đã CANCELLED", res3["ok"] is False, res3)
     conn.close()
+
+
+def test_sibling_target_not_cancelled_after_first_target_publishes():
+    print("\nTarget B (kênh khác) không bị huỷ khi target A (kênh khác) cùng post đã publish trước")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_sibling_test", "facebook", "FB Sibling Test", "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(81))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=81)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        # approve_post() 1-kênh như hiện tại -- tạo target A trên ch1.
+        res = pipeline.approve_post(conn, post["id"])
+        check("duyệt thành công", res["ok"], res)
+        target_a_id = res["publish_target_id"]
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                     (now(), f"pub:{target_a_id}"))
+
+        # Target B thủ công trên kênh facebook, cùng post -- mô phỏng đúng
+        # trạng thái Task 7 sẽ tạo ra, mà không phụ thuộc approve_post đã sửa.
+        # run_after cố ý đặt XA trong tương lai để job B chắc chắn KHÔNG chạy
+        # ở lượt drain() đầu tiên -- tránh phụ thuộc vào thứ tự xử lý job cùng
+        # run_after mà job_queue không cam kết.
+        future = (datetime.fromisoformat(now()) + timedelta(hours=1)).isoformat(timespec="seconds")
+        target_b_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        scheduled_at, created_at, updated_at)
+                        VALUES (?,?,?,'SCHEDULED',?,?,?)""",
+                     (target_b_id, post["id"], fb_id, future, now(), now()))
+        jobs.enqueue(conn, "PUBLISH_POST",
+                     {"publish_target_id": target_b_id, "post_id": post["id"], "channel_id": fb_id},
+                     run_after=future, idempotency_key=f"pub:{target_b_id}")
+
+        # Lượt 1: chỉ job A sẵn sàng (job B còn ở tương lai) -- target A
+        # publish thành công, post.status -> PUBLISHED.
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=82), "facebook": MockFacebookPublisher(seed=83)}})
+
+        post_after_a = conn.execute("SELECT status FROM post WHERE id=?", (post["id"],)).fetchone()
+        check("post.status = PUBLISHED sau khi target A thành công",
+              post_after_a["status"] == "PUBLISHED", post_after_a["status"])
+        target_a_after = conn.execute(
+            "SELECT status FROM publish_target WHERE id=?", (target_a_id,)).fetchone()
+        check("target A SUCCESS", target_a_after["status"] == "SUCCESS", target_a_after["status"])
+
+        # Lượt 2: đưa job B về sẵn sàng ngay -- đây là phép thử thật của bug:
+        # post.status giờ đã là PUBLISHED (không phải SCHEDULED), target B có
+        # bị huỷ oan không.
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                     (now(), f"pub:{target_b_id}"))
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=82), "facebook": MockFacebookPublisher(seed=83)}})
+        target_b_after = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (target_b_id,)).fetchone()
+        check("target B (kênh facebook) vẫn được publish, KHÔNG bị CANCELLED vì post đã PUBLISHED",
+              target_b_after["status"] == "SUCCESS", dict(target_b_after))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
 
 
 def test_legacy_payload_does_not_resurrect_cancelled_target():
@@ -1213,6 +1279,7 @@ if __name__ == "__main__":
     test_publish_post_legacy_payload_compat()
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()
+    test_sibling_target_not_cancelled_after_first_target_publishes()
     test_legacy_payload_does_not_resurrect_cancelled_target()
     test_retry_publish_target_recovers_running()
     test_db_constraints()
