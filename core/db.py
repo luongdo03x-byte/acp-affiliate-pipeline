@@ -159,6 +159,13 @@ CREATE TABLE IF NOT EXISTS publish_target (
 CREATE INDEX IF NOT EXISTS idx_publish_target_post   ON publish_target(post_id);
 CREATE INDEX IF NOT EXISTS idx_publish_target_status ON publish_target(status, scheduled_at);
 
+CREATE TABLE IF NOT EXISTS post_channel_selection (
+    post_id     TEXT NOT NULL REFERENCES post(id),
+    channel_id  TEXT NOT NULL REFERENCES channel(id),
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (post_id, channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS meta_connection (
     id              TEXT PRIMARY KEY,
     provider        TEXT NOT NULL DEFAULT 'meta',

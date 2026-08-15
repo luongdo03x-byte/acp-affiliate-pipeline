@@ -613,6 +613,33 @@ def test_publish_target_schema():
     conn.close()
 
 
+def test_post_channel_selection_schema():
+    print("\npost_channel_selection schema")
+    conn = connect()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(post_channel_selection)").fetchall()}
+    check("post_channel_selection có đủ cột", {"post_id", "channel_id", "created_at"} <= cols, cols)
+
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                    caption_body, disclosure_text, caption_final, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], "A",
+                  "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+    conn.execute("INSERT INTO post_channel_selection (post_id, channel_id, created_at) VALUES (?,?,?)",
+                 (post_id, channel["id"], now()))
+    import sqlite3
+    try:
+        conn.execute("INSERT INTO post_channel_selection (post_id, channel_id, created_at) VALUES (?,?,?)",
+                     (post_id, channel["id"], now()))
+        check("PK (post_id, channel_id) chặn trùng lặp", False, "insert trùng lọt qua")
+    except sqlite3.IntegrityError as e:
+        check("PK (post_id, channel_id) chặn trùng lặp", "UNIQUE constraint failed" in str(e), str(e))
+    conn.close()
+
+
 def test_publisher_media_list():
     print("\nPublisher nhận danh sách media")
     from acp.adapters.base import Publisher
@@ -1147,6 +1174,7 @@ if __name__ == "__main__":
     test_retry_publish_target_recovers_running()
     test_db_constraints()
     test_publish_target_schema()
+    test_post_channel_selection_schema()
     test_publisher_media_list()
     test_publish_result_native_label_field()
     test_mock_facebook_publisher()
