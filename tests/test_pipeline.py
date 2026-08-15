@@ -18,7 +18,7 @@ from acp.core import db  # noqa: E402
 db.DB_PATH = os.environ["ACP_DB"]
 
 from acp.adapters.base import ContentViolationError, PublishError, RateLimitError  # noqa: E402
-from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockThreads  # noqa: E402
+from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockInstagramPublisher, MockThreads  # noqa: E402
 from acp.core import attribution, content, crypto, imaging, jobs, pipeline, scoring  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
@@ -1857,6 +1857,62 @@ def test_approve_post_validates_fresh_caption_facebook_not_stale_db_value():
         conn.close()
 
 
+def test_publish_post_uses_resolved_caption_per_target():
+    print("\npublish_post: mỗi target dùng đúng caption theo thứ tự ưu tiên override/platform/gốc")
+    conn = connect()
+    fb_override_id, fb_platform_id, ig_fallback_id = ulid(), ulid(), ulid()
+    for cid, code, platform, handle in [
+        (fb_override_id, "fb_pub_override_test", "facebook", "FB Override"),
+        (fb_platform_id, "fb_pub_platform_test", "facebook", "FB Platform"),
+        (ig_fallback_id, "ig_pub_fallback_test", "instagram", "IG Fallback"),
+    ]:
+        conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                        daily_post_cap, min_gap_minutes, created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (cid, code, platform, handle, "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(121))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=121)}})
+        # ORDER BY id DESC (ULID sắp thứ tự theo thời gian) -- lấy đúng bài
+        # vừa sinh ra ở trên, không phải bài PENDING_REVIEW cũ còn sót lại từ
+        # test khác dùng chung CSDL trong cùng file.
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+
+        # Caption phải có link affiliate + nhãn tiếp thị liên kết để qua được
+        # content.validate() (Task 4 validate mỗi nhóm caption riêng) -- chuỗi
+        # trần không link/disclosure sẽ bị approve_post từ chối trước khi kịp
+        # tới publish_post, không kiểm tra được điều Task 5 quan tâm.
+        link = "https://go.isclix.com/x?sub1=pub-resolve-test"
+        caption_platform_fb = f"Caption riêng cho Facebook\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        caption_override_fb = f"Caption riêng chỉ account này\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        res = pipeline.approve_post(
+            conn, post["id"], channel_ids=[fb_override_id, fb_platform_id, ig_fallback_id],
+            caption_facebook=caption_platform_fb,
+            caption_overrides={fb_override_id: caption_override_fb})
+        check("duyệt thành công", res["ok"], res)
+        for t in res["targets"]:
+            conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                         (now(), f"pub:{t['publish_target_id']}"))
+
+        fb_pub, ig_pub = MockFacebookPublisher(seed=122), MockInstagramPublisher(seed=123)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=121), "facebook": fb_pub, "instagram": ig_pub}})
+
+        fb_captions = [c for _, c, _ in fb_pub.published]
+        ig_captions = [c for _, c, _ in ig_pub.published]
+        check("account có override riêng nhận đúng override, không phải caption_facebook",
+              caption_override_fb in fb_captions, fb_captions)
+        check("account facebook còn lại (không override) nhận đúng caption_facebook",
+              caption_platform_fb in fb_captions, fb_captions)
+        check("account instagram (không có caption riêng, không override) rơi về caption gốc",
+              ig_captions == [post["caption_final"]], (ig_captions, post["caption_final"]))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?,?)",
+                     (fb_override_id, fb_platform_id, ig_fallback_id))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -1916,6 +1972,7 @@ if __name__ == "__main__":
     test_approve_post_validates_each_caption_group_separately()
     test_approve_post_group_niches_not_leaked_across_groups()
     test_approve_post_validates_fresh_caption_facebook_not_stale_db_value()
+    test_publish_post_uses_resolved_caption_per_target()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

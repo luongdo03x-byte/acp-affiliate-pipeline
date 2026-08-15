@@ -665,7 +665,8 @@ def publish_post(conn, payload, ctx):
     try:
         publisher = ctx["publishers"][channel["platform"]]
         media = [post["image_url_composited"]] if post["image_url_composited"] else []
-        result = publisher.publish(channel, post["caption_final"], media=media)
+        caption = _resolve_caption(post, target, channel)
+        result = publisher.publish(channel, caption, media=media)
     except Exception as e:
         from ..adapters.base import RateLimitError as _RateLimitError
         if isinstance(e, _RateLimitError):
