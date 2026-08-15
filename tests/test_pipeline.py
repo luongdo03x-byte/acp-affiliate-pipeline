@@ -568,6 +568,58 @@ def test_sibling_target_not_cancelled_after_first_target_publishes():
         conn.close()
 
 
+def test_fetch_insights_idempotency_key_per_target_not_per_post():
+    print("\nFETCH_INSIGHTS của 2 target cùng post không bị coi trùng idempotency")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_insights_test", "facebook", "FB Insights Test", "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(91))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=91)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+
+        res = pipeline.approve_post(conn, post["id"])
+        target_a_id = res["publish_target_id"]
+        conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                     (now(), f"pub:{target_a_id}"))
+
+        target_b_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        scheduled_at, created_at, updated_at)
+                        VALUES (?,?,?,'SCHEDULED',?,?,?)""",
+                     (target_b_id, post["id"], fb_id, now(), now(), now()))
+        jobs.enqueue(conn, "PUBLISH_POST",
+                     {"publish_target_id": target_b_id, "post_id": post["id"], "channel_id": fb_id},
+                     run_after=now(), idempotency_key=f"pub:{target_b_id}")
+
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": MockThreads(seed=92), "facebook": MockFacebookPublisher(seed=93)}})
+
+        # Lọc theo post_id trong payload -- job_queue dùng chung 1 DB cho cả file
+        # test (không xoá job sau khi DONE), nên nếu không lọc sẽ dính cả
+        # FETCH_INSIGHTS của các bài khác từ những test chạy trước đó.
+        insight_jobs = conn.execute(
+            "SELECT idempotency_key FROM job_queue WHERE job_type='FETCH_INSIGHTS' AND payload LIKE ?",
+            (f'%"post_id": "{post["id"]}"%',)).fetchall()
+        check("có đúng 2 job FETCH_INSIGHTS (1 mỗi target), không bị dedupe nhầm",
+              len(insight_jobs) == 2, [r["idempotency_key"] for r in insight_jobs])
+        check("idempotency_key theo target chứ không theo post (2 key khác nhau)",
+              len({r["idempotency_key"] for r in insight_jobs}) == 2)
+
+        target_a = conn.execute("SELECT external_post_id FROM publish_target WHERE id=?", (target_a_id,)).fetchone()
+        target_b = conn.execute("SELECT external_post_id FROM publish_target WHERE id=?", (target_b_id,)).fetchone()
+        check("target A và B có external_post_id khác nhau (2 lần publish riêng biệt)",
+              target_a["external_post_id"] != target_b["external_post_id"],
+              (target_a["external_post_id"], target_b["external_post_id"]))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 def test_legacy_payload_does_not_resurrect_cancelled_target():
     print("\nJob PUBLISH_POST payload cũ không được hồi sinh publish_target đã CANCELLED")
     from acp.adapters.base import ContentViolationError as _CVE
@@ -1280,6 +1332,7 @@ if __name__ == "__main__":
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()
     test_sibling_target_not_cancelled_after_first_target_publishes()
+    test_fetch_insights_idempotency_key_per_target_not_per_post()
     test_legacy_payload_does_not_resurrect_cancelled_target()
     test_retry_publish_target_recovers_running()
     test_db_constraints()

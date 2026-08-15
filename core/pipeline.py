@@ -539,9 +539,10 @@ def publish_post(conn, payload, ctx):
     if result.native_label_status != "not_attempted":
         audit(conn, "publish_target", target["id"], "native_label_requested",
               detail={"status": result.native_label_status, "platform": channel["platform"]})
-    enqueue(conn, "FETCH_INSIGHTS", {"post_id": post["id"], "channel_id": channel["id"]},
+    enqueue(conn, "FETCH_INSIGHTS",
+            {"post_id": post["id"], "channel_id": channel["id"], "publish_target_id": target["id"]},
             run_after=(datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds"),
-            idempotency_key=f"ins:{post['id']}")
+            idempotency_key=f"ins:{target['id']}")
 
 
 def _published_today(conn, channel_id: str) -> int:
@@ -554,12 +555,21 @@ def _published_today(conn, channel_id: str) -> int:
 
 @handler("FETCH_INSIGHTS")
 def fetch_insights(conn, payload, ctx):
+    # Đọc external_post_id từ ĐÚNG publish_target, không phải post.thread_id
+    # (post.thread_id chỉ phản ánh target thành công đầu tiên -- sai cho các
+    # kênh phụ kể từ sub-project D). payload cũ (trước D1) không có
+    # publish_target_id -- fallback về post.thread_id để tương thích ngược.
+    target = None
+    if payload.get("publish_target_id"):
+        target = conn.execute(
+            "SELECT external_post_id FROM publish_target WHERE id=?", (payload["publish_target_id"],)).fetchone()
     post = conn.execute("SELECT thread_id FROM post WHERE id=?", (payload["post_id"],)).fetchone()
+    external_post_id = (target["external_post_id"] if target else None) or (post["thread_id"] if post else None)
     channel = conn.execute("SELECT * FROM channel WHERE id=?", (payload["channel_id"],)).fetchone()
-    if not post or not post["thread_id"]:
+    if not post or not external_post_id:
         return
     publisher = ctx["publishers"][channel["platform"]]
-    attribution.update_insights(conn, payload["post_id"], publisher.fetch_insights(channel, post["thread_id"]))
+    attribution.update_insights(conn, payload["post_id"], publisher.fetch_insights(channel, external_post_id))
 
 
 # ------------------------------------------------------------------ chặng 6
