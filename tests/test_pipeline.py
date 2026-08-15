@@ -267,6 +267,48 @@ def test_daily_cap():
     conn.close()
 
 
+def test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target():
+    print("\n_next_slot/_published_today tính theo publish_target, không rò rỉ giữa các kênh")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_slot_test", "facebook", "FB Slot Test", "ACTIVE", 1, 12, 90, now()))
+    try:
+        ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
+
+        # Kênh ch1 đã có publish_target SUCCESS gần đây (từ các test trước, hoặc
+        # tự tạo một cái) -- kênh facebook mới thì chưa có gì.
+        product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+        campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+        post_id = ulid()
+        conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                        caption_body, disclosure_text, caption_final, created_at, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (post_id, product["id"], ch1["id"], campaign["id"], "A",
+                      "thân bài", "nhãn tiếp thị", "thân bài", now(), now()))
+        target_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        created_at, updated_at) VALUES (?,?,?,'SUCCESS',?,?)""",
+                     (target_id, post_id, ch1["id"], now(), now()))
+
+        slot_ch1 = pipeline._next_slot(conn, ch1["id"])
+        slot_fb = pipeline._next_slot(conn, fb_id)
+        check("kênh vừa có publish_target SUCCESS thì slot bị đẩy về tương lai (giãn cách)",
+              slot_ch1 > now(), (slot_ch1, now()))
+        check("kênh facebook mới, chưa có publish_target nào thì slot = ngay bây giờ (không bị ảnh hưởng bởi ch1)",
+              slot_fb <= now(), (slot_fb, now()))
+
+        conn.execute("UPDATE publish_target SET status='SUCCESS', updated_at=? WHERE id=?",
+                     (now(), target_id))
+        check("_published_today đếm đúng kênh ch1", pipeline._published_today(conn, ch1["id"]) >= 1)
+        check("_published_today KHÔNG đếm nhầm sang kênh facebook", pipeline._published_today(conn, fb_id) == 0)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 def test_publish_target_failure_semantics():
     print("\npublish_target theo dõi lỗi")
     conn = connect()
@@ -1164,6 +1206,7 @@ if __name__ == "__main__":
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_daily_cap()
+    test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target()
     test_publish_target_failure_semantics()
     test_publish_post_authorror_marks_channel()
     test_retry_publish_target()

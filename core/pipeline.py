@@ -369,11 +369,17 @@ def retry_publish_target(conn, target_id: str, actor: str = "operator") -> dict:
 
 def _next_slot(conn, channel_id: str) -> str:
     """Giãn cách tối thiểu giữa hai bài cùng kênh. Trần mềm 8-15 bài/ngày không
-    phải để né gì -- đăng dày hơn thì chất lượng feed giảm và người theo dõi bỏ đi."""
+    phải để né gì -- đăng dày hơn thì chất lượng feed giảm và người theo dõi bỏ đi.
+
+    Đọc theo publish_target (không phải post) -- kể từ sub-project D một post
+    có thể có nhiều target trên nhiều kênh khác nhau, post.channel_id chỉ còn
+    là "kênh chính". Đọc theo post sẽ khiến các kênh phụ không bao giờ thấy
+    lịch sử đăng của chính mình."""
     ch = conn.execute("SELECT * FROM channel WHERE id=?", (channel_id,)).fetchone()
     gap = timedelta(minutes=ch["min_gap_minutes"])
-    last = conn.execute("""SELECT MAX(COALESCE(published_at, scheduled_at)) FROM post
-                           WHERE channel_id=? AND status IN ('SCHEDULED','PUBLISHED')""",
+    last = conn.execute("""
+        SELECT MAX(CASE WHEN status='SUCCESS' THEN updated_at ELSE scheduled_at END)
+        FROM publish_target WHERE channel_id=? AND status IN ('SCHEDULED','SUCCESS')""",
                         (channel_id,)).fetchone()[0]
     base = datetime.now(timezone.utc)
     if last:
@@ -530,9 +536,10 @@ def publish_post(conn, payload, ctx):
 
 
 def _published_today(conn, channel_id: str) -> int:
+    """Đếm theo publish_target -- cùng lý do đã ghi ở _next_slot."""
     today = datetime.now(timezone.utc).date().isoformat()
     return conn.execute(
-        "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED' AND substr(published_at,1,10)=?",
+        "SELECT COUNT(*) FROM publish_target WHERE channel_id=? AND status='SUCCESS' AND substr(updated_at,1,10)=?",
         (channel_id, today)).fetchone()[0]
 
 
