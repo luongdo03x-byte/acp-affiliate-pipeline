@@ -1679,6 +1679,112 @@ def test_resolve_caption_precedence():
           pipeline._resolve_caption(post, {"caption_override": None}, ch_th) == "gốc")
 
 
+def test_approve_post_saves_platform_captions():
+    print("\napprove_post lưu caption_facebook/instagram vào post, None giữ nguyên, '' xoá")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(111))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=111)}})
+    # ORDER BY id DESC (ULID sắp thứ tự theo thời gian) -- lấy đúng bài vừa
+    # sinh ra ở trên, không phải một bài PENDING_REVIEW cũ còn sót lại từ
+    # test khác trong CSDL dùng chung của cả file (vd. bài "thân bài" cố tình
+    # không hợp lệ mà test_disabled_channel_blocks_new_publish để lại).
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+
+    res = pipeline.approve_post(conn, post["id"], caption_facebook="Caption FB riêng")
+    check("duyệt thành công với caption_facebook", res["ok"], res)
+    post_after = conn.execute("SELECT caption_facebook, caption_instagram FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("caption_facebook được lưu đúng", post_after["caption_facebook"] == "Caption FB riêng", dict(post_after))
+    check("caption_instagram vẫn NULL (không truyền)", post_after["caption_instagram"] is None, dict(post_after))
+    conn.close()
+
+
+def test_approve_post_empty_string_clears_platform_caption():
+    print("\napprove_post: caption_facebook='' xoá override, quay về gốc")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(112))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=112)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+
+    res = pipeline.approve_post(conn, post["id"], caption_facebook="tạm thời")
+    check("duyệt lần 1 thành công", res["ok"], res)
+
+    # Duyệt lại (mô phỏng bài bị bounce rồi duyệt lại) với caption_facebook="" -- xoá.
+    conn.execute("UPDATE post SET status='PENDING_REVIEW' WHERE id=?", (post["id"],))
+    res2 = pipeline.approve_post(conn, post["id"], caption_facebook="")
+    check("duyệt lần 2 thành công", res2["ok"], res2)
+    post_after = conn.execute("SELECT caption_facebook FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("caption_facebook về lại NULL sau khi truyền ''", post_after["caption_facebook"] is None, dict(post_after))
+    conn.close()
+
+
+def test_approve_post_channel_overrides_saved_to_publish_target():
+    print("\napprove_post: caption_overrides ghi đúng vào publish_target.caption_override từng kênh")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_caption_override_test", "facebook", "FB Caption Override", "ACTIVE", 1, 12, 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(113))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=113)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        # Override phải là caption hợp lệ (có link + nhãn tiếp thị liên kết) để
+        # qua được validate của chính nhóm nó -- test này chỉ nhắm kiểm tra
+        # override được lưu đúng vào publish_target, không phải hành vi validate.
+        link = "https://go.isclix.com/x?sub1=abc"
+        fb_override = f"Caption riêng chỉ account facebook này\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[ch1_id, fb_id],
+                                    caption_overrides={fb_id: fb_override})
+        check("duyệt đa kênh với override thành công", res["ok"], res)
+
+        target_ch1 = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                                  (post["id"], ch1_id)).fetchone()
+        target_fb = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                                 (post["id"], fb_id)).fetchone()
+        check("target ch1 KHÔNG có override (không nằm trong dict)", target_ch1["caption_override"] is None, dict(target_ch1))
+        check("target facebook có đúng override", target_fb["caption_override"] == fb_override,
+              dict(target_fb))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_approve_post_validates_each_caption_group_separately():
+    print("\napprove_post: 2 kênh khác caption thì validate riêng, không lẫn niches của nhau")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_group_validate_test", "facebook", "FB Group Validate", "ACTIVE", 1, 12, 0,
+                  json.dumps(["my-pham"]), now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(114))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=114)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        link = "https://go.isclix.com/x?sub1=abc"
+        # Caption riêng cho facebook chứa cụm cấm của niche mỹ phẩm ("trị mụn") --
+        # channel ch1 (không có niches nào) không bị ảnh hưởng vì 2 kênh giờ
+        # dùng 2 caption KHÁC NHAU, không còn union niches qua cả 2 kênh như D1.
+        fb_caption = f"Kem trị mụn hiệu quả\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[ch1_id, fb_id],
+                                    caption_overrides={fb_id: fb_caption})
+        check("bị chặn vì caption facebook chứa cụm cấm điều trị của niche mỹ phẩm",
+              res["ok"] is False, res)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -1732,6 +1838,10 @@ if __name__ == "__main__":
     test_disabled_channel_does_not_corrupt_status()
     test_caption_override_columns_exist()
     test_resolve_caption_precedence()
+    test_approve_post_saves_platform_captions()
+    test_approve_post_empty_string_clears_platform_caption()
+    test_approve_post_channel_overrides_saved_to_publish_target()
+    test_approve_post_validates_each_caption_group_separately()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

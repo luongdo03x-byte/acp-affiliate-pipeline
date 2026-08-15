@@ -408,7 +408,8 @@ def _resolve_caption(post, target, channel) -> str:
 
 
 def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
-                  channel_ids: list = None) -> dict:
+                  channel_ids: list = None, caption_facebook: str = None,
+                  caption_instagram: str = None, caption_overrides: dict = None) -> dict:
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
@@ -419,9 +420,33 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
         return {"ok": False, "error": err}
 
     caption = caption_override or post["caption_final"]
-    problems = content.validate(caption, niches=_union_niches(conn, ids))
-    if problems:
-        return {"ok": False, "error": "; ".join(problems)}
+
+    # Validate phải dùng đúng giá trị SẮP được lưu trong lần duyệt này, không
+    # phải giá trị cũ trong CSDL -- operator có thể đang set/sửa
+    # caption_facebook/caption_instagram ngay trong request này.
+    post_effective = dict(post)
+    post_effective["caption_final"] = caption
+    if caption_facebook is not None:
+        post_effective["caption_facebook"] = caption_facebook.strip() or None
+    if caption_instagram is not None:
+        post_effective["caption_instagram"] = caption_instagram.strip() or None
+
+    # Gom kênh theo đúng chuỗi caption chúng sẽ dùng -- validate mỗi nhóm 1
+    # lần bằng union niches TRONG NHÓM ĐÓ thôi (không phải toàn bộ kênh được
+    # chọn như D1, vì giờ các nhóm có thể dùng caption khác nhau hoàn toàn).
+    # Khi mọi kênh vẫn dùng chung 1 caption thì công thức này tự nhiên rút
+    # gọn về đúng y hệt cách D1 làm.
+    groups = {}  # caption_text -> [channel row, ...]
+    for ch in channels:
+        text = _resolve_caption(post_effective, {"caption_override": (caption_overrides or {}).get(ch["id"])}, ch)
+        groups.setdefault(text, []).append(ch)
+    for text, chs in groups.items():
+        ids_in_group = [c["id"] for c in chs]
+        platforms_in_group = {c["platform"] for c in chs}
+        max_len = min(content.PLATFORM_MAX_LEN.get(p, content.MAX_LEN) for p in platforms_in_group)
+        problems = content.validate(text, niches=_union_niches(conn, ids_in_group), max_len=max_len)
+        if problems:
+            return {"ok": False, "error": "; ".join(problems)}
 
     # Slot riêng cho từng kênh -- rate-limit độc lập theo channel.min_gap_minutes
     # của chính kênh đó (xem _next_slot). post.scheduled_at chỉ còn là "sớm
@@ -432,14 +457,21 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
                  (caption, earliest, actor, now(), now(), post_id))
+    if caption_facebook is not None:
+        conn.execute("UPDATE post SET caption_facebook=? WHERE id=?",
+                     (caption_facebook.strip() or None, post_id))
+    if caption_instagram is not None:
+        conn.execute("UPDATE post SET caption_instagram=? WHERE id=?",
+                     (caption_instagram.strip() or None, post_id))
 
     targets = []
     for ch in channels:
         target_id = ulid()
         slot = slots[ch["id"]]
+        override = (caption_overrides or {}).get(ch["id"])
         conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
-                        created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?)""",
-                     (target_id, post_id, ch["id"], slot, now(), now()))
+                        caption_override, created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?,?)""",
+                     (target_id, post_id, ch["id"], slot, override, now(), now()))
         # post_id/channel_id ở lại payload để jobs.py xử lý AuthError/ContentViolationError
         # (đánh dấu kênh NEEDS_REAUTH, đẩy bài về PENDING_REVIEW) không phải sửa.
         enqueue(conn, "PUBLISH_POST",
