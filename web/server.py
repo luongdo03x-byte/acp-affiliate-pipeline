@@ -390,6 +390,16 @@ def create_app():
                 {"id": r["channel_id"], "code": r["channel_code"],
                  "platform": r["channel_platform"], "handle": r["channel_handle"]}
             ]
+        # Điền lại override theo account đã nhập ở lần duyệt trước: bài bị
+        # bounce về PENDING_REVIEW (ContentViolationError ở MỘT kênh khác, xem
+        # core/jobs.py) rồi duyệt lại là đường DUY NHẤT để duyệt lại một bài,
+        # mà template cố ý render ô override rỗng (spec §8) -- không đọc lại
+        # thì chữ operator đã gõ mất im lặng, kênh đó đăng caption gốc.
+        overrides_by_post = pipeline.latest_channel_caption_overrides(conn, [r["id"] for r in rows])
+        for r in rows:
+            channel_overrides = overrides_by_post.get(r["id"], {})
+            for sel in r["selected_channels"]:
+                sel["prior_override"] = channel_overrides.get(sel["id"], "")
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p JOIN product pr ON pr.id = p.product_id

@@ -219,6 +219,35 @@ def post_channel_selections(conn, post_ids: list) -> dict:
     return result
 
 
+def latest_channel_caption_overrides(conn, post_ids: list) -> dict:
+    """post_id -> {channel_id: override_text} -- override KHÔNG rỗng gần nhất
+    (bất kể trạng thái publish_target, kể cả CANCELLED/FAILED) cho từng kênh
+    của từng post. Dùng để tiền điền lại ô override theo account ở /duyet sau
+    khi bài bị bounce về PENDING_REVIEW (ContentViolationError ở kênh khác,
+    xem core/jobs.py) rồi duyệt lại -- nếu không, override đã nhập sẽ biến
+    mất im lặng vì spec §8 cố ý không đọc lại publish_target cũ khi render."""
+    if not post_ids:
+        return {}
+    placeholders = ",".join("?" * len(post_ids))
+    rows = conn.execute(f"""
+        SELECT post_id, channel_id, caption_override, created_at
+        FROM publish_target
+        WHERE post_id IN ({placeholders}) AND caption_override IS NOT NULL AND caption_override != ''
+        ORDER BY created_at DESC, id DESC
+    """, post_ids).fetchall()
+    result = {}
+    for r in rows:
+        result.setdefault(r["post_id"], {})
+        # ORDER BY created_at DESC -- dòng đầu tiên gặp mỗi (post_id, channel_id)
+        # là mới nhất, không ghi đè nếu đã có trong dict. Phá hoà bằng id DESC:
+        # now() chỉ chính xác tới GIÂY, hai lần duyệt lại trong cùng một giây
+        # sẽ có created_at y hệt nhau -- id là ULID (10 ký tự đầu là mốc mili
+        # giây) nên vẫn sắp đúng thứ tự, không rơi vào thứ tự tuỳ SQLite.
+        if r["channel_id"] not in result[r["post_id"]]:
+            result[r["post_id"]][r["channel_id"]] = r["caption_override"]
+    return result
+
+
 def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                                   channel_code: str = None, channel_codes: list = None,
                                   template_code: str = None,

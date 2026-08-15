@@ -2,6 +2,7 @@
 
     python3 -m acp.tests.test_pilot
 """
+import html
 import json
 import os
 import random
@@ -1724,6 +1725,126 @@ def test_duyet_approve_saves_caption_platform_and_override():
         os.environ.pop(var, None)
 
 
+def _override_field(body: str, post_id: str, channel_id: str) -> tuple:
+    """(thẻ <details ...> mở, nội dung ô caption_override) của account
+    channel_id trong form duyệt của bài post_id -- đúng thứ trình duyệt hiển
+    thị cho operator và sẽ gửi lại khi bấm 'Duyệt & lên lịch'."""
+    start = body.find(f'action="/duyet/{post_id}/approve"')
+    if start < 0:
+        return ("", None)
+    form = body[start:body.find("</form>", start)]
+    idx = form.find(f'name="caption_override_{channel_id}"')
+    if idx < 0:
+        return ("", None)
+    d = form.rfind("<details", 0, idx)
+    details_tag = form[d:form.find(">", d) + 1] if d >= 0 else ""
+    ta = form.find(">", idx) + 1
+    return (details_tag, html.unescape(form[ta:form.find("</textarea>", ta)]))
+
+
+def test_duyet_keeps_channel_override_after_bounce():
+    print("\n/duyet điền lại override theo account sau khi bài bị bounce về PENDING_REVIEW")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_bounce_override_test", "facebook", "FB Bounce Override", "ACTIVE", 1, 12, 0, now()))
+    # Kênh Threads riêng cho test này ("ch1" của setup() có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH khi chạy chung cả suite).
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_bounce_override_test", "@bounce_override_test", "uid_bounce_override",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    res = pipeline.create_post_for_product(
+        conn, {"source": src, "publishers": {}}, target.external_product_id, "gd2026",
+        channel_codes=["th_bounce_override_test", "fb_bounce_override_test"])
+    check("tạo bài đa kênh (threads + facebook) thành công", res.get("ok"), res.get("error"))
+    post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+    link_line = next(l for l in post["caption_final"].split("\n") if l.startswith("http"))
+    override_text = (f"Caption riêng operator gõ cho đúng account Threads này. "
+                     f"{content.DISCLOSURE_DEFAULT}\n\n{link_line}")
+    conn.close()
+
+    # --- Lần duyệt 1: operator nhập override cho riêng account Threads.
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [th_id, fb_id],
+        f"caption_override_{th_id}": override_text,
+        f"caption_override_{fb_id}": "",
+    })
+    check("duyệt lần 1 thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    conn = connect()
+    t1 = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                      (post["id"], th_id)).fetchone()
+    check("lần duyệt 1 lưu override vào publish_target của account Threads",
+          t1 and t1["caption_override"] == override_text, dict(t1) if t1 else None)
+
+    # --- Bounce: ContentViolationError ở account Facebook đẩy CẢ BÀI về
+    # PENDING_REVIEW và huỷ các target còn lại (core/jobs.py, sub-project D1).
+    # Mô phỏng thẳng trạng thái sau bounce, giống test_pipeline.py vẫn làm.
+    conn.execute("UPDATE publish_target SET status='CANCELLED' WHERE post_id=?", (post["id"],))
+    conn.execute("UPDATE post SET status='PENDING_REVIEW' WHERE id=?", (post["id"],))
+    conn.close()
+
+    # --- Bài quay lại /duyet: ô override phải còn nguyên chữ operator đã gõ.
+    page = c.get("/duyet")
+    body = page.get_data(as_text=True)
+    check("trang /duyet mở được sau bounce", page.status_code == 200, page.status_code)
+    th_tag, th_val = _override_field(body, post["id"], th_id)
+    check("ô override của account Threads được điền lại đúng chữ đã nhập trước đó",
+          th_val == override_text, repr(th_val))
+    check("<details> tự mở khi có override cũ (operator không bỏ sót)", "open" in th_tag, th_tag)
+    fb_tag, fb_val = _override_field(body, post["id"], fb_id)
+    check("account chưa từng có override vẫn để trống và <details> vẫn đóng",
+          fb_val == "" and "open" not in fb_tag, (fb_tag, repr(fb_val)))
+
+    # --- Duyệt lại đúng như form vừa render (operator KHÔNG gõ lại gì cả).
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [th_id, fb_id],
+        f"caption_override_{th_id}": th_val,
+        f"caption_override_{fb_id}": fb_val,
+    })
+    check("duyệt lại thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    conn = connect()
+    t2 = conn.execute("""SELECT caption_override FROM publish_target
+                         WHERE post_id=? AND channel_id=? AND status='SCHEDULED'""",
+                      (post["id"], th_id)).fetchone()
+    check("publish_target MỚI sau khi duyệt lại vẫn giữ override của operator",
+          t2 and t2["caption_override"] == override_text, dict(t2) if t2 else None)
+    t2fb = conn.execute("""SELECT caption_override FROM publish_target
+                           WHERE post_id=? AND channel_id=? AND status='SCHEDULED'""",
+                        (post["id"], fb_id)).fetchone()
+    check("account Facebook vẫn không có override (ô để trống)",
+          t2fb and t2fb["caption_override"] is None, dict(t2fb) if t2fb else None)
+    conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?)", (th_id, fb_id))
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1764,6 +1885,7 @@ if __name__ == "__main__":
     test_create_affiliate_product_accepts_facebook_channel()
     test_duyet_approve_route_end_to_end()
     test_duyet_approve_saves_caption_platform_and_override()
+    test_duyet_keeps_channel_override_after_bounce()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

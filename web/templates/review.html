@@ -39,8 +39,9 @@
         {% for sel in p.selected_channels %}
           <div class="channel-caption-row">
             <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ sel.id }}" checked><span>[{{ platform_labels[sel.platform] }}] {{ sel.handle }}<small>{{ sel.code }}</small></span></label>
-            <details><summary>✎ caption riêng cho account này</summary>
-              <textarea name="caption_override_{{ sel.id }}" rows="3" placeholder="Để trống = dùng caption theo platform/gốc"></textarea>
+            <details {{ 'open' if sel.prior_override }}>
+              <summary>✎ caption riêng cho account này{{ ' (đã có override trước đó)' if sel.prior_override }}</summary>
+              <textarea name="caption_override_{{ sel.id }}" rows="3" placeholder="Để trống = dùng caption theo platform/gốc">{{ sel.prior_override }}</textarea>
             </details>
           </div>
         {% endfor %}

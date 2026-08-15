@@ -1755,6 +1755,51 @@ def test_approve_post_channel_overrides_saved_to_publish_target():
         conn.close()
 
 
+def test_latest_channel_caption_overrides():
+    print("\nlatest_channel_caption_overrides(): override KHÔNG rỗng gần nhất của từng kênh")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_latest_override_test", "facebook", "FB Latest Override", "ACTIVE", 1, 12, 0, now()))
+    try:
+        check("post_ids rỗng trả dict rỗng (không đụng CSDL)",
+              pipeline.latest_channel_caption_overrides(conn, []) == {}, "khác {}")
+
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(127))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=127)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' ORDER BY id DESC LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        # Dựng thẳng lịch sử publish_target (mỗi lần duyệt lại sinh dòng mới,
+        # dòng cũ ở lại vĩnh viễn dưới dạng CANCELLED/FAILED) -- created_at cố
+        # định để thứ tự "gần nhất" là xác định, không phụ thuộc đồng hồ.
+        def target(channel_id, override, created_at):
+            conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                            scheduled_at, caption_override, created_at, updated_at)
+                            VALUES (?,?,?,'CANCELLED',?,?,?,?)""",
+                         (ulid(), post["id"], channel_id, created_at, override, created_at, created_at))
+
+        target(fb_id, "override CŨ của account facebook", "2026-08-01T10:00:00+00:00")
+        target(fb_id, "override MỚI của account facebook", "2026-08-02T10:00:00+00:00")
+        target(fb_id, "", "2026-08-03T10:00:00+00:00")   # lần duyệt để trống -> bỏ qua
+        target(ch1_id, None, "2026-08-02T10:00:00+00:00")  # kênh chưa từng có override
+
+        got = pipeline.latest_channel_caption_overrides(conn, [post["id"]])
+        check("lấy đúng override GẦN NHẤT của account facebook",
+              got.get(post["id"], {}).get(fb_id) == "override MỚI của account facebook", got)
+        check("kênh chưa từng có override thì không xuất hiện trong dict",
+              ch1_id not in got.get(post["id"], {}), got)
+        check("post không có publish_target nào thì không xuất hiện trong dict",
+              pipeline.latest_channel_caption_overrides(conn, ["post-khong-ton-tai"]) == {},
+              "khác {}")
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 def test_approve_post_validates_each_caption_group_separately():
     print("\napprove_post: 2 kênh khác caption thì validate riêng, không lẫn niches của nhau")
     conn = connect()
@@ -1969,6 +2014,7 @@ if __name__ == "__main__":
     test_approve_post_saves_platform_captions()
     test_approve_post_empty_string_clears_platform_caption()
     test_approve_post_channel_overrides_saved_to_publish_target()
+    test_latest_channel_caption_overrides()
     test_approve_post_validates_each_caption_group_separately()
     test_approve_post_group_niches_not_leaked_across_groups()
     test_approve_post_validates_fresh_caption_facebook_not_stale_db_value()
