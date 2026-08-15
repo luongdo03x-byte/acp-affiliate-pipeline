@@ -620,6 +620,45 @@ def test_fetch_insights_idempotency_key_per_target_not_per_post():
         conn.close()
 
 
+def test_fetch_insights_legacy_payload_falls_back_to_post_thread_id():
+    print("\nFETCH_INSIGHTS payload cũ (không có publish_target_id) fallback đúng về post.thread_id")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(101))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=101)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+
+    res = pipeline.approve_post(conn, post["id"])
+    check("duyệt thành công", res["ok"], res)
+    conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                 (now(), f"pub:{res['publish_target_id']}"))
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=102)}})
+
+    post_after = conn.execute("SELECT * FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("post đã publish, có sẵn thread_id (mô phỏng bài đăng từ trước D1)",
+          post_after["status"] == "PUBLISHED" and bool(post_after["thread_id"]), dict(post_after))
+
+    # Publisher ghi lại external_post_id thực sự nhận được, để kiểm tra fallback
+    # có truyền ĐÚNG giá trị (không phải None/rỗng) chứ không chỉ "không crash".
+    calls = []
+
+    class RecordingThreads(MockThreads):
+        def fetch_insights(self, channel_row, external_post_id):
+            calls.append(external_post_id)
+            return super().fetch_insights(channel_row, external_post_id)
+
+    # payload kiểu cũ (trước D1): KHÔNG có publish_target_id -- đúng dạng job
+    # đã enqueue trước khi Task 4 deploy, có thể vẫn còn tồn đọng trong hàng đợi.
+    legacy_payload = {"post_id": post["id"], "channel_id": post_after["channel_id"]}
+    pipeline.fetch_insights(conn, legacy_payload, {"publishers": {"threads": RecordingThreads(seed=103)}})
+
+    check("publisher.fetch_insights được gọi với post.thread_id (fallback thật, không phải None)",
+          calls == [post_after["thread_id"]], calls)
+    metrics = conn.execute("SELECT * FROM post_metrics WHERE post_id=?", (post["id"],)).fetchone()
+    check("post_metrics được ghi từ nhánh fallback", metrics is not None, metrics)
+    conn.close()
+
+
 def test_legacy_payload_does_not_resurrect_cancelled_target():
     print("\nJob PUBLISH_POST payload cũ không được hồi sinh publish_target đã CANCELLED")
     from acp.adapters.base import ContentViolationError as _CVE
@@ -1333,6 +1372,7 @@ if __name__ == "__main__":
     test_publish_target_cancelled_on_stale_post_status()
     test_sibling_target_not_cancelled_after_first_target_publishes()
     test_fetch_insights_idempotency_key_per_target_not_per_post()
+    test_fetch_insights_legacy_payload_falls_back_to_post_thread_id()
     test_legacy_payload_does_not_resurrect_cancelled_target()
     test_retry_publish_target_recovers_running()
     test_db_constraints()
