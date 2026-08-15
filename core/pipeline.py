@@ -166,27 +166,92 @@ def upsert_one(conn, source, raw) -> str:
     return pid
 
 
+def _resolve_channels_by_code(conn, codes: list):
+    """Trả (list channel row theo đúng thứ tự codes, None) hoặc (None, lỗi).
+    Dùng ở luồng TẠO bài -- codes là channel.code (mã người đọc được), khớp
+    với tham số channel_code đơn đã có sẵn."""
+    rows = []
+    for code in codes:
+        row = conn.execute("SELECT * FROM channel WHERE code=? AND status='ACTIVE'", (code,)).fetchone()
+        if not row:
+            return None, f"Kênh {code} không tồn tại hoặc không hoạt động"
+        if not row["enabled"]:
+            return None, f"Kênh {code} đã bị tắt (disabled), không thể tạo bài"
+        rows.append(row)
+    return rows, None
+
+
+def _union_niches(conn, channel_ids: list) -> list:
+    """Hợp (union) niches của nhiều kênh, giữ thứ tự xuất hiện đầu tiên,
+    không trùng lặp. Dùng để validate caption chặt hơn khi có nhiều kênh."""
+    seen = []
+    for cid in channel_ids:
+        for n in channel_niches(conn, cid):
+            if n not in seen:
+                seen.append(n)
+    return seen
+
+
+def _save_channel_selection(conn, post_id: str, channel_ids: list) -> None:
+    """Ghi lựa chọn kênh GỐC lúc tạo bài. KHÔNG bao giờ được UPDATE/DELETE lại
+    sau đó -- đây là audit trail, không phải nguồn dữ liệu cho approve_post()."""
+    for cid in channel_ids:
+        conn.execute("INSERT INTO post_channel_selection (post_id, channel_id, created_at) VALUES (?,?,?)",
+                     (post_id, cid, now()))
+
+
+def post_channel_selections(conn, post_ids: list) -> dict:
+    """post_id -> list[channel row dict] đã chọn lúc tạo bài (sắp theo
+    platform, code). Dùng để tick sẵn checklist ở /duyet."""
+    if not post_ids:
+        return {}
+    placeholders = ",".join("?" * len(post_ids))
+    rows = conn.execute(f"""
+        SELECT pcs.post_id AS post_id, ch.id AS id, ch.code AS code,
+               ch.platform AS platform, ch.handle AS handle
+        FROM post_channel_selection pcs JOIN channel ch ON ch.id = pcs.channel_id
+        WHERE pcs.post_id IN ({placeholders})
+        ORDER BY ch.platform, ch.code
+    """, post_ids).fetchall()
+    result = {}
+    for r in rows:
+        result.setdefault(r["post_id"], []).append(dict(r))
+    return result
+
+
 def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
-                                  channel_code: str = None, template_code: str = None,
+                                  channel_code: str = None, channel_codes: list = None,
+                                  template_code: str = None,
                                   variant_code: str = "A", prebuilt_affiliate_link: str = None,
                                   attribution_payload: dict = None,
                                   audit_action: str = "created_single") -> dict:
     campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
     if not campaign:
         return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
-    channel = conn.execute(
-        # Nhánh có channel_code giữ nguyên, không lọc platform -- gọi rõ tên kênh
-        # thì tôn trọng lựa chọn đó (sau này facebook/instagram có publisher thật
-        # vẫn dùng lại được hàm này). Nhánh mặc định (không truyền channel_code)
-        # chỉ được rơi vào Threads -- kênh facebook/instagram import về chưa có
-        # publisher đăng ký, để lọt vào đây thì bài kẹt vĩnh viễn ở SCHEDULED.
-        "SELECT * FROM channel WHERE code=? AND status='ACTIVE'" if channel_code
-        else "SELECT * FROM channel WHERE status='ACTIVE' AND platform='threads' ORDER BY code LIMIT 1",
-        (channel_code,) if channel_code else ()).fetchone()
-    if not channel:
-        return {"ok": False, "error": "Không có kênh nào đang hoạt động"}
-    if not channel["enabled"]:
-        return {"ok": False, "error": f"Kênh {channel['code']} đã bị tắt (disabled), không thể tạo bài"}
+    if channel_codes:
+        # Đa kênh (sub-project D) -- kênh ĐẦU TIÊN trong danh sách là "kênh
+        # chính" (post.channel_id, watermark khi chỉ 1 kênh, tracking link).
+        channels, err = _resolve_channels_by_code(conn, channel_codes)
+        if err:
+            return {"ok": False, "error": err}
+    else:
+        channel = conn.execute(
+            # Nhánh có channel_code giữ nguyên, không lọc platform -- gọi rõ tên kênh
+            # thì tôn trọng lựa chọn đó (sau này facebook/instagram có publisher thật
+            # vẫn dùng lại được hàm này). Nhánh mặc định (không truyền channel_code)
+            # chỉ được rơi vào Threads -- kênh facebook/instagram import về chưa có
+            # publisher đăng ký, để lọt vào đây thì bài kẹt vĩnh viễn ở SCHEDULED.
+            "SELECT * FROM channel WHERE code=? AND status='ACTIVE'" if channel_code
+            else "SELECT * FROM channel WHERE status='ACTIVE' AND platform='threads' ORDER BY code LIMIT 1",
+            (channel_code,) if channel_code else ()).fetchone()
+        if not channel:
+            return {"ok": False, "error": "Không có kênh nào đang hoạt động"}
+        if not channel["enabled"]:
+            return {"ok": False, "error": f"Kênh {channel['code']} đã bị tắt (disabled), không thể tạo bài"}
+        channels = [channel]
+
+    channel = channels[0]  # kênh chính
+    channel_ids = [ch["id"] for ch in channels]
     template = conn.execute(
         "SELECT * FROM caption_template WHERE code=? AND is_active=1" if template_code
         else "SELECT * FROM caption_template WHERE is_active=1 ORDER BY code LIMIT 1",
@@ -210,11 +275,12 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
         }
 
     discount = scoring.real_discount_depth(conn, product_id, product["current_price"])
-    image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount, handle=channel["handle"])
+    image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount,
+                                 handle=channel["handle"] if len(channels) == 1 else None)
     image_url = ctx.get("storage", storage.get_storage()).put(image_path)
 
     caption = content.generate(product, template["code"], link, discount_pct=discount)
-    problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
+    problems = content.validate(caption, niches=_union_niches(conn, channel_ids))
     status = "PENDING_REVIEW" if not problems else "DRAFT"
 
     conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
@@ -225,9 +291,10 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                   variant_code, caption, content.DISCLOSURE_DEFAULT, caption,
                   image_url, link, json.dumps(stored_attribution, ensure_ascii=False, sort_keys=True), None,
                   status, "; ".join(problems) if problems else None, now(), now()))
+    _save_channel_selection(conn, post_id, channel_ids)
     audit(conn, "post", post_id, audit_action, actor="operator",
           detail={"source": source.name, "external_product_id": raw.external_product_id,
-                  "template": template["code"], "problems": problems})
+                  "template": template["code"], "problems": problems, "channel_ids": channel_ids})
 
     return {"ok": True, "post_id": post_id, "product_id": product_id,
             "product_name": product["name"], "affiliate_link": link,
@@ -236,8 +303,8 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
 
 
 def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: str,
-                            channel_code: str = None, template_code: str = None,
-                            variant_code: str = "A") -> dict:
+                            channel_code: str = None, channel_codes: list = None,
+                            template_code: str = None, variant_code: str = "A") -> dict:
     """Một sản phẩm cụ thể -> một bài PENDING_REVIEW. Không đăng."""
     source = ctx["source"]
     raw = source.get_product(external_product_id) if hasattr(source, "get_product") else None
@@ -247,12 +314,13 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
         return {"ok": False, "error": "Sản phẩm không có product_url, không tạo được tracking link"}
     return _create_post_from_raw_product(
         conn, ctx, source, raw, campaign_code,
-        channel_code=channel_code, template_code=template_code,
-        variant_code=variant_code)
+        channel_code=channel_code, channel_codes=channel_codes,
+        template_code=template_code, variant_code=variant_code)
 
 
 def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_url: str,
                                                campaign_code: str, channel_code: str = None,
+                                               channel_codes: list = None,
                                                template_code: str = None,
                                                variant_code: str = "A") -> dict:
     """Tạo bài review từ sản phẩm Shopee + affiliate URL có sẵn; không publish."""
@@ -262,8 +330,8 @@ def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_
         return {"ok": False, "error": "Thiếu tên, giá hoặc ảnh sản phẩm"}
     return _create_post_from_raw_product(
         conn, ctx, source, raw, campaign_code,
-        channel_code=channel_code, template_code=template_code,
-        variant_code=variant_code,
+        channel_code=channel_code, channel_codes=channel_codes,
+        template_code=template_code, variant_code=variant_code,
         prebuilt_affiliate_link=affiliate_url,
         attribution_payload={"provider": "shopee_direct", "link_mode": "prebuilt"},
         audit_action="created_manual_shopee")

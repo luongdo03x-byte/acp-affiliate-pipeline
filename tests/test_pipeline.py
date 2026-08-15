@@ -1198,6 +1198,64 @@ def test_default_channel_fallback_skips_facebook():
         conn.close()
 
 
+def test_create_post_with_multiple_channel_codes():
+    print("\nTạo post với nhiều channel_codes -> post_channel_selection đủ N dòng, kênh đầu là kênh chính")
+    conn = connect()
+    fb_id, ig_id = ulid(), ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_multi_test", "facebook", "FB Multi Test", "ACTIVE", 1, now()))
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (ig_id, "ig_multi_test", "instagram", "IG Multi Test", "ACTIVE", 1, now()))
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(
+            conn, ctx, target.external_product_id, "test",
+            channel_codes=["ch1", "fb_multi_test", "ig_multi_test"])
+        check("tạo bài thành công", res.get("ok"), res.get("error"))
+
+        post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+        ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
+        check("post.channel_id = kênh đầu tiên trong danh sách (ch1)",
+              post["channel_id"] == ch1["id"], post["channel_id"])
+
+        selections = conn.execute(
+            "SELECT channel_id FROM post_channel_selection WHERE post_id=?", (post["id"],)).fetchall()
+        check("đủ 3 dòng post_channel_selection", len(selections) == 3, len(selections))
+        selected_ids = {r["channel_id"] for r in selections}
+        check("đúng bộ 3 kênh được chọn", selected_ids == {ch1["id"], fb_id, ig_id}, selected_ids)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?)", (fb_id, ig_id))
+        conn.close()
+
+
+def test_create_post_multiple_channel_codes_rejects_disabled_channel():
+    print("\nTạo post với 1 kênh bị disabled trong danh sách -> lỗi rõ ràng, không tạo post")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_disabled_test", "facebook", "FB Disabled Test", "ACTIVE", 0, now()))
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        before = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+        res = pipeline.create_post_for_product(
+            conn, ctx, target.external_product_id, "test",
+            channel_codes=["ch1", "fb_disabled_test"])
+        check("tạo bài thất bại vì có kênh disabled", res.get("ok") is False, res)
+        check("thông báo lỗi nêu rõ tên kênh", "fb_disabled_test" in (res.get("error") or ""), res.get("error"))
+        after = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+        check("không tạo post nào (tất-cả-hoặc-không-gì)", before == after, (before, after))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
 def test_create_post_blocked_for_disabled_channel():
     print("\nTạo bài (create_post_for_product) bị chặn khi kênh đích đã tắt (enabled=0)")
     conn = connect()
@@ -1422,6 +1480,8 @@ if __name__ == "__main__":
     test_meta_connection_schema()
     test_disabled_channel_blocks_new_publish()
     test_default_channel_fallback_skips_facebook()
+    test_create_post_with_multiple_channel_codes()
+    test_create_post_multiple_channel_codes_rejects_disabled_channel()
     test_create_post_blocked_for_disabled_channel()
     test_plan_content_filters_to_threads_only()
     test_publish_post_missing_publisher_fails_immediately()
