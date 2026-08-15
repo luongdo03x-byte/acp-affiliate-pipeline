@@ -50,7 +50,7 @@ def _placeholder(product) -> Image.Image:
     return img
 
 
-def compose(product, out_dir: str, discount_pct: float = 0.0, handle: str = "@kenhcuaban") -> str:
+def compose(product, out_dir: str, discount_pct: float = 0.0, handle: str = None) -> str:
     """Ghép và trả về đường dẫn file.
 
     LƯU Ý PRODUCTION: Threads yêu cầu image_url truy cập công khai được. File
@@ -105,9 +105,13 @@ def compose(product, out_dir: str, discount_pct: float = 0.0, handle: str = "@ke
         w = draw.textlength(old, font=of)
         draw.line([ox, y + 50, ox + w, y + 50], fill=MUTED, width=3)
 
-    # Layer 4 -- nhận diện kênh.
-    hf = _font(30)
-    draw.text((PAD, CANVAS[1] - PAD - 12), handle, font=hf, fill=MUTED)
+    # Layer 4 -- nhận diện kênh. handle=None khi ảnh dùng chung cho nhiều
+    # kênh (sub-project D) -- không đóng dấu tên kênh nào để tránh trường hợp
+    # đăng lên kênh A nhưng ảnh lại ghi tên kênh B. Đường kẻ phân cách vẫn giữ
+    # để layer giá/tên sản phẩm phía trên không bị trống chân trang đột ngột.
+    if handle:
+        hf = _font(30)
+        draw.text((PAD, CANVAS[1] - PAD - 12), handle, font=hf, fill=MUTED)
     draw.line([PAD, CANVAS[1] - PAD - 34, CANVAS[0] - PAD, CANVAS[1] - PAD - 34], fill=(224, 228, 223), width=2)
 
     path = os.path.join(out_dir, f"{product['id']}.jpg")

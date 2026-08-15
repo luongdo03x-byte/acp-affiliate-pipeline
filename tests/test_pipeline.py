@@ -19,7 +19,7 @@ db.DB_PATH = os.environ["ACP_DB"]
 
 from acp.adapters.base import ContentViolationError, PublishError, RateLimitError  # noqa: E402
 from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockThreads  # noqa: E402
-from acp.core import attribution, content, crypto, jobs, pipeline, scoring  # noqa: E402
+from acp.core import attribution, content, crypto, imaging, jobs, pipeline, scoring  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 PASS, FAIL = [], []
@@ -75,6 +75,38 @@ def test_content_guards():
     check("caption luôn được cắt vừa 500 ký tự", len(long_cap) <= 500, len(long_cap))
     check("cắt xong vẫn giữ disclosure", content.DISCLOSURE_DEFAULT in long_cap)
     conn.close()
+
+
+def test_imaging_compose_skips_watermark_when_handle_none():
+    print("\nimaging.compose bỏ watermark handle khi handle=None")
+    from PIL import Image
+    out_dir = tempfile.mkdtemp()
+    product_with = {"id": "imgtest_with", "external_product_id": "imgtest_with",
+                    "name": "Sản phẩm test watermark", "current_price": 199000,
+                    "original_price": None, "image_path_local": None}
+    product_without = dict(product_with, id="imgtest_without", external_product_id="imgtest_without")
+
+    path_with = imaging.compose(product_with, out_dir, discount_pct=0.0, handle="@kenhtest")
+    path_without = imaging.compose(product_without, out_dir, discount_pct=0.0, handle=None)
+
+    img_with = Image.open(path_with).convert("RGB")
+    img_without = Image.open(path_without).convert("RGB")
+    # Crop region for text watermark. Text is drawn at y=CANVAS[1]-PAD-12
+    # but PIL places it top-aligned, so it extends both up and down.
+    region = (imaging.PAD, imaging.CANVAS[1] - imaging.PAD - 35,
+              imaging.CANVAS[0] - imaging.PAD, imaging.CANVAS[1] - imaging.PAD + 5)
+    pixels_with = set(img_with.crop(region).getdata())
+    pixels_without = set(img_without.crop(region).getdata())
+    # JPEG compression alters exact RGB, so check for close matches (±5)
+    muted_r, muted_g, muted_b = imaging.MUTED
+    has_muted_like_with = any(abs(p[0]-muted_r) <= 5 and abs(p[1]-muted_g) <= 5 and abs(p[2]-muted_b) <= 5
+                               for p in pixels_with)
+    has_muted_like_without = any(abs(p[0]-muted_r) <= 5 and abs(p[1]-muted_g) <= 5 and abs(p[2]-muted_b) <= 5
+                                 for p in pixels_without)
+    check("có handle: vùng watermark có pixel màu MUTED (chữ được vẽ)",
+          has_muted_like_with, len(pixels_with))
+    check("handle=None: vùng watermark KHÔNG có pixel màu MUTED (không vẽ chữ)",
+          not has_muted_like_without, len(pixels_without))
 
 
 def test_scoring():
@@ -1356,6 +1388,7 @@ if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
     test_content_guards()
+    test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()
     test_conversion_dedup()
