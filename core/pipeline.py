@@ -374,35 +374,64 @@ def generate_content(conn, payload, ctx):
 
 # ------------------------------------------------------------------ chặng 4
 
-def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None) -> dict:
+def _resolve_channels_by_id(conn, channel_ids: list):
+    """Trả (list channel row theo đúng thứ tự channel_ids, None) hoặc
+    (None, lỗi). Dùng ở luồng DUYỆT bài -- channel_ids là channel.id (ULID),
+    khớp với post.channel_id/publish_target.channel_id."""
+    rows = []
+    for cid in channel_ids:
+        row = conn.execute("SELECT * FROM channel WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return None, f"Không tìm thấy kênh {cid}"
+        if not row["enabled"]:
+            return None, f"Kênh {row['code']} đang bị tắt (disabled), không thể duyệt"
+        rows.append(row)
+    return rows, None
+
+
+def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
+                  channel_ids: list = None) -> dict:
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
-    channel = conn.execute("SELECT enabled FROM channel WHERE id=?", (post["channel_id"],)).fetchone()
-    if channel and not channel["enabled"]:
-        return {"ok": False, "error": "Kênh của bài này đang bị tắt (disabled), không thể duyệt"}
+
+    ids = channel_ids or [post["channel_id"]]
+    channels, err = _resolve_channels_by_id(conn, ids)
+    if err:
+        return {"ok": False, "error": err}
+
     caption = caption_override or post["caption_final"]
-    problems = content.validate(caption, niches=channel_niches(conn, post["channel_id"]))
+    problems = content.validate(caption, niches=_union_niches(conn, ids))
     if problems:
         return {"ok": False, "error": "; ".join(problems)}
 
-    scheduled = _next_slot(conn, post["channel_id"])
+    # Slot riêng cho từng kênh -- rate-limit độc lập theo channel.min_gap_minutes
+    # của chính kênh đó (xem _next_slot). post.scheduled_at chỉ còn là "sớm
+    # nhất trong N giờ", dùng để sort/hiển thị, không còn là giờ đăng chính xác
+    # khi có từ 2 kênh trở lên.
+    slots = {ch["id"]: _next_slot(conn, ch["id"]) for ch in channels}
+    earliest = min(slots.values())
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
-                 (caption, scheduled, actor, now(), now(), post_id))
+                 (caption, earliest, actor, now(), now(), post_id))
 
-    target_id = ulid()
-    conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
-                    created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?)""",
-                 (target_id, post_id, post["channel_id"], scheduled, now(), now()))
-    # post_id/channel_id ở lại payload để jobs.py xử lý AuthError/ContentViolationError
-    # (đánh dấu kênh NEEDS_REAUTH, đẩy bài về PENDING_REVIEW) không phải sửa.
-    enqueue(conn, "PUBLISH_POST",
-            {"publish_target_id": target_id, "post_id": post_id, "channel_id": post["channel_id"]},
-            priority=50, run_after=scheduled, idempotency_key=f"pub:{target_id}")
-    audit(conn, "post", post_id, "approved", actor=actor,
-          detail={"scheduled_at": scheduled, "publish_target_id": target_id})
-    return {"ok": True, "scheduled_at": scheduled, "publish_target_id": target_id}
+    targets = []
+    for ch in channels:
+        target_id = ulid()
+        slot = slots[ch["id"]]
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
+                        created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?)""",
+                     (target_id, post_id, ch["id"], slot, now(), now()))
+        # post_id/channel_id ở lại payload để jobs.py xử lý AuthError/ContentViolationError
+        # (đánh dấu kênh NEEDS_REAUTH, đẩy bài về PENDING_REVIEW) không phải sửa.
+        enqueue(conn, "PUBLISH_POST",
+                {"publish_target_id": target_id, "post_id": post_id, "channel_id": ch["id"]},
+                priority=50, run_after=slot, idempotency_key=f"pub:{target_id}")
+        targets.append({"channel_id": ch["id"], "publish_target_id": target_id, "scheduled_at": slot})
+
+    audit(conn, "post", post_id, "approved", actor=actor, detail={"targets": targets})
+    return {"ok": True, "scheduled_at": earliest, "publish_target_id": targets[0]["publish_target_id"],
+            "targets": targets}
 
 
 def reject_post(conn, post_id: str, reason: str, actor: str = "operator") -> dict:

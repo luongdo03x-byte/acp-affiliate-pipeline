@@ -41,7 +41,18 @@ def setup():
                     token_encrypted, daily_post_cap, min_gap_minutes, created_at)
                     VALUES (?,?,'threads',?,?,'ACTIVE',?,?,?,?)""",
                  (ulid(), "ch1", "@test", "uid1", crypto.encrypt("tok"), 12, 90, now()))
-    scoring.save_config(conn, scoring.DEFAULT_WEIGHTS, scoring.DEFAULT_FILTERS, "test")
+    # max_per_category_per_day nới ra 20 (mặc định 3): "hôm nay" không đổi
+    # suốt một lượt chạy file test này, mà toàn bộ ~40 test dùng chung DB +
+    # dùng chung plan_content()/score_candidates() -- trần 3 món/danh mục/ngày
+    # mặc định (dành cho vận hành thật) khiến kho 13 danh mục cạn hạn mức
+    # (không phải cạn sản phẩm) chỉ sau ~39 lượt approve trong TOÀN FILE, sát
+    # nút với số test hiện có. Thêm 3 test mới (Task 7, dùng plan_content) làm
+    # tràn trần này, khiến test_publish_post_blocks_disabled_channel (chạy sau,
+    # seed=81, không liên quan gì tới approve_post đa kênh) hết ứng viên oan.
+    # Không đổi giá trị mặc định thật (core/scoring.py) -- chỉ nới cấu hình
+    # riêng của bộ test này.
+    test_filters = dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=20)
+    scoring.save_config(conn, scoring.DEFAULT_WEIGHTS, test_filters, "test")
     pipeline.ingest_datafeed(conn, MockAccessTrade(), limit=80)
     return conn
 
@@ -647,6 +658,87 @@ def test_fetch_insights_idempotency_key_per_target_not_per_post():
         check("target A và B có external_post_id khác nhau (2 lần publish riêng biệt)",
               target_a["external_post_id"] != target_b["external_post_id"],
               (target_a["external_post_id"], target_b["external_post_id"]))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_approve_post_multi_channel_creates_n_targets():
+    print("\napprove_post(channel_ids=[...]) sinh đúng N publish_target, mỗi kênh 1 slot riêng")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_approve_test", "facebook", "FB Approve Test", "ACTIVE", 1, 12, 90, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(101))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=101)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[ch1_id, fb_id])
+        check("duyệt đa kênh thành công", res["ok"], res)
+        check("trả về đúng 2 target trong 'targets'", len(res["targets"]) == 2, res["targets"])
+        check("giữ tương thích ngược: publish_target_id trỏ target đầu tiên",
+              res["publish_target_id"] == res["targets"][0]["publish_target_id"])
+
+        rows = conn.execute("SELECT channel_id, status FROM publish_target WHERE post_id=?",
+                            (post["id"],)).fetchall()
+        check("có đúng 2 dòng publish_target trong DB", len(rows) == 2, len(rows))
+        check("cả 2 đều SCHEDULED", all(r["status"] == "SCHEDULED" for r in rows), [dict(r) for r in rows])
+
+        jobs_count = conn.execute(
+            "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST' AND idempotency_key LIKE ?",
+            (f"pub:%",)).fetchone()[0]
+        check("có ít nhất 2 job PUBLISH_POST đang chờ (1 mỗi target)", jobs_count >= 2, jobs_count)
+
+        post_after = conn.execute("SELECT status FROM post WHERE id=?", (post["id"],)).fetchone()
+        check("post.status = SCHEDULED (1 lần, dùng chung)", post_after["status"] == "SCHEDULED")
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_approve_post_channel_ids_none_falls_back_to_post_channel_id():
+    print("\napprove_post(channel_ids=None) tương thích ngược -- 1 target trên post.channel_id")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(102))
+    check("có job sinh nội dung", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=102)}})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+
+    res = pipeline.approve_post(conn, post["id"])
+    check("duyệt không truyền channel_ids vẫn thành công", res["ok"], res)
+    check("chỉ tạo đúng 1 target trên kênh của post", len(res["targets"]) == 1, res["targets"])
+    check("target đó đúng post.channel_id", res["targets"][0]["channel_id"] == post["channel_id"])
+    conn.close()
+
+
+def test_approve_post_rejects_disabled_channel_in_list_creates_no_target():
+    print("\napprove_post với 1 kênh bị disabled trong channel_ids -> lỗi, không tạo target nào")
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_approve_disabled_test", "facebook", "FB Approve Disabled", "ACTIVE", 0, now()))
+    try:
+        ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(103))
+        check("có job sinh nội dung", len(ids) > 0)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=103)}})
+        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+        ch1_id = post["channel_id"]
+
+        before = conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+        res = pipeline.approve_post(conn, post["id"], channel_ids=[ch1_id, fb_id])
+        check("duyệt thất bại vì có kênh disabled", res["ok"] is False, res)
+        check("lỗi nêu rõ tên kênh", "fb_approve_disabled_test" in (res.get("error") or ""), res.get("error"))
+        after = conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+        check("không tạo publish_target nào (tất-cả-hoặc-không-gì)", before == after, (before, after))
+        post_after = conn.execute("SELECT status FROM post WHERE id=?", (post["id"],)).fetchone()
+        check("post vẫn PENDING_REVIEW, không bị đổi trạng thái",
+              post_after["status"] == "PENDING_REVIEW", post_after["status"])
     finally:
         conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
         conn.close()
@@ -1463,6 +1555,9 @@ if __name__ == "__main__":
     test_publish_target_cancelled_on_stale_post_status()
     test_sibling_target_not_cancelled_after_first_target_publishes()
     test_fetch_insights_idempotency_key_per_target_not_per_post()
+    test_approve_post_multi_channel_creates_n_targets()
+    test_approve_post_channel_ids_none_falls_back_to_post_channel_id()
+    test_approve_post_rejects_disabled_channel_in_list_creates_no_target()
     test_fetch_insights_legacy_payload_falls_back_to_post_thread_id()
     test_legacy_payload_does_not_resurrect_cancelled_target()
     test_retry_publish_target_recovers_running()
