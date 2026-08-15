@@ -393,6 +393,20 @@ def _resolve_channels_by_id(conn, channel_ids: list):
     return rows, None
 
 
+def _resolve_caption(post, target, channel) -> str:
+    """Thứ tự ưu tiên: override riêng account > caption riêng theo platform
+    > caption gốc. Thuần tính toán, không query. `post`/`target` chỉ cần hỗ
+    trợ post["col"]/target["col"] -- dict thường (lúc validate, chưa có
+    publish_target thật) hay sqlite3.Row (lúc publish, target là row CSDL
+    thật) đều dùng được, không cần phân biệt loại."""
+    if target["caption_override"]:
+        return target["caption_override"]
+    platform_col = {"facebook": "caption_facebook", "instagram": "caption_instagram"}.get(channel["platform"])
+    if platform_col and post[platform_col]:
+        return post[platform_col]
+    return post["caption_final"]
+
+
 def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
                   channel_ids: list = None) -> dict:
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()

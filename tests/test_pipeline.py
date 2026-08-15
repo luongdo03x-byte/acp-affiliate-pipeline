@@ -1662,6 +1662,23 @@ def test_caption_override_columns_exist():
     conn.close()
 
 
+def test_resolve_caption_precedence():
+    print("\n_resolve_caption: override account > caption theo platform > caption gốc")
+    post = {"caption_final": "gốc", "caption_facebook": "riêng facebook", "caption_instagram": None}
+    ch_fb = {"platform": "facebook"}
+    ch_ig = {"platform": "instagram"}
+    ch_th = {"platform": "threads"}
+
+    check("có override account -> dùng override, bất kể platform gì",
+          pipeline._resolve_caption(post, {"caption_override": "riêng account"}, ch_fb) == "riêng account")
+    check("không override, facebook có caption riêng -> dùng caption riêng facebook",
+          pipeline._resolve_caption(post, {"caption_override": None}, ch_fb) == "riêng facebook")
+    check("không override, instagram KHÔNG có caption riêng (None) -> rơi về gốc",
+          pipeline._resolve_caption(post, {"caption_override": None}, ch_ig) == "gốc")
+    check("threads không có cột riêng -> luôn rơi về gốc dù post có caption_facebook",
+          pipeline._resolve_caption(post, {"caption_override": None}, ch_th) == "gốc")
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -1714,6 +1731,7 @@ if __name__ == "__main__":
     test_publish_post_blocks_disabled_channel()
     test_disabled_channel_does_not_corrupt_status()
     test_caption_override_columns_exist()
+    test_resolve_caption_precedence()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
