@@ -24,6 +24,14 @@
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <div class="field"><label for="caption-{{ p.id }}">Caption</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
+      <div class="field">
+        <label>Kênh sẽ đăng (bỏ tích để không đăng lên kênh đó)</label>
+        <div class="niche-grid">
+        {% for sel in p.selected_channels %}
+          <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ sel.id }}" checked><span>[{{ platform_labels[sel.platform] }}] {{ sel.handle }}<small>{{ sel.code }}</small></span></label>
+        {% endfor %}
+        </div>
+      </div>
       <div class="review-actions"><span class="dim mono">{{ p.caption_final|length }}/500 ký tự</span><div class="review-actions__buttons"><button class="btn btn--danger" type="submit" formaction="/duyet/{{ p.id }}/reject">Bỏ qua</button><button class="btn btn--primary" type="submit">Duyệt & lên lịch</button></div></div>
     </form>
   </div>

@@ -479,7 +479,7 @@ def test_web_security():
         "_csrf": csrf,
         "affiliate_url": "https://s.shopee.vn/abc",
         "product_url": "https://shopee.vn/vay-i.123.456",
-        "name": "", "current_price": "0", "image_url": "", "channel_code": "ch1",
+        "name": "", "current_price": "0", "image_url": "", "channel_codes": ["ch1"],
     })
     check("create thiếu tên giá ảnh bị từ chối", invalid_create.status_code == 400, invalid_create.status_code)
 
@@ -492,7 +492,7 @@ def test_web_security():
         "original_price": "399000",
         "image_url": "https://img.example/product.jpg",
         "shop": "Shop Test",
-        "channel_code": "ch1",
+        "channel_codes": ["ch1"],
     })
     check("create affiliate draft redirect sang duyệt",
           created.status_code == 302 and "/duyet" in created.location, getattr(created, "location", ""))

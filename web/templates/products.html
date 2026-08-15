@@ -93,13 +93,12 @@
           <input id="image_url" name="image_url" inputmode="url" value="{{ metadata.image_url or '' }}" required>
         </div>
         <div class="field field--full">
-          <label for="channel_code">Kênh Threads</label>
-          <select id="channel_code" name="channel_code" required>
-            <option value="">Chọn kênh...</option>
-            {% for ch in channels %}
-            <option value="{{ ch.code }}" {{ 'selected' if selected_channel == ch.code }}>{{ ch.handle }} · {{ ch.code }}</option>
-            {% endfor %}
-          </select>
+          <label>Kênh đăng bài</label>
+          <div class="niche-grid">
+          {% for ch in channels %}
+            <label class="niche-tile"><input type="checkbox" name="channel_codes" value="{{ ch.code }}" {{ 'checked' if ch.code in selected_channels }}><span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+          {% endfor %}
+          </div>
         </div>
       </div>
       <div class="form-actions">
@@ -128,36 +127,43 @@
   </form>
 
   {% if items %}
-  <div class="section-heading section-heading--spaced">
-    <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
-  </div>
-  <div class="table-card">
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Đã bán</th><th></th></tr></thead>
-        <tbody>
-        {% for p in items %}
-          <tr>
-            <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span></td>
-            <td class="dim">{{ p.merchant }}</td>
-            <td class="n">{{ p.current_price|vnd }}</td>
-            <td class="n money">{{ p.commission_value|vnd }}</td>
-            <td class="n dim">{{ p.sold_count|num }}</td>
-            <td class="table-action">
-              <form method="post" action="/sanpham/tao-bai">
-                <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-                <input type="hidden" name="external_product_id" value="{{ p.external_product_id }}">
-                <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
-                <input type="hidden" name="q" value="{{ q }}">
-                <button class="btn btn--small" type="submit">Tạo bài</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+  <form method="post" action="/sanpham/tao-bai" class="card">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <div class="section-heading section-heading--spaced">
+      <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
     </div>
-  </div>
+    <div class="field field--full">
+      <label>Kênh đăng bài (áp dụng cho nút "Tạo bài" ở bất kỳ dòng nào bên dưới)</label>
+      <div class="niche-grid">
+      {% for ch in channels %}
+        <label class="niche-tile"><input type="checkbox" name="channel_codes" value="{{ ch.code }}"><span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+      {% endfor %}
+      </div>
+    </div>
+    <div class="table-card">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Đã bán</th><th></th></tr></thead>
+          <tbody>
+          {% for p in items %}
+            <tr>
+              <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span></td>
+              <td class="dim">{{ p.merchant }}</td>
+              <td class="n">{{ p.current_price|vnd }}</td>
+              <td class="n money">{{ p.commission_value|vnd }}</td>
+              <td class="n dim">{{ p.sold_count|num }}</td>
+              <td class="table-action">
+                <button class="btn btn--small" type="submit" name="external_product_id" value="{{ p.external_product_id }}">Tạo bài</button>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </form>
   {% elif not err %}
   <div class="empty-state">Không tìm thấy sản phẩm nào.</div>
   {% endif %}
