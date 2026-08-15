@@ -22,7 +22,7 @@ from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl,
 )
-from ..core import attribution, jobs, pipeline, scoring, storage
+from ..core import attribution, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
 from ..core.db import connect, now
 
@@ -120,6 +120,45 @@ def create_app():
     @app.route("/media/<path:name>")
     def media(name):
         return send_from_directory(MEDIA_DIR, name)
+
+    # ---------------------------------------------------------- thư viện ảnh
+
+    @app.route("/thuvien-anh")
+    def media_library_page():
+        conn = connect()
+        assets = media_library.list_media_assets(conn)
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        conn.close()
+        return render_template("media_library.html", page="thu-vien-anh",
+                               assets=assets, pending_review=pending)
+
+    @app.route("/thuvien-anh/upload", methods=["POST"])
+    def media_library_upload():
+        file = request.files.get("image")
+        url = request.form.get("image_url", "").strip()
+        try:
+            if file and file.filename:
+                local_path = media_library.materialize_uploaded_file(file, MEDIA_DIR)
+                source = "upload"
+            elif url:
+                local_path = media_library.materialize_external_image(url, MEDIA_DIR)
+                source = "url"
+            else:
+                return redirect(url_for("media_library_page", err="Chọn file hoặc dán URL"))
+        except media_library.MediaValidationError as exc:
+            return redirect(url_for("media_library_page", err=str(exc)))
+        conn = connect()
+        media_library.create_media_asset(conn, local_path, source, storage.get_storage())
+        conn.close()
+        return redirect(url_for("media_library_page"))
+
+    @app.route("/thuvien-anh/<asset_id>/xoa", methods=["POST"])
+    def media_library_delete(asset_id):
+        conn = connect()
+        res = media_library.delete_media_asset(conn, asset_id)
+        conn.close()
+        return redirect(url_for("media_library_page", err=None if res["ok"] else res["error"]))
 
     # ----------------------------------------------------------- doanh thu
 

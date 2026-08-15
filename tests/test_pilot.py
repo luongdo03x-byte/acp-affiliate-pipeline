@@ -1845,6 +1845,62 @@ def test_duyet_keeps_channel_override_after_bounce():
         os.environ.pop(var, None)
 
 
+def test_thuvien_anh_upload_list_delete_end_to_end():
+    print("\n/thuvien-anh: upload file + dán URL, hiện đúng trong grid, xoá đúng luồng")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    from io import BytesIO
+    from PIL import Image
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước
+    # khi POST -- cùng lý do đã áp dụng ở D1/D2 (route/template lệch nhau
+    # không test nào bắt được).
+    page_before = c.get("/thuvien-anh")
+    check("trang /thuvien-anh mở được", page_before.status_code == 200, page_before.status_code)
+    body_before = page_before.get_data(as_text=True)
+    check("form upload có field file 'image'", 'name="image"' in body_before, body_before[:1000])
+    check("form upload có field 'image_url'", 'name="image_url"' in body_before, body_before[:1000])
+
+    img = Image.new("RGB", (12, 12), (5, 6, 7))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/thuvien-anh/upload", data={
+        "_csrf": csrf,
+        "image": (buf, "test.png"),
+    }, content_type="multipart/form-data")
+    check("upload file thành công, redirect về /thuvien-anh",
+          r.status_code == 302 and "err=" not in (r.location or ""), (r.status_code, r.location))
+
+    page_after = c.get("/thuvien-anh")
+    body_after = page_after.get_data(as_text=True)
+    conn = connect()
+    asset = conn.execute("SELECT * FROM media_asset WHERE source='upload' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    check("asset vừa upload có mặt trong grid", asset["url"] in body_after, asset["url"] if asset else None)
+
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/thuvien-anh/{asset['id']}/xoa", data={"_csrf": csrf2})
+    check("xoá asset không ai dùng thành công",
+          r2.status_code == 302 and "err=" not in (r2.location or ""), (r2.status_code, r2.location))
+    conn = connect()
+    gone = conn.execute("SELECT 1 FROM media_asset WHERE id=?", (asset["id"],)).fetchone()
+    conn.close()
+    check("asset đã bị xoá khỏi CSDL", gone is None)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1886,6 +1942,7 @@ if __name__ == "__main__":
     test_duyet_approve_route_end_to_end()
     test_duyet_approve_saves_caption_platform_and_override()
     test_duyet_keeps_channel_override_after_bounce()
+    test_thuvien_anh_upload_list_delete_end_to_end()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
