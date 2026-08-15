@@ -88,6 +88,21 @@ def test_content_guards():
     conn.close()
 
 
+def test_content_validate_platform_max_len():
+    print("\ncontent.validate dùng đúng max_len theo platform, không hard-code Threads")
+    link = "https://go.isclix.com/x?sub1=abc"
+    long_caption = ("Nồi chiên Bear 4L. " * 30 + f"\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}")
+    check("caption dài 3000+ ký tự vượt quá mặc định (Threads, 500)",
+          any("500" in p or "Dài" in p for p in content.validate(long_caption)),
+          content.validate(long_caption))
+    check("cùng caption đó PASS khi max_len=63206 (Facebook)",
+          content.validate(long_caption, max_len=content.PLATFORM_MAX_LEN["facebook"]) == [],
+          content.validate(long_caption, max_len=content.PLATFORM_MAX_LEN["facebook"]))
+    check("PLATFORM_MAX_LEN có đủ 3 platform đúng giá trị đã biết",
+          content.PLATFORM_MAX_LEN == {"threads": 500, "facebook": 63206, "instagram": 2200},
+          content.PLATFORM_MAX_LEN)
+
+
 def test_imaging_compose_skips_watermark_when_handle_none():
     print("\nimaging.compose bỏ watermark handle khi handle=None")
     from PIL import Image
@@ -1651,6 +1666,7 @@ if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
     test_content_guards()
+    test_content_validate_platform_max_len()
     test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()
