@@ -371,7 +371,8 @@ def create_app():
         rows = [dict(r) for r in conn.execute("""
             SELECT p.*, pr.name AS product_name, pr.category_code, pr.current_price,
                    pr.commission_value, pr.rating, pr.review_count, pr.sold_count,
-                   ch.handle AS channel_handle, t.name AS template_name
+                   ch.handle AS channel_handle, ch.code AS channel_code,
+                   ch.platform AS channel_platform, t.name AS template_name
             FROM post p
             JOIN product pr ON pr.id = p.product_id
             JOIN channel ch ON ch.id = p.channel_id
@@ -380,7 +381,15 @@ def create_app():
             ORDER BY p.created_at DESC""").fetchall()]
         selections = pipeline.post_channel_selections(conn, [r["id"] for r in rows])
         for r in rows:
-            r["selected_channels"] = selections.get(r["id"], [])
+            # Bài KHÔNG có dòng post_channel_selection nào vẫn phải duyệt được:
+            # bài cũ tạo từ trước khi có bảng này, và bài do một writer tương lai
+            # quên gọi _save_channel_selection(). Checklist rỗng sẽ vướng rào
+            # "chọn ít nhất 1 kênh" ở review_action() -> bài kẹt vĩnh viễn. Rơi
+            # về đúng 1 kênh gốc của bài (post.channel_id) là hành vi cũ, an toàn.
+            r["selected_channels"] = selections.get(r["id"]) or [
+                {"id": r["channel_id"], "code": r["channel_code"],
+                 "platform": r["channel_platform"], "handle": r["channel_handle"]}
+            ]
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p JOIN product pr ON pr.id = p.product_id

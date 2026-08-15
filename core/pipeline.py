@@ -369,6 +369,10 @@ def generate_content(conn, payload, ctx):
                   payload["variant_code"], caption, content.DISCLOSURE_DEFAULT, caption,
                   image_url, link, str(subs), payload.get("score"), status,
                   "; ".join(problems) if problems else None, now(), now()))
+    # Bài do pipeline tự động sinh chỉ có 1 kênh, nhưng VẪN phải ghi lựa chọn
+    # kênh: /duyet dựng checklist "kênh sẽ đăng" thuần từ bảng này, thiếu dòng
+    # là checklist rỗng -> rào "chọn ít nhất 1 kênh" chặn duyệt vĩnh viễn.
+    _save_channel_selection(conn, post_id, [channel["id"]])
     audit(conn, "post", post_id, "generated", detail={"template": template["code"], "problems": problems})
 
 

@@ -4,6 +4,8 @@
 """
 import json
 import os
+import random
+import re
 import sys
 import tempfile
 from urllib.parse import quote
@@ -20,7 +22,7 @@ from acp.adapters import factory  # noqa: E402
 from acp.adapters.live import AT_BASE, AccessTradeSource  # noqa: E402
 from acp.adapters.mock import MockAccessTrade  # noqa: E402
 from acp.adapters.tiktokshop import AT_ROOT, AccessTradeTikTokShopSource  # noqa: E402
-from acp.core import crypto, niche, pipeline, scoring  # noqa: E402
+from acp.core import crypto, jobs, niche, pipeline, scoring  # noqa: E402
 from acp.core import content  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
@@ -568,6 +570,108 @@ def test_publish_target_retry_route():
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)
+
+
+def _ticked_channel_ids(body: str, post_id: str) -> list:
+    """Đúng những gì TRÌNH DUYỆT sẽ gửi lên khi bấm 'Duyệt & lên lịch': các
+    checkbox channel_ids đang được tích trong form của riêng bài post_id.
+    Checklist rỗng -> gửi rỗng -> vướng rào 'chọn ít nhất 1 kênh'."""
+    start = body.find(f'action="/duyet/{post_id}/approve"')
+    if start < 0:
+        return []
+    form = body[start:body.find("</form>", start)]
+    return re.findall(r'name="channel_ids" value="([^"]+)"[^>]*checked', form)
+
+
+def test_duyet_approve_route_end_to_end():
+    print("\n/duyet duyệt được bài do pipeline TỰ ĐỘNG sinh (và cả bài cũ không có lựa chọn kênh)")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch_id = ulid()
+    # Kênh riêng cho test này: ch1 của setup() đã bị test_web_security đẩy sang
+    # NEEDS_REAUTH nên plan_content() không còn nhắm tới nó nữa.
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (ch_id, "ch_duyet_test", "@duyet_test", "uid_duyet",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    try:
+        pipeline.ingest_datafeed(conn, MockAccessTrade(), limit=60)
+        before = {r["id"] for r in conn.execute("SELECT id FROM post").fetchall()}
+        ids = pipeline.plan_content(conn, "gd2026", limit=2, rng=random.Random(211))
+        check("pipeline tự động tạo được job sinh nội dung", len(ids) > 0, ids)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {}, "storage": _FakeStorage()})
+        auto_posts = [dict(r) for r in conn.execute(
+            "SELECT id, channel_id, status FROM post WHERE channel_id=?", (ch_id,)).fetchall()
+            if r["id"] not in before and r["status"] == "PENDING_REVIEW"]
+        check("có bài PENDING_REVIEW do pipeline tự động sinh", len(auto_posts) >= 1, auto_posts)
+        if not auto_posts:
+            conn.close()
+            return
+        post_id = auto_posts[0]["id"]
+
+        page = c.get("/duyet")
+        body = page.get_data(as_text=True)
+        check("trang /duyet mở được", page.status_code == 200, page.status_code)
+        ticked = _ticked_channel_ids(body, post_id)
+        check("bài tự động có checkbox kênh được tích sẵn (checklist KHÔNG rỗng)",
+              ticked == [ch_id], ticked)
+        check("checkbox hiện đúng handle của kênh", "@duyet_test" in body, "không thấy handle")
+
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        # Gửi ĐÚNG những gì form vừa render ra -- nếu checklist rỗng thì đây là
+        # POST không có channel_ids, y hệt thao tác thật của operator.
+        r = c.post(f"/duyet/{post_id}/approve",
+                   data={"_csrf": csrf, "channel_ids": ticked})
+        check("duyệt trả về 302 (redirect về /duyet)", r.status_code == 302, r.status_code)
+        check("duyệt KHÔNG kèm thông báo lỗi", "err=" not in (r.location or ""), r.location)
+        targets = conn.execute("SELECT channel_id, status FROM publish_target WHERE post_id=?",
+                               (post_id,)).fetchall()
+        check("sinh đúng 1 publish_target cho bài vừa duyệt", len(targets) == 1, [dict(t) for t in targets])
+        check("publish_target trỏ đúng kênh đã tích",
+              len(targets) == 1 and targets[0]["channel_id"] == ch_id, [dict(t) for t in targets])
+
+        # --- Bài "cũ": không có dòng post_channel_selection nào (bài tạo từ
+        # trước khi có bảng này, hoặc do một writer tương lai quên ghi). /duyet
+        # phải tự rơi về kênh gốc của bài, nếu không thì bài kẹt vĩnh viễn.
+        legacy = pipeline.create_post_for_product(
+            conn, {"source": MockAccessTrade(), "publishers": {}, "storage": _FakeStorage()},
+            next(p for p in MockAccessTrade().fetch_products(limit=200)
+                 if p.rating and p.rating >= 4.5 and p.current_price > 0).external_product_id,
+            "gd2026", channel_code="ch_duyet_test")
+        check("tạo được bài mô phỏng bài cũ", legacy.get("ok"), legacy.get("error"))
+        legacy_id = legacy["post_id"]
+        conn.execute("DELETE FROM post_channel_selection WHERE post_id=?", (legacy_id,))
+        check("bài cũ đã không còn dòng post_channel_selection nào",
+              conn.execute("SELECT COUNT(*) FROM post_channel_selection WHERE post_id=?",
+                           (legacy_id,)).fetchone()[0] == 0)
+
+        page2 = c.get("/duyet")
+        body2 = page2.get_data(as_text=True)
+        ticked2 = _ticked_channel_ids(body2, legacy_id)
+        check("bài cũ vẫn hiện checkbox kênh nhờ fallback về post.channel_id",
+              ticked2 == [ch_id], ticked2)
+        r2 = c.post(f"/duyet/{legacy_id}/approve",
+                    data={"_csrf": csrf, "channel_ids": ticked2})
+        check("duyệt bài cũ trả về 302, không bị rào 'chọn ít nhất 1 kênh' chặn",
+              r2.status_code == 302 and "err=" not in (r2.location or ""),
+              (r2.status_code, r2.location))
+        legacy_targets = conn.execute("SELECT COUNT(*) FROM publish_target WHERE post_id=?",
+                                      (legacy_id,)).fetchone()[0]
+        check("bài cũ cũng sinh đúng 1 publish_target", legacy_targets == 1, legacy_targets)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (ch_id,))
+        conn.close()
+        for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+            os.environ.pop(var, None)
 
 
 class _FakeHttpResponse:
@@ -1573,6 +1677,7 @@ if __name__ == "__main__":
     test_oauth_meta_callback_nonascii_state_clean_400()
     test_kenh_meta_sync_syncs_all_connections()
     test_create_affiliate_product_accepts_facebook_channel()
+    test_duyet_approve_route_end_to_end()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
