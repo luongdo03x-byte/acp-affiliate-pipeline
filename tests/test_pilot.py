@@ -2064,8 +2064,12 @@ def test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt():
           'name="media_asset_ids"' in body, body[:500])
     check("checklist có ảnh vừa tạo trong thư viện",
           "search-mode-test.jpg" in body, "không thấy trong checklist")
+    # Extract product count from rendered header to validate per-row prompt blocks
+    product_count_match = re.search(r'<h2>(\d+) sản phẩm</h2>', body)
+    expected_prompt_count = int(product_count_match.group(1)) if product_count_match else 0
     check("mỗi dòng sản phẩm có khối gợi ý prompt riêng (nhiều khối <details>)",
-          body.count("Gợi ý prompt") >= 1, body.count("Gợi ý prompt"))
+          body.count("Gợi ý prompt") == expected_prompt_count,
+          f"found {body.count('Gợi ý prompt')}, expected {expected_prompt_count}")
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)
