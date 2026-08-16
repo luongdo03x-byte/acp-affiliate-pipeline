@@ -181,6 +181,20 @@ CREATE TABLE IF NOT EXISTS post_media (
 );
 CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id, position);
 
+CREATE TABLE IF NOT EXISTS account_group (
+    id          TEXT PRIMARY KEY,
+    code        TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_group_channel (
+    group_id    TEXT NOT NULL REFERENCES account_group(id),
+    channel_id  TEXT NOT NULL REFERENCES channel(id),
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (group_id, channel_id)
+);
+
 CREATE TABLE IF NOT EXISTS meta_connection (
     id              TEXT PRIMARY KEY,
     provider        TEXT NOT NULL DEFAULT 'meta',

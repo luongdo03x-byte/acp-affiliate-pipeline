@@ -2253,6 +2253,35 @@ def test_publish_post_clips_media_to_platform_limit():
         conn.close()
 
 
+def test_account_group_schema():
+    print("\nbảng account_group + account_group_channel đã có trong schema")
+    conn = connect()
+    ag_cols = {r["name"] for r in conn.execute("PRAGMA table_info(account_group)").fetchall()}
+    check("account_group có đủ cột", {"id", "code", "name", "created_at"} <= ag_cols, ag_cols)
+    agc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(account_group_channel)").fetchall()}
+    check("account_group_channel có đủ cột",
+          {"group_id", "channel_id", "created_at"} <= agc_cols, agc_cols)
+
+    channel = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    group_id = ulid()
+    conn.execute("INSERT INTO account_group (id, code, name, created_at) VALUES (?,?,?,?)",
+                 (group_id, "nhom-test-abc123", "Nhóm test", now()))
+    conn.execute("INSERT INTO account_group_channel (group_id, channel_id, created_at) VALUES (?,?,?)",
+                 (group_id, channel["id"], now()))
+    row = conn.execute("SELECT 1 FROM account_group_channel WHERE group_id=? AND channel_id=?",
+                       (group_id, channel["id"])).fetchone()
+    check("account_group_channel lưu đúng dòng", row is not None)
+
+    import sqlite3
+    try:
+        conn.execute("INSERT INTO account_group_channel (group_id, channel_id, created_at) VALUES (?,?,?)",
+                     (group_id, channel["id"], now()))
+        check("PK (group_id, channel_id) chặn trùng lặp", False, "insert trùng lọt qua")
+    except sqlite3.IntegrityError as e:
+        check("PK (group_id, channel_id) chặn trùng lặp", "UNIQUE constraint failed" in str(e), str(e))
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2323,6 +2352,7 @@ if __name__ == "__main__":
     test_create_post_media_asset_id_not_found_rejected()
     test_post_media_urls_returns_ordered_urls()
     test_publish_post_clips_media_to_platform_limit()
+    test_account_group_schema()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
