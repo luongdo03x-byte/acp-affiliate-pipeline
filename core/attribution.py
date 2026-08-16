@@ -103,6 +103,12 @@ def add_clicks(conn, post_id: str, clicks: int) -> None:
 
 
 def update_insights(conn, post_id: str, insights: dict) -> None:
+    if not insights:
+        # Publisher chưa hỗ trợ fetch_insights thật (mặc định base class trả {},
+        # và Threads cũng trả {} khi API lỗi) -- không được ghi một dòng post_metrics
+        # toàn số 0 trông như đã đo đạc thật, và càng không được đè số liệu thật đã
+        # có trước đó về 0 chỉ vì lần fetch này rỗng.
+        return
     conn.execute("""
         INSERT INTO post_metrics (post_id, views, likes, replies, reposts, updated_at)
         VALUES (?,?,?,?,?,?)

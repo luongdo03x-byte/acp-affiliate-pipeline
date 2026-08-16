@@ -150,6 +150,68 @@ CREATE TABLE IF NOT EXISTS post_metrics (
     updated_at  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS publish_target (
+    id                TEXT PRIMARY KEY,
+    post_id           TEXT NOT NULL REFERENCES post(id),
+    channel_id        TEXT NOT NULL REFERENCES channel(id),
+    status            TEXT NOT NULL DEFAULT 'PENDING',
+    scheduled_at      TEXT,
+    external_post_id  TEXT,
+    last_error        TEXT,
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_publish_target_post   ON publish_target(post_id);
+CREATE INDEX IF NOT EXISTS idx_publish_target_status ON publish_target(status, scheduled_at);
+
+CREATE TABLE IF NOT EXISTS post_channel_selection (
+    post_id     TEXT NOT NULL REFERENCES post(id),
+    channel_id  TEXT NOT NULL REFERENCES channel(id),
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (post_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS media_asset (
+    id          TEXT PRIMARY KEY,
+    url         TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_media (
+    post_id         TEXT NOT NULL REFERENCES post(id),
+    media_asset_id  TEXT NOT NULL REFERENCES media_asset(id),
+    position        INTEGER NOT NULL,
+    PRIMARY KEY (post_id, media_asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id, position);
+
+CREATE TABLE IF NOT EXISTS account_group (
+    id          TEXT PRIMARY KEY,
+    code        TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_group_channel (
+    group_id    TEXT NOT NULL REFERENCES account_group(id),
+    channel_id  TEXT NOT NULL REFERENCES channel(id),
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (group_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS meta_connection (
+    id              TEXT PRIMARY KEY,
+    provider        TEXT NOT NULL DEFAULT 'meta',
+    token_encrypted BLOB NOT NULL,
+    meta_user_id    TEXT,
+    status          TEXT NOT NULL DEFAULT 'ACTIVE',
+    expires_at      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversion (
     id                  TEXT PRIMARY KEY,
     post_id             TEXT REFERENCES post(id),
@@ -279,6 +341,14 @@ PRODUCT_MIGRATIONS = [
 MIGRATIONS = [
     # (bảng, cột, câu lệnh) -- chạy được nhiều lần, bỏ qua nếu cột đã có.
     ("channel", "niches", "ALTER TABLE channel ADD COLUMN niches TEXT NOT NULL DEFAULT '[]'"),
+    ("channel", "connection_id", "ALTER TABLE channel ADD COLUMN connection_id TEXT REFERENCES meta_connection(id)"),
+    ("channel", "external_account_id", "ALTER TABLE channel ADD COLUMN external_account_id TEXT"),
+    ("channel", "username", "ALTER TABLE channel ADD COLUMN username TEXT"),
+    ("channel", "enabled", "ALTER TABLE channel ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"),
+    ("channel", "last_sync_at", "ALTER TABLE channel ADD COLUMN last_sync_at TEXT"),
+    ("post", "caption_facebook", "ALTER TABLE post ADD COLUMN caption_facebook TEXT"),
+    ("post", "caption_instagram", "ALTER TABLE post ADD COLUMN caption_instagram TEXT"),
+    ("publish_target", "caption_override", "ALTER TABLE publish_target ADD COLUMN caption_override TEXT"),
     ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
 ] + PRODUCT_MIGRATIONS
 
@@ -305,9 +375,20 @@ def _rebuild_post_table(conn) -> None:
     try:
         conn.execute("ALTER TABLE post RENAME TO post_old")
         # Tạo lại bảng post đúng theo SCHEMA hiện hành (đã có product_id nullable).
+        # LƯU Ý: post_ddl chỉ là CREATE TABLE thô trong SCHEMA -- các cột được
+        # thêm dần qua MIGRATIONS (vd caption_facebook/caption_instagram) KHÔNG
+        # có trong post_ddl. post_old (bảng gốc, vừa đổi tên) đã chạy MIGRATIONS
+        # trước bước này (xem migrate(), MIGRATIONS luôn chạy trước
+        # _rebuild_post_table()) nên nó CÓ đủ các cột đó -- phải áp lại đúng
+        # từng MIGRATIONS liên quan tới bảng "post" lên bảng post MỚI trước khi
+        # copy dữ liệu, không thì INSERT bên dưới vỡ ngay ("no such column").
         post_ddl = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS post ("):]
         post_ddl = post_ddl[:post_ddl.index(";") + 1]
         conn.executescript(post_ddl)
+        new_post_cols = {r[1] for r in conn.execute("PRAGMA table_info(post)").fetchall()}
+        for table, column, sql in MIGRATIONS:
+            if table == "post" and column not in new_post_cols:
+                conn.execute(sql)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(post_old)").fetchall()]
         col_list = ", ".join(cols)
         conn.execute(f"INSERT INTO post ({col_list}) SELECT {col_list} FROM post_old")

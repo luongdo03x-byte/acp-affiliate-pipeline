@@ -7,6 +7,7 @@ Ba chi tiết dễ sai đã xử lý sẵn ở đây:
   3. Threads yêu cầu image_url truy cập công khai -> ảnh phải nằm trên object
      storage có URL công khai, không phải đường dẫn local.
 """
+import json
 import os
 import threading
 import time
@@ -18,12 +19,35 @@ import requests
 
 from ..core.crypto import decrypt
 from .base import (
-    ContentSource, PublishingChannel, RawProduct, PublishResult,
+    ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError, AuthError,
+    MetaConnectionService, ExchangedToken, PageInfo, InstagramInfo,
 )
 
 AT_BASE = "https://api.accesstrade.vn/v1"
 THREADS_BASE = "https://graph.threads.net/v1.0"
+FACEBOOK_OAUTH_BASE = "https://www.facebook.com/v19.0/dialog/oauth"
+GRAPH_BASE = "https://graph.facebook.com/v19.0"
+META_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,instagram_basic,business_management"
+
+
+def _raise_for_meta_api(r):
+    """Dùng chung cho FacebookPublisher/InstagramPublisher -- cùng taxonomy lỗi
+    Graph API mà ThreadsChannel._raise_for_api đã áp dụng cho Threads."""
+    if r.status_code < 400:
+        return
+    try:
+        err = r.json().get("error", {})
+    except ValueError:
+        err = {}
+    code, msg = err.get("code"), err.get("message", r.text[:200])
+    if r.status_code in (401, 403) or code in (190, 102):
+        raise AuthError(msg)
+    if r.status_code == 429 or code in (4, 17, 32, 613):
+        raise RateLimitError(msg)
+    if code in (1346003, 1346013, 36003) or "policy" in str(msg).lower():
+        raise ContentViolationError(msg)
+    raise PublishError(f"HTTP {r.status_code}: {msg}")
 
 
 class TokenBucket:
@@ -168,7 +192,7 @@ class AccessTradeSource(ContentSource):
         }
 
 
-class ThreadsChannel(PublishingChannel):
+class ThreadsChannel(Publisher):
     platform = "threads"
     max_caption_length = 500
 
@@ -196,10 +220,14 @@ class ThreadsChannel(PublishingChannel):
         d = (r.json().get("data") or [{}])[0]
         return int(d.get("config", {}).get("quota_total", 250)) - int(d.get("quota_usage", 0))
 
-    def publish(self, channel_row, caption: str, image_url=None) -> PublishResult:
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if len(media) > 1:
+            raise ValueError(f"Threads chưa hỗ trợ nhiều ảnh, nhận {len(media)}")
         if len(caption) > self.max_caption_length:
             raise ContentViolationError(f"Caption {len(caption)} ký tự, Threads chỉ cho {self.max_caption_length}")
         uid, token = channel_row["external_user_id"], self._token(channel_row)
+        image_url = media[0] if media else None
 
         # Bước 1 -- tạo media container.
         payload = {"media_type": "IMAGE" if image_url else "TEXT", "text": caption, "access_token": token}
@@ -269,3 +297,214 @@ class ThreadsChannel(PublishingChannel):
         if code in (1346003, 1346013, 36003) or "policy" in str(msg).lower():
             raise ContentViolationError(msg)
         raise PublishError(f"HTTP {r.status_code}: {msg}")
+
+
+class LiveMetaConnectionService(MetaConnectionService):
+    """Gọi Graph API thật. App ID/Secret đọc từ META_APP_ID/META_APP_SECRET --
+    app_secret KHÔNG bao giờ đưa vào authorize URL (đó là bước redirect trình
+    duyệt, ai cũng xem được URL), chỉ dùng ở bước exchange_code server-side."""
+
+    def __init__(self):
+        self.app_id = os.environ.get("META_APP_ID", "")
+        self.app_secret = os.environ.get("META_APP_SECRET", "")
+        self.session = requests.Session()
+
+    def oauth_authorize_url(self, state: str, redirect_uri: str) -> str:
+        params = {
+            "client_id": self.app_id,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "scope": META_OAUTH_SCOPES,
+            "response_type": "code",
+        }
+        return f"{FACEBOOK_OAUTH_BASE}?{urlencode(params)}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> ExchangedToken:
+        r = self.session.get(f"{GRAPH_BASE}/oauth/access_token", params={
+            "client_id": self.app_id, "client_secret": self.app_secret,
+            "redirect_uri": redirect_uri, "code": code,
+        }, timeout=20)
+        if r.status_code >= 400:
+            raise AuthError(f"Đổi code lấy token thất bại: {r.text[:200]}")
+        body = r.json()
+        me = self.session.get(f"{GRAPH_BASE}/me", params={
+            "access_token": body["access_token"], "fields": "id"}, timeout=20)
+        me.raise_for_status()
+        return ExchangedToken(token=body["access_token"], expires_in=body.get("expires_in", 0),
+                               meta_user_id=me.json()["id"])
+
+    def list_pages(self, user_token: str) -> list:
+        r = self.session.get(f"{GRAPH_BASE}/me/accounts", params={
+            "access_token": user_token, "fields": "id,name,access_token"}, timeout=20)
+        if r.status_code in (401, 403):
+            raise AuthError("Token Meta bị từ chối khi liệt kê Page")
+        r.raise_for_status()
+        return [PageInfo(external_account_id=p["id"], name=p["name"], page_token=p["access_token"])
+                for p in r.json().get("data", [])]
+
+    def instagram_for_page(self, page_id: str, page_token: str):
+        r = self.session.get(f"{GRAPH_BASE}/{page_id}", params={
+            "access_token": page_token, "fields": "instagram_business_account{id,username}"},
+            timeout=20)
+        if r.status_code >= 400:
+            return None
+        ig = r.json().get("instagram_business_account")
+        if not ig:
+            return None
+        return InstagramInfo(external_account_id=ig["id"], username=ig.get("username", ""),
+                              page_token=page_token)
+
+
+class FacebookPublisher(Publisher):
+    """Publish ảnh đơn hoặc nhiều ảnh lên Facebook Page. Giới hạn 1-10 ảnh --
+    con số cần xác nhận lại với giới hạn thật của Facebook lúc go-live."""
+
+    platform = "facebook"
+    max_caption_length = 63206
+
+    def __init__(self):
+        self.session = requests.Session()
+
+    def _token(self, channel_row) -> str:
+        tok = decrypt(channel_row["token_encrypted"])
+        if not tok:
+            raise AuthError(f"Kênh {channel_row['code']} chưa có token hợp lệ")
+        return tok
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if not (1 <= len(media) <= 10):
+            raise ContentViolationError(f"Facebook cần 1-10 ảnh, nhận {len(media)}")
+        token = self._token(channel_row)
+        page_id = channel_row["external_account_id"]
+
+        if len(media) == 1:
+            r = self.session.post(f"{GRAPH_BASE}/{page_id}/photos", data={
+                "url": media[0], "caption": caption, "published": "true",
+                "access_token": token,
+            }, timeout=30)
+            _raise_for_meta_api(r)
+            body = r.json()
+            post_id = body.get("post_id") or body["id"]
+        else:
+            media_fbids = []
+            for url in media:
+                pr = self.session.post(f"{GRAPH_BASE}/{page_id}/photos", data={
+                    "url": url, "published": "false", "access_token": token,
+                }, timeout=30)
+                _raise_for_meta_api(pr)
+                media_fbids.append(pr.json()["id"])
+            attach = {f"attached_media[{i}]": json.dumps({"media_fbid": fbid})
+                      for i, fbid in enumerate(media_fbids)}
+            fr = self.session.post(f"{GRAPH_BASE}/{page_id}/feed", data={
+                "message": caption, "access_token": token, **attach,
+            }, timeout=30)
+            _raise_for_meta_api(fr)
+            post_id = fr.json()["id"]
+
+        return PublishResult(
+            external_post_id=post_id,
+            published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            native_label_status=self._try_apply_native_label(),
+        )
+
+    def _try_apply_native_label(self) -> str:
+        """Cơ chế API chính xác chưa xác nhận được (xem ghi chú Task 3 trong
+        plan) -- trả 'unavailable' trung thực, không tự chế endpoint."""
+        return "unavailable"
+
+    def remaining_quota(self, channel_row) -> int:
+        # Không dùng ở đâu trong pipeline hiện tại (giống ThreadsChannel);
+        # Facebook không có endpoint hạn mức đơn giản như Threads
+        # threads_publishing_limit -- trả hằng số lớn cho tới khi cần thật.
+        return 999
+
+
+class InstagramPublisher(Publisher):
+    """Container model giống Threads: tạo container -> poll -> publish. Nhiều
+    ảnh thì tạo child container is_carousel_item=true trước, rồi container
+    CAROUSEL tham chiếu tới children."""
+
+    platform = "instagram"
+    max_caption_length = 2200
+
+    def __init__(self, poll_interval: float = 3.0, poll_timeout: float = 60.0):
+        self.poll_interval = poll_interval
+        self.poll_timeout = poll_timeout
+        self.session = requests.Session()
+
+    def _token(self, channel_row) -> str:
+        tok = decrypt(channel_row["token_encrypted"])
+        if not tok:
+            raise AuthError(f"Kênh {channel_row['code']} chưa có token hợp lệ")
+        return tok
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if len(media) == 0 or len(media) > 10:
+            raise ContentViolationError(
+                f"Instagram cần 1 ảnh (single) hoặc 2-10 ảnh (carousel), nhận {len(media)}")
+        if len(caption) > self.max_caption_length:
+            raise ContentViolationError(
+                f"Caption {len(caption)} ký tự, Instagram chỉ cho {self.max_caption_length}")
+
+        # Token/auth check phải chạy TRƯỚC khi đọc các trường channel_row khác
+        # và trước bất kỳ lệnh gọi mạng nào (cùng ràng buộc như FacebookPublisher
+        # -- xem ghi chú Task 3/4 trong plan).
+        token = self._token(channel_row)
+        ig_id = channel_row["external_account_id"]
+
+        if len(media) == 1:
+            creation_id = self._create_container(ig_id, token, {
+                "image_url": media[0], "caption": caption})
+        else:
+            children = []
+            for url in media:
+                child_id = self._create_container(ig_id, token, {
+                    "image_url": url, "is_carousel_item": "true"})
+                children.append(child_id)
+            creation_id = self._create_container(ig_id, token, {
+                "media_type": "CAROUSEL", "children": ",".join(children), "caption": caption})
+
+        self._poll_until_finished(creation_id, token)
+
+        p = self.session.post(f"{GRAPH_BASE}/{ig_id}/media_publish", data={
+            "creation_id": creation_id, "access_token": token,
+        }, timeout=30)
+        _raise_for_meta_api(p)
+        media_id = p.json()["id"]
+
+        return PublishResult(
+            external_post_id=media_id,
+            published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            native_label_status=self._try_apply_native_label(),
+        )
+
+    def _create_container(self, ig_id: str, token: str, params: dict) -> str:
+        r = self.session.post(f"{GRAPH_BASE}/{ig_id}/media",
+                               data={**params, "access_token": token}, timeout=30)
+        _raise_for_meta_api(r)
+        return r.json()["id"]
+
+    def _poll_until_finished(self, creation_id: str, token: str) -> None:
+        deadline = time.monotonic() + self.poll_timeout
+        while time.monotonic() < deadline:
+            s = self.session.get(f"{GRAPH_BASE}/{creation_id}",
+                                  params={"fields": "status_code", "access_token": token},
+                                  timeout=20)
+            _raise_for_meta_api(s)
+            status = s.json().get("status_code")
+            if status == "FINISHED":
+                return
+            if status == "ERROR":
+                raise PublishError(f"Container {creation_id} lỗi khi xử lý")
+            time.sleep(self.poll_interval)
+        raise PublishError(f"Container {creation_id} chưa sẵn sàng sau {self.poll_timeout:.0f}s")
+
+    def _try_apply_native_label(self) -> str:
+        """Cơ chế API chính xác chưa xác nhận được (xem ghi chú Task 4 trong
+        plan) -- trả 'unavailable' trung thực, không tự chế endpoint."""
+        return "unavailable"
+
+    def remaining_quota(self, channel_row) -> int:
+        return 999

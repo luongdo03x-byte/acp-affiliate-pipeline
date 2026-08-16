@@ -15,6 +15,12 @@ from . import niche, playbook
 
 MAX_LEN = 500
 
+# Trùng đúng Publisher.max_caption_length ở adapters/base.py (mặc định),
+# adapters/mock.py, adapters/live.py cho từng platform -- 2 nguồn cùng giá
+# trị, sửa 1 chỗ nhớ sửa chỗ kia (không lấy động từ ctx["publishers"] vì
+# approve_post() không nhận ctx).
+PLATFORM_MAX_LEN = {"threads": 500, "facebook": 63206, "instagram": 2200}
+
 DISCLOSURE_DEFAULT = "#tiepthilienket — mình có nhận hoa hồng nếu bạn mua qua link này"
 
 # Cụm từ tuyệt đối hoá bị Luật Quảng cáo cấm.
@@ -204,7 +210,7 @@ def _fit(body: str, disclosure: str) -> str:
 
 
 def validate(caption: str, disclosure: str = DISCLOSURE_DEFAULT, niches=None,
-             post_type: str = "SALES") -> list:
+             post_type: str = "SALES", max_len: int = MAX_LEN) -> list:
     """Trả về danh sách vi phạm. Rỗng nghĩa là được phép đưa vào hàng đợi duyệt.
 
     niches: danh sách mã chủ đề đang bật. Mỗi chủ đề có thể thêm cụm cấm riêng --
@@ -214,12 +220,15 @@ def validate(caption: str, disclosure: str = DISCLOSURE_DEFAULT, niches=None,
     một CTA. 'VALUE' (bài không bán hàng, xem core/valuepost.py) không quảng cáo
     sản phẩm cụ thể nên bỏ qua ba yêu cầu đó -- nhưng vẫn chịu mọi rào chắn nội
     dung khác (không tuyệt đối hoá, không bịa trải nghiệm, không cam kết công dụng).
+
+    max_len: giới hạn ký tự theo platform sẽ nhận caption này -- mặc định 500
+    (Threads). Facebook/Instagram có giới hạn khác, xem PLATFORM_MAX_LEN.
     """
     problems = []
     flat = unicodedata.normalize("NFC", caption).lower()
 
-    if len(caption) > MAX_LEN:
-        problems.append(f"Dài {len(caption)} ký tự, Threads chỉ cho {MAX_LEN}")
+    if len(caption) > max_len:
+        problems.append(f"Dài {len(caption)} ký tự, giới hạn {max_len}")
     # if post_type == "SALES":
     #     if disclosure.lower() not in flat:
     #         problems.append("Thiếu nhãn tiếp thị liên kết")

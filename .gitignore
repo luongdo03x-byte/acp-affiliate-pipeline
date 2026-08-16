@@ -31,4 +31,7 @@ htmlcov/
 
 # Backup
 /backups/
+
+# Superpowers scratch workspace (SDD ledgers, briefs, review packages)
+/.superpowers/
 *.bak

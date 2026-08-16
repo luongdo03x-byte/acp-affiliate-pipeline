@@ -56,6 +56,28 @@ def get_caption_llm():
     return None
 
 
+def get_publishers() -> dict:
+    """platform -> Publisher. Đủ 3 platform kể từ sub-project C."""
+    publishers = {"threads": get_channel()}
+    if is_live():
+        from .live import FacebookPublisher, InstagramPublisher
+        publishers["facebook"] = FacebookPublisher()
+        publishers["instagram"] = InstagramPublisher()
+    else:
+        from .mock import MockFacebookPublisher, MockInstagramPublisher
+        publishers["facebook"] = MockFacebookPublisher()
+        publishers["instagram"] = MockInstagramPublisher()
+    return publishers
+
+
+def get_meta_connection_service():
+    if is_live():
+        from .live import LiveMetaConnectionService
+        return LiveMetaConnectionService()
+    from .mock import MockMetaConnectionService
+    return MockMetaConnectionService()
+
+
 def build_context(source_name: str = None) -> dict:
     """Ngữ cảnh truyền vào các job handler."""
     from ..core import content, storage
@@ -65,6 +87,7 @@ def build_context(source_name: str = None) -> dict:
         "source": get_source(source_name),
         "product_client": AccessTradeClient.from_env(),
         "channel": get_channel(),
+        "publishers": get_publishers(),
         "storage": storage.get_storage(),
     }
 

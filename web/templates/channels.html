@@ -2,15 +2,30 @@
 {% block title %}Kênh — ACP{% endblock %}
 {% block content %}
 <div class="page-header">
-  <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Mỗi tài khoản Threads có thể nhận một nhóm sản phẩm riêng. Thay đổi chỉ áp dụng cho lô nội dung sau.</p></div>
+  <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Quản lý account theo nền tảng. Bật/tắt và ngách chỉ áp dụng cho lô nội dung sau.</p></div>
+  <form method="get" action="/oauth/meta/start"><button class="btn btn--primary" type="submit">Kết nối Meta</button></form>
 </div>
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if summary %}<div class="alert alert--success"><strong>Đã đồng bộ.</strong><span>{{ summary }}</span></div>{% endif %}
 {% if saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>Đã cập nhật nhóm sản phẩm cho {{ saved }}.</span></div>{% endif %}
+
+{% if has_meta_connection %}
+<form method="post" action="/kenh/meta/sync"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--ghost" type="submit">Đồng bộ lại</button></form>
+{% endif %}
+
+{% for platform, chs in by_platform.items() %}
+<div class="section-heading section-heading--spaced"><div><h2>{{ platform|upper }}</h2></div></div>
 <div class="channel-list">
-{% for c in channels %}
+{% for c in chs %}
 <section class="card channel-card">
   <div class="channel-card__head">
-    <div><div class="channel-card__title">{{ c.handle }}</div><span class="mono-sub">{{ c.code }}</span></div>
-    <div class="channel-meta"><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span><span class="tag">{{ c.pool|num }} hợp lệ</span><span class="tag">đã đăng {{ c.published|num }}</span><span class="tag">trần {{ c.daily_post_cap }}/ngày</span></div>
+    <div><div class="channel-card__title">{{ c.username and ('@' + c.username) or c.handle }}</div><span class="mono-sub">{{ c.code }}{% if c.last_sync_at %} · đồng bộ {{ c.last_sync_at[:16]|replace('T',' ') }}{% endif %}</span></div>
+    <div class="channel-meta">
+      <span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ 'Cần kết nối lại' if c.status=='NEEDS_REAUTH' else c.status }}</span>
+      <span class="tag {{ 'ok' if c.enabled else '' }}">{{ 'Đang bật' if c.enabled else 'Đã tắt' }}</span>
+      <span class="tag">{{ c.pool|num }} hợp lệ</span><span class="tag">đã đăng {{ c.published|num }}</span>
+      <form method="post" action="/kenh/{{ c.id }}/{{ 'disable' if c.enabled else 'enable' }}"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">{{ 'Tắt' if c.enabled else 'Bật' }}</button></form>
+    </div>
   </div>
   <form method="post">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}"><input type="hidden" name="channel_id" value="{{ c.id }}">
@@ -24,5 +39,51 @@
 </section>
 {% endfor %}
 </div>
-{% if not channels %}<div class="empty-state">Chưa có kênh nào.</div>{% endif %}
+{% endfor %}
+{% if not by_platform %}<div class="empty-state">Chưa có kênh nào.</div>{% endif %}
+
+<div class="section-heading section-heading--spaced"><div><h2>Nhóm account (preset chọn nhanh)</h2><p class="note">Bấm nút tên nhóm ở /sanpham để tick nhanh cả nhóm thay vì tích từng kênh. Không ảnh hưởng bài đã tạo/đã đăng.</p></div></div>
+
+<form method="post" action="/kenh/nhom/tao" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <div class="field"><label for="group-name">Tên nhóm</label>
+    <input id="group-name" name="name" required placeholder="VD: FB Page chính"></div>
+  <div class="niche-grid">
+  {% for ch in all_active_channels %}
+    <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ ch.id }}">
+      <span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+  {% endfor %}
+  </div>
+  <button class="btn btn--primary" type="submit">Tạo nhóm</button>
+</form>
+
+{% if account_groups %}
+<div class="channel-list">
+{% for g in account_groups %}
+<section class="card channel-card">
+  <div class="channel-card__head">
+    <div><div class="channel-card__title">{{ g.name }}</div><span class="mono-sub">{{ g.code }} · {{ g.channels|length }} kênh</span></div>
+  </div>
+  <div class="channel-meta">
+  {% for ch in g.channels %}
+    <span class="tag">[{{ platform_labels[ch.platform] }}] {{ ch.handle }}</span>
+  {% endfor %}
+  </div>
+  <form method="post" action="/kenh/nhom/{{ g.id }}/sua">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="niche-grid">
+    {% for ch in all_active_channels %}
+      <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ ch.id }}" {{ 'checked' if ch.id in (g.channels|map(attribute='id')|list) }}>
+        <span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+    {% endfor %}
+    </div>
+    <div class="channel-card__foot">
+      <button class="btn btn--primary" type="submit">Lưu thành viên cho {{ g.name }}</button>
+      <button class="btn btn--danger" type="submit" formaction="/kenh/nhom/{{ g.id }}/xoa">Xoá nhóm</button>
+    </div>
+  </form>
+</section>
+{% endfor %}
+</div>
+{% endif %}
 {% endblock %}

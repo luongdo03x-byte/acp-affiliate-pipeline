@@ -5,6 +5,7 @@
   <div><div class="eyebrow">Runtime & queue</div><h1>Vận hành</h1><p class="lede">Theo dõi hàng đợi, lịch đăng, lỗi và audit log. Job READY chờ đúng lịch là trạng thái bình thường.</p></div>
   <form method="post" action="/vanhanh/work"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--primary" type="submit">Chạy hàng đợi ngay</button></form>
 </div>
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thử lại được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
 
 <div class="kpi-grid kpi-grid--4">
 {% for k, label in [('READY','Sẵn sàng'),('RUNNING','Đang chạy'),('DONE','Hoàn tất'),('FAILED','Thất bại')] %}
@@ -36,6 +37,33 @@
 <div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Kênh</th><th>Trạng thái</th><th class="n">Hôm nay</th><th class="n">Trần ngày</th><th class="n">Chờ đăng</th><th class="n">Giãn cách</th></tr></thead><tbody>
 {% for c in channels %}<tr><td><strong>{{ c.handle }}</strong><span class="mono-sub">{{ c.code }}</span></td><td><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span></td><td class="n">{{ c.today }}</td><td class="n dim">{{ c.daily_post_cap }}</td><td class="n dim">{{ c.queued }}</td><td class="n dim">{{ c.min_gap_minutes }} phút</td></tr>{% endfor %}
 </tbody></table></div></div>
+
+<div class="section-heading section-heading--spaced"><div><h2>Publish targets gần đây</h2><p class="note">Mỗi lượt đăng theo từng kênh, độc lập với các lượt khác của cùng bài.</p></div></div>
+{% if publish_targets %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Bài</th><th>Kênh</th><th>Trạng thái</th><th>Lỗi gần nhất</th><th class="n">Lần thử</th><th></th></tr></thead><tbody>
+{% for t in publish_targets %}<tr>
+  <td>{{ t.product_name }}<span class="mono-sub">{{ t.id[:10] }}</span></td>
+  <td>{{ t.channel_handle }}</td>
+  <td><span class="tag {{ 'ok' if t.status=='SUCCESS' else ('bad' if t.status=='FAILED' else '') }}">{{ t.status }}</span></td>
+  <td class="dim">{{ (t.last_error or '')[:80] }}</td>
+  <td class="n dim">{{ t.attempt_count }}</td>
+  <td>{% if t.status=='FAILED' %}<form method="post" action="/vanhanh/{{ t.id }}/retry"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">Thử lại</button></form>{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table></div></div>{% else %}<div class="empty-state">Chưa có publish target nào.</div>{% endif %}
+
+<section id="multi-channel-breakdown">
+<div class="section-heading section-heading--spaced"><div><h2>Bài đa kênh</h2><p class="note">post.status chỉ báo "đã có ít nhất 1 kênh đăng thành công", không phải tất cả -- xem đúng từng kênh ở đây.</p></div></div>
+{% if multi_channel_posts %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Bài</th><th>Từng kênh</th></tr></thead><tbody>
+{% for mp in multi_channel_posts %}<tr>
+  <td>{{ mp.product_name }}<span class="mono-sub">{{ mp.post_id[:10] }}</span></td>
+  <td>
+  {% for t in mp.targets %}
+    <span class="tag {{ 'ok' if t.status=='SUCCESS' else ('bad' if t.status=='FAILED' else '') }}">{{ t.channel_handle }}: {{ t.status }}</span>
+    {% if t.status=='FAILED' %}<form method="post" action="/vanhanh/{{ t.id }}/retry" class="inline-form"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">Thử lại</button></form>{% endif %}
+  {% endfor %}
+  </td>
+</tr>{% endfor %}
+</tbody></table></div></div>{% else %}<div class="empty-state">Chưa có bài đa kênh nào.</div>{% endif %}
+</section>
 
 <div class="grid2">
 <section class="card panel"><div class="panel-header"><h2>Bài đăng theo trạng thái</h2></div><div class="table-card"><table class="data-table"><tbody>{% for s in posts_by_status %}<tr><td>{{ s.status }}</td><td class="n">{{ s.n }}</td></tr>{% endfor %}</tbody></table></div></section>

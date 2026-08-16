@@ -2,10 +2,14 @@
 
     python3 -m acp.tests.test_pilot
 """
+import html
 import json
 import os
+import random
+import re
 import sys
 import tempfile
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -19,7 +23,7 @@ from acp.adapters import factory  # noqa: E402
 from acp.adapters.live import AT_BASE, AccessTradeSource  # noqa: E402
 from acp.adapters.mock import MockAccessTrade  # noqa: E402
 from acp.adapters.tiktokshop import AT_ROOT, AccessTradeTikTokShopSource  # noqa: E402
-from acp.core import crypto, niche, pipeline, scoring  # noqa: E402
+from acp.core import crypto, jobs, niche, pipeline, scoring  # noqa: E402
 from acp.core import content, playbook, valuepost  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
@@ -48,7 +52,19 @@ def setup():
                     token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
                     VALUES (?,?,'threads',?,?,'ACTIVE',?,?,?,?,?)""",
                  (ulid(), "ch1", "@test", "uid1", crypto.encrypt("tok"), 5, 90, "[]", now()))
-    scoring.save_config(conn, scoring.DEFAULT_WEIGHTS, scoring.DEFAULT_FILTERS, "test")
+    # max_per_category_per_day nới ra 20 (mặc định 3) -- cùng lý do đã ghi ở
+    # setup() của tests/test_pipeline.py: sau khi merge, file này chạy ~90 test
+    # dùng chung DB, nhiều test hơn hẳn feat/shopee-affiliate-import gốc (thêm
+    # cả loạt test của main), "hôm nay" không đổi suốt cả file -- trần 3
+    # món/danh mục/ngày mặc định cạn giữa chừng khiến plan_content() hết ứng
+    # viên oan ở các test chạy sau. Không đổi giá trị mặc định thật.
+    test_filters = dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=20)
+    scoring.save_config(conn, scoring.DEFAULT_WEIGHTS, test_filters, "test")
+    # Bật công tắc tổng publish_worker_enabled (mặc định "0", main thêm sau khi
+    # feat/shopee-affiliate-import đã tách nhánh) -- xem ghi chú đầy đủ ở
+    # setup() của tests/test_pipeline.py, cùng lý do.
+    from acp.core import system_settings
+    system_settings.set_system_setting(conn, "publish_worker_enabled", "1", actor="test-setup")
     conn.close()
 
 
@@ -172,9 +188,13 @@ def test_factory():
     except ValueError:
         check("nguồn sai phải ném lỗi", True)
 
+    from acp.adapters.base import Publisher
+
     ctx = factory.build_context()
-    check("context có đủ source, channel, storage",
-          all(k in ctx for k in ("source", "channel", "storage")), list(ctx))
+    check("context có đủ source, publishers, storage",
+          all(k in ctx for k in ("source", "publishers", "storage")), list(ctx))
+    check("publishers có threads là Publisher",
+          isinstance(ctx["publishers"].get("threads"), Publisher), ctx["publishers"])
 
     # Web và CLI phải đi qua cùng một factory -- lỗi cũ là web hardcode mock.
     srv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "server.py")
@@ -193,6 +213,121 @@ def test_factory():
     os.environ.pop("ACP_CAPTION_LLM", None)
 
 
+def test_mock_meta_connection_service():
+    print("\nMetaConnectionService (mock)")
+    from acp.adapters.base import MetaConnectionService
+    from acp.adapters.mock import MockMetaConnectionService
+
+    svc = MockMetaConnectionService()
+    check("là MetaConnectionService", isinstance(svc, MetaConnectionService))
+
+    url = svc.oauth_authorize_url("state123", "https://acp.example/oauth/meta/callback")
+    check("authorize URL chứa state", "state123" in url, url)
+    check("authorize URL chứa redirect_uri", "acp.example" in url, url)
+
+    exchanged = svc.exchange_code("fake-code", "https://acp.example/oauth/meta/callback")
+    check("exchange_code trả token", bool(exchanged.token))
+    check("exchange_code trả meta_user_id ổn định", exchanged.meta_user_id == "mock_meta_user_1",
+          exchanged.meta_user_id)
+
+    pages = svc.list_pages(exchanged.token)
+    check("mock trả đúng 2 Page", len(pages) == 2, len(pages))
+    check("Page có page_token", all(p.page_token for p in pages))
+
+    ig = svc.instagram_for_page(pages[0].external_account_id, pages[0].page_token)
+    check("Page đầu có Instagram gắn kèm", ig is not None and ig.username)
+    ig2 = svc.instagram_for_page(pages[1].external_account_id, pages[1].page_token)
+    check("Page thứ hai không có Instagram", ig2 is None)
+
+
+def test_live_meta_connection_service_url_building():
+    print("\nLiveMetaConnectionService (không cần mạng)")
+    import os as _os
+    from acp.adapters.live import LiveMetaConnectionService
+
+    old_id, old_secret = _os.environ.get("META_APP_ID"), _os.environ.get("META_APP_SECRET")
+    _os.environ["META_APP_ID"] = "test_app_id"
+    _os.environ["META_APP_SECRET"] = "test_app_secret"
+    try:
+        svc = LiveMetaConnectionService()
+        url = svc.oauth_authorize_url("state456", "https://acp.example/oauth/meta/callback")
+        check("authorize URL đúng host Meta", "facebook.com" in url, url)
+        check("authorize URL chứa client_id", "test_app_id" in url, url)
+        check("authorize URL chứa state", "state456" in url, url)
+        check("authorize URL chứa quyền pages_show_list", "pages_show_list" in url, url)
+        check("authorize URL chứa quyền instagram_basic", "instagram_basic" in url, url)
+        check("app_secret KHÔNG lộ trong authorize URL", "test_app_secret" not in url, url)
+    finally:
+        if old_id is None:
+            _os.environ.pop("META_APP_ID", None)
+        else:
+            _os.environ["META_APP_ID"] = old_id
+        if old_secret is None:
+            _os.environ.pop("META_APP_SECRET", None)
+        else:
+            _os.environ["META_APP_SECRET"] = old_secret
+
+
+def test_factory_meta_connection_service():
+    print("\nFactory chọn MetaConnectionService")
+    from acp.adapters.base import MetaConnectionService
+    from acp.adapters.mock import MockMetaConnectionService
+    factory.reset_cache()
+    os.environ.pop("ACP_ADAPTER", None)
+    svc = factory.get_meta_connection_service()
+    check("mặc định trả về mock", isinstance(svc, MockMetaConnectionService))
+    check("là MetaConnectionService", isinstance(svc, MetaConnectionService))
+
+
+def test_factory_meta_connection_service_live_routing():
+    print("\nFactory chọn LiveMetaConnectionService khi ACP_ADAPTER=live")
+    from acp.adapters.live import LiveMetaConnectionService
+    factory.reset_cache()
+    os.environ["ACP_ADAPTER"] = "live"
+    os.environ["META_APP_ID"] = "test_live_app_id"
+    os.environ["META_APP_SECRET"] = "test_live_app_secret"
+    try:
+        svc = factory.get_meta_connection_service()
+        check("ACP_ADAPTER=live trả về LiveMetaConnectionService", isinstance(svc, LiveMetaConnectionService))
+    finally:
+        os.environ.pop("ACP_ADAPTER", None)
+        os.environ.pop("META_APP_ID", None)
+        os.environ.pop("META_APP_SECRET", None)
+
+
+def test_factory_registers_facebook_instagram_publishers():
+    print("\nFactory đăng ký đủ facebook/instagram publisher")
+    from acp.adapters.base import Publisher
+    from acp.adapters.mock import MockFacebookPublisher, MockInstagramPublisher
+    factory.reset_cache()
+    os.environ.pop("ACP_ADAPTER", None)
+
+    publishers = factory.get_publishers()
+    check("có đủ 3 platform", set(publishers) == {"threads", "facebook", "instagram"},
+          set(publishers))
+    check("facebook là MockFacebookPublisher (mặc định mock)",
+          isinstance(publishers["facebook"], MockFacebookPublisher))
+    check("instagram là MockInstagramPublisher (mặc định mock)",
+          isinstance(publishers["instagram"], MockInstagramPublisher))
+    check("cả hai đều là Publisher",
+          isinstance(publishers["facebook"], Publisher) and isinstance(publishers["instagram"], Publisher))
+
+    os.environ["ACP_ADAPTER"] = "live"
+    os.environ["META_APP_ID"] = "test_app_id"
+    os.environ["META_APP_SECRET"] = "test_app_secret"
+    try:
+        from acp.adapters.live import FacebookPublisher, InstagramPublisher
+        live_publishers = factory.get_publishers()
+        check("ACP_ADAPTER=live trả về FacebookPublisher thật",
+              isinstance(live_publishers["facebook"], FacebookPublisher))
+        check("ACP_ADAPTER=live trả về InstagramPublisher thật",
+              isinstance(live_publishers["instagram"], InstagramPublisher))
+    finally:
+        os.environ.pop("ACP_ADAPTER", None)
+        os.environ.pop("META_APP_ID", None)
+        os.environ.pop("META_APP_SECRET", None)
+
+
 # --------------------------------------------------------- single product
 
 def test_single_product_flow():
@@ -203,7 +338,7 @@ def test_single_product_flow():
     sample = src.fetch_products(limit=200)
     target = next(p for p in sample if p.rating and p.rating >= 4.5 and p.current_price > 0)
 
-    ctx = {"source": src, "channel": None, "storage": _FakeStorage()}
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
     res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
     check("tạo bài thành công", res.get("ok"), res.get("error"))
     check("dừng ở chờ duyệt, KHÔNG đăng", res.get("status") in ("PENDING_REVIEW", "DRAFT"), res.get("status"))
@@ -492,7 +627,7 @@ def test_web_security():
         "_csrf": csrf,
         "affiliate_url": "https://s.shopee.vn/abc",
         "product_url": "https://shopee.vn/vay-i.123.456",
-        "name": "", "current_price": "0", "image_url": "", "channel_code": "ch1",
+        "name": "", "current_price": "0", "image_url": "", "channel_codes": ["ch1"],
     })
     check("create thiếu tên giá ảnh bị từ chối", invalid_create.status_code == 400, invalid_create.status_code)
 
@@ -505,7 +640,7 @@ def test_web_security():
         "original_price": "399000",
         "image_url": "https://img.example/product.jpg",
         "shop": "Shop Test",
-        "channel_code": "ch1",
+        "channel_codes": ["ch1"],
     })
     check("create affiliate draft redirect sang duyệt",
           created.status_code == 302 and "/duyet" in created.location, getattr(created, "location", ""))
@@ -530,8 +665,11 @@ def test_web_security():
 
     # Chọn giờ đăng thủ công qua form /duyet -- input datetime-local không có
     # offset, quy ước là giờ VN (UTC+7) rồi quy đổi sang UTC trước khi lưu.
+    # channel_ids bắt buộc từ D1 (đa kênh) -- route chặn checklist rỗng, không
+    # còn tự rơi về kênh gốc của bài như hành vi cũ trước khi merge.
     approve_resp = c.post(f"/duyet/{manual['id']}/approve",
-                           data={"_csrf": csrf, "scheduled_at": "2026-12-25T17:00"})
+                           data={"_csrf": csrf, "scheduled_at": "2026-12-25T17:00",
+                                 "channel_ids": [manual["channel_id"]]})
     check("duyệt qua web với giờ tuỳ chỉnh redirect về /duyet không lỗi",
           approve_resp.status_code == 302 and "err=" not in (approve_resp.location or ""),
           getattr(approve_resp, "location", ""))
@@ -654,6 +792,154 @@ def test_value_posts():
     os.environ.pop("ACP_ADMIN_PASSWORD", None)
 
     conn.close()
+
+
+def test_publish_target_retry_route():
+    print("\nRoute thử lại publish target")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    check("route thử lại yêu cầu đăng nhập",
+          c.post("/vanhanh/khong-ton-tai/retry").status_code == 302)
+
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    check("trang vận hành mở được sau đăng nhập", c.get("/vanhanh").status_code == 200)
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/vanhanh/khong-ton-tai/retry", data={"_csrf": csrf})
+    check("route thử lại target không tồn tại vẫn redirect (không sập trang)", r.status_code == 302, r.status_code)
+    check("báo lỗi target không tồn tại qua query", "err=" in r.location, r.location)
+
+    r2 = c.post("/vanhanh/khong-ton-tai/retry", data={})
+    check("thiếu CSRF bị chặn", r2.status_code == 400, r2.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def _ticked_channel_ids(body: str, post_id: str) -> list:
+    """Đúng những gì TRÌNH DUYỆT sẽ gửi lên khi bấm 'Duyệt & lên lịch': các
+    checkbox channel_ids đang được tích trong form của riêng bài post_id.
+    Checklist rỗng -> gửi rỗng -> vướng rào 'chọn ít nhất 1 kênh'."""
+    start = body.find(f'action="/duyet/{post_id}/approve"')
+    if start < 0:
+        return []
+    form = body[start:body.find("</form>", start)]
+    return re.findall(r'name="channel_ids" value="([^"]+)"[^>]*checked', form)
+
+
+def test_duyet_approve_route_end_to_end():
+    print("\n/duyet duyệt được bài do pipeline TỰ ĐỘNG sinh (và cả bài cũ không có lựa chọn kênh)")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch_id = ulid()
+    # Kênh riêng cho test này: ch1 của setup() đã bị test_web_security đẩy sang
+    # NEEDS_REAUTH nên plan_content() không còn nhắm tới nó nữa.
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (ch_id, "ch_duyet_test", "@duyet_test", "uid_duyet",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    try:
+        # KHÔNG dùng plan_content()->drain()->generate_content() nữa: sau khi
+        # merge, file này chạy ~90 test dùng chung DB, và score_candidates()
+        # LUÔN trả về đúng 1 sản phẩm "top" y hệt nhau (dữ liệu mock tĩnh,
+        # điểm không đổi) -- idempotency_key của GENERATE_CONTENT không tính
+        # theo channel_id (chỉ "gen:{product_id}:{hook}"), nên hễ có 1 test
+        # NÀO TRƯỚC ĐÓ trong cả file từng gọi plan_content() với niches rỗng
+        # là combo (top-product, hook đầu) bị "chiếm" vĩnh viễn trong
+        # job_queue (dòng không bao giờ bị xoá) -- plan_content() ở đây luôn
+        # trả về [] dù score_candidates() vẫn tìm được ứng viên bình thường.
+        # Đây là giới hạn có thật của idempotency key, không phải lỗi do
+        # merge -- tạo bài trực tiếp qua create_post_for_product() (không qua
+        # idempotency key theo product+hook) để test không phụ thuộc thứ tự
+        # chạy của hàng chục test khác. Vẫn đúng ý "bài do pipeline tạo,
+        # post_channel_selection có đúng 1 dòng" mà phần còn lại của test
+        # (kiểm tra /duyet) cần.
+        pipeline.ingest_datafeed(conn, MockAccessTrade(), limit=200)
+        before = {r["id"] for r in conn.execute("SELECT id FROM post").fetchall()}
+        target = next(p for p in MockAccessTrade().fetch_products(limit=200)
+                      if p.rating and p.rating >= 4.5 and p.current_price > 0)
+        auto_res = pipeline.create_post_for_product(
+            conn, {"source": MockAccessTrade(), "publishers": {}, "storage": _FakeStorage()},
+            target.external_product_id, "gd2026", channel_code="ch_duyet_test")
+        check("pipeline tạo được bài cho kênh test", auto_res.get("ok"), auto_res.get("error"))
+        auto_posts = [dict(r) for r in conn.execute(
+            "SELECT id, channel_id, status FROM post WHERE channel_id=?", (ch_id,)).fetchall()
+            if r["id"] not in before and r["status"] == "PENDING_REVIEW"]
+        check("có bài PENDING_REVIEW do pipeline sinh", len(auto_posts) >= 1, auto_posts)
+        if not auto_posts:
+            conn.close()
+            return
+        post_id = auto_posts[0]["id"]
+
+        page = c.get("/duyet")
+        body = page.get_data(as_text=True)
+        check("trang /duyet mở được", page.status_code == 200, page.status_code)
+        ticked = _ticked_channel_ids(body, post_id)
+        check("bài tự động có checkbox kênh được tích sẵn (checklist KHÔNG rỗng)",
+              ticked == [ch_id], ticked)
+        check("checkbox hiện đúng handle của kênh", "@duyet_test" in body, "không thấy handle")
+
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        # Gửi ĐÚNG những gì form vừa render ra -- nếu checklist rỗng thì đây là
+        # POST không có channel_ids, y hệt thao tác thật của operator.
+        r = c.post(f"/duyet/{post_id}/approve",
+                   data={"_csrf": csrf, "channel_ids": ticked})
+        check("duyệt trả về 302 (redirect về /duyet)", r.status_code == 302, r.status_code)
+        check("duyệt KHÔNG kèm thông báo lỗi", "err=" not in (r.location or ""), r.location)
+        targets = conn.execute("SELECT channel_id, status FROM publish_target WHERE post_id=?",
+                               (post_id,)).fetchall()
+        check("sinh đúng 1 publish_target cho bài vừa duyệt", len(targets) == 1, [dict(t) for t in targets])
+        check("publish_target trỏ đúng kênh đã tích",
+              len(targets) == 1 and targets[0]["channel_id"] == ch_id, [dict(t) for t in targets])
+
+        # --- Bài "cũ": không có dòng post_channel_selection nào (bài tạo từ
+        # trước khi có bảng này, hoặc do một writer tương lai quên ghi). /duyet
+        # phải tự rơi về kênh gốc của bài, nếu không thì bài kẹt vĩnh viễn.
+        legacy = pipeline.create_post_for_product(
+            conn, {"source": MockAccessTrade(), "publishers": {}, "storage": _FakeStorage()},
+            next(p for p in MockAccessTrade().fetch_products(limit=200)
+                 if p.rating and p.rating >= 4.5 and p.current_price > 0).external_product_id,
+            "gd2026", channel_code="ch_duyet_test")
+        check("tạo được bài mô phỏng bài cũ", legacy.get("ok"), legacy.get("error"))
+        legacy_id = legacy["post_id"]
+        conn.execute("DELETE FROM post_channel_selection WHERE post_id=?", (legacy_id,))
+        check("bài cũ đã không còn dòng post_channel_selection nào",
+              conn.execute("SELECT COUNT(*) FROM post_channel_selection WHERE post_id=?",
+                           (legacy_id,)).fetchone()[0] == 0)
+
+        page2 = c.get("/duyet")
+        body2 = page2.get_data(as_text=True)
+        ticked2 = _ticked_channel_ids(body2, legacy_id)
+        check("bài cũ vẫn hiện checkbox kênh nhờ fallback về post.channel_id",
+              ticked2 == [ch_id], ticked2)
+        r2 = c.post(f"/duyet/{legacy_id}/approve",
+                    data={"_csrf": csrf, "channel_ids": ticked2})
+        check("duyệt bài cũ trả về 302, không bị rào 'chọn ít nhất 1 kênh' chặn",
+              r2.status_code == 302 and "err=" not in (r2.location or ""),
+              (r2.status_code, r2.location))
+        legacy_targets = conn.execute("SELECT COUNT(*) FROM publish_target WHERE post_id=?",
+                                      (legacy_id,)).fetchone()[0]
+        check("bài cũ cũng sinh đúng 1 publish_target", legacy_targets == 1, legacy_targets)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (ch_id,))
+        conn.close()
+        for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+            os.environ.pop(var, None)
 
 
 # ------------------------------------------------------- Shopee affiliate import
@@ -1087,6 +1373,119 @@ def test_shopee_helper_pairing():
     os.environ.pop("ACP_ADMIN_PASSWORD", None)
 
 
+def test_oauth_meta_routes():
+    print("\nRoute OAuth Meta")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    check("/oauth/meta/start yêu cầu đăng nhập",
+          c.get("/oauth/meta/start", follow_redirects=False).status_code == 302)
+
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    start = c.get("/oauth/meta/start", follow_redirects=False)
+    check("start redirect sang Meta", start.status_code == 302, start.status_code)
+    check("start redirect chứa state", "state=" in start.location, start.location)
+    with c.session_transaction() as sess:
+        check("state được lưu vào session", bool(sess.get("meta_oauth_state")))
+        real_state = sess["meta_oauth_state"]
+
+    bad = c.get(f"/oauth/meta/callback?code=abc&state=sai-state", follow_redirects=False)
+    check("callback state sai bị từ chối", bad.status_code == 400, bad.status_code)
+
+    ok = c.get(f"/oauth/meta/callback?code=abc&state={real_state}", follow_redirects=False)
+    check("callback state đúng thành công, redirect /kenh", ok.status_code == 302 and "/kenh" in ok.location,
+          (ok.status_code, ok.location))
+
+    conn = connect()
+    n_channels = conn.execute("SELECT COUNT(*) FROM channel WHERE platform IN ('facebook','instagram')").fetchone()[0]
+    check("import được account qua route thật", n_channels == 3, n_channels)
+    connection = conn.execute("SELECT id FROM meta_connection LIMIT 1").fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    sync = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    check("đồng bộ lại thành công, redirect /kenh", sync.status_code == 302 and "/kenh" in sync.location,
+          (sync.status_code, sync.location))
+
+    no_csrf = c.post("/kenh/meta/sync", data={})
+    check("đồng bộ thiếu CSRF bị chặn", no_csrf.status_code == 400, no_csrf.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_channel_enable_disable_route():
+    print("\nRoute bật/tắt kênh")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch = conn.execute("SELECT id FROM channel LIMIT 1").fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/kenh/{ch['id']}/disable", data={"_csrf": csrf})
+    check("tắt kênh thành công", r.status_code == 302, r.status_code)
+    conn = connect()
+    row = conn.execute("SELECT enabled FROM channel WHERE id=?", (ch["id"],)).fetchone()
+    check("kênh đã tắt (enabled=0)", row["enabled"] == 0, row["enabled"])
+    conn.close()
+
+    r2 = c.post(f"/kenh/{ch['id']}/enable", data={"_csrf": csrf})
+    check("bật lại kênh thành công", r2.status_code == 302, r2.status_code)
+    conn = connect()
+    row2 = conn.execute("SELECT enabled FROM channel WHERE id=?", (ch["id"],)).fetchone()
+    check("kênh đã bật lại (enabled=1)", row2["enabled"] == 1, row2["enabled"])
+    conn.close()
+
+    r3 = c.post("/kenh/khong-ton-tai/disable", data={"_csrf": csrf})
+    check("tắt kênh không tồn tại vẫn redirect, không sập trang", r3.status_code == 302, r3.status_code)
+
+    page = c.get("/kenh")
+    check("trang /kenh vẫn render 200 sau các thao tác trên", page.status_code == 200, page.status_code)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_product_checklist_shows_all_platforms():
+    print("\nChecklist /sanpham hiện đủ các nền tảng (threads/facebook/instagram), không chỉ Threads")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (ulid(), "fb_test_checklist", "facebook", "Fake Page", "ACTIVE", 1, now()))
+    conn.close()
+
+    page = c.get("/sanpham?mode=search")
+    body = page.get_data(as_text=True)
+    check("checklist CÓ chứa kênh facebook (D1: đa nền tảng, không chỉ Threads)",
+          "Fake Page" in body, "không thấy trong checklist")
+    check("checklist dùng tên trường channel_codes (checkbox, không phải select đơn)",
+          'name="channel_codes"' in body, body[:300])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_production_guard():
     print("\nChặn cấu hình thiếu an toàn ở production")
     os.environ["ACP_ENV"] = "production"
@@ -1225,6 +1624,9 @@ def test_migration_adds_column():
     row = c.execute("SELECT code, daily_post_cap, niches FROM channel").fetchone()
     check("dữ liệu cũ còn nguyên", row["code"] == "cu" and row["daily_post_cap"] == 9)
     check("cột mới có giá trị mặc định rỗng", row["niches"] == "[]", row["niches"])
+    row2 = c.execute("SELECT enabled, connection_id FROM channel").fetchone()
+    check("cột enabled có giá trị mặc định 1 trên dữ liệu cũ", row2["enabled"] == 1, row2["enabled"])
+    check("cột connection_id NULL trên dữ liệu cũ", row2["connection_id"] is None)
     c.close()
 
 
@@ -1323,6 +1725,1043 @@ def test_migration_rebuilds_post_table():
     db.DB_PATH = old_db_path
 
 
+class _FixedMetaService:
+    """Fixture riêng cho test này (KHÔNG dùng MockMetaConnectionService mặc
+    định) -- test_oauth_meta_routes ở Task 5 đi qua factory.get_meta_connection_service()
+    và tạo account bằng fixture mặc định của MockMetaConnectionService trong
+    CÙNG một CSDL tạm dùng chung cho cả file test_pilot.py; nếu test này dùng
+    chung fixture đó, ai chạy trước sẽ khiến người chạy sau thấy 'đã tồn tại'
+    thay vì 'mới import'. Dùng meta_user_id/external_account_id RIÊNG để không
+    bao giờ đụng fixture mặc định, và luôn lọc theo connection_id của CHÍNH
+    lần import này thay vì đếm toàn bảng -- đúng quy ước test_daily_cap đã có
+    trong test_pipeline.py (tính theo số hiện có/delta, không đặt cứng)."""
+
+    def oauth_authorize_url(self, state, redirect_uri):
+        return f"https://mock/authorize?state={state}"
+
+    def exchange_code(self, code, redirect_uri):
+        from acp.adapters.base import ExchangedToken
+        return ExchangedToken(token=f"tok_{code}", expires_in=5184000, meta_user_id="test4_user")
+
+    def list_pages(self, user_token):
+        from acp.adapters.base import PageInfo
+        return [
+            PageInfo("9000000000001", "Fashion Page Test", "tok_page_1"),
+            PageInfo("9000000000002", "Tech Deals Test", "tok_page_2"),
+        ]
+
+    def instagram_for_page(self, page_id, page_token):
+        from acp.adapters.base import InstagramInfo
+        if page_id == "9000000000001":
+            return InstagramInfo("9700000000001", "test.fashion", page_token)
+        return None
+
+
+def test_meta_account_import_and_sync():
+    print("\nImport + đồng bộ account Meta")
+    from acp.core import connections
+
+    conn = connect()
+    svc = _FixedMetaService()
+
+    res = connections.connect_meta_account(conn, svc, "fake-code",
+                                            "https://acp.example/oauth/meta/callback")
+    check("connect_meta_account thành công", res.get("ok"), res)
+    check("import đúng 3 account (2 Page + 1 IG)", res["imported"] == 3, res)
+    check("lần đầu không có account cần cập nhật", res["updated"] == 0, res)
+    connection_id = res["connection_id"]
+
+    fb_rows = conn.execute(
+        "SELECT * FROM channel WHERE platform='facebook' AND connection_id=?", (connection_id,)).fetchall()
+    check("có 2 kênh facebook thuộc đúng connection này", len(fb_rows) == 2, len(fb_rows))
+    ig_rows = conn.execute(
+        "SELECT * FROM channel WHERE platform='instagram' AND connection_id=?", (connection_id,)).fetchall()
+    check("có 1 kênh instagram thuộc đúng connection này", len(ig_rows) == 1, len(ig_rows))
+    check("kênh instagram có username", ig_rows[0]["username"] == "test.fashion", dict(ig_rows[0]))
+    check("kênh facebook có external_account_id", fb_rows[0]["external_account_id"])
+    check("kênh facebook có token riêng, không rỗng", fb_rows[0]["token_encrypted"])
+    check("kênh mới enabled=1", fb_rows[0]["enabled"] == 1)
+    check("kênh mới status=ACTIVE", fb_rows[0]["status"] == "ACTIVE")
+
+    connection = conn.execute("SELECT * FROM meta_connection WHERE meta_user_id=?",
+                              ("test4_user",)).fetchone()
+    check("tạo đúng 1 meta_connection", connection is not None and connection["id"] == connection_id)
+
+    # Đồng bộ lại không được tạo trùng.
+    res2 = connections.sync_meta_accounts(conn, svc, connection_id)
+    check("sync lại không tạo account mới", res2["imported"] == 0, res2)
+    total_channels = conn.execute(
+        "SELECT COUNT(*) FROM channel WHERE connection_id=?", (connection_id,)).fetchone()[0]
+    check("tổng số kênh thuộc connection không đổi sau sync", total_channels == 3, total_channels)
+
+    # Kết nối lại bằng đúng meta_user_id không tạo connection thứ hai.
+    res3 = connections.connect_meta_account(conn, svc, "fake-code-2",
+                                             "https://acp.example/oauth/meta/callback")
+    check("kết nối lại cùng user không tạo connection trùng", res3["connection_id"] == connection_id, res3)
+    n_conn = conn.execute("SELECT COUNT(*) FROM meta_connection WHERE meta_user_id=?",
+                          ("test4_user",)).fetchone()[0]
+    check("chỉ có đúng 1 meta_connection cho user này", n_conn == 1, n_conn)
+
+    conn.close()
+
+
+def test_meta_sync_marks_vanished_account_reconnect_required():
+    print("\nSync đánh dấu account mất quyền, không xoá")
+    from acp.core import connections
+
+    class _ShrinkingMetaService:
+        """Lần đầu trả 2 Page, lần sau chỉ còn 1 -- mô phỏng operator gỡ quyền
+        Page thứ hai trên Meta."""
+        def __init__(self):
+            self.calls = 0
+
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tok", expires_in=1000, meta_user_id="shrink_user")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            self.calls += 1
+            if self.calls == 1:
+                return [PageInfo("2000000000001", "Page A", "tok_a"),
+                        PageInfo("2000000000002", "Page B", "tok_b")]
+            return [PageInfo("2000000000001", "Page A", "tok_a")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    conn = connect()
+    svc = _ShrinkingMetaService()
+    res = connections.connect_meta_account(conn, svc, "code", "https://acp.example/oauth/meta/callback")
+    check("import lần đầu 2 Page", res["imported"] == 2, res)
+
+    res2 = connections.sync_meta_accounts(conn, svc, res["connection_id"])
+    check("sync phát hiện 1 account mất quyền", res2["reconnect_required"] == 1, res2)
+
+    page_a = conn.execute("SELECT status FROM channel WHERE external_account_id=?",
+                          ("2000000000001",)).fetchone()
+    page_b = conn.execute("SELECT status FROM channel WHERE external_account_id=?",
+                          ("2000000000002",)).fetchone()
+    check("Page còn quyền vẫn ACTIVE", page_a["status"] == "ACTIVE", page_a["status"])
+    check("Page mất quyền chuyển NEEDS_REAUTH", page_b["status"] == "NEEDS_REAUTH", page_b["status"])
+    check("Page mất quyền KHÔNG bị xoá", page_b is not None)
+    conn.close()
+
+
+def test_oauth_meta_callback_auth_error_no_500():
+    print("\nCallback OAuth Meta: AuthError khi đổi code không được sập thành 500")
+    from acp.adapters.base import AuthError as _AuthError
+
+    class _FailingExchangeService:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return f"https://mock/authorize?state={state}"
+
+        def exchange_code(self, code, redirect_uri):
+            raise _AuthError("token Meta hết hạn khi đổi code")
+
+        def list_pages(self, user_token):
+            return []
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    with c.session_transaction() as sess:
+        sess["meta_oauth_state"] = "state-ok"
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _FailingExchangeService()
+    try:
+        r = c.get("/oauth/meta/callback?code=abc&state=state-ok", follow_redirects=False)
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("callback AuthError không 500", r.status_code == 302, r.status_code)
+    check("callback AuthError redirect về /kenh kèm err=",
+          "/kenh" in r.location and "err=" in r.location, r.location)
+
+
+def test_kenh_meta_sync_auth_error_marks_needs_reauth():
+    print("\nĐồng bộ Meta: AuthError không sập 500, đánh dấu connection NEEDS_REAUTH")
+    from acp.adapters.base import AuthError as _AuthError
+
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    mc_id = ulid()
+    conn.execute("""INSERT INTO meta_connection (id, provider, token_encrypted, meta_user_id,
+                    status, created_at, updated_at) VALUES (?,'meta',?,?,'ACTIVE',?,?)""",
+                 (mc_id, crypto.encrypt("user_token"), "auth_err_user", now(), now()))
+    conn.close()
+
+    class _FailingSyncService:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            raise AssertionError("không dùng trong test này")
+
+        def list_pages(self, user_token):
+            raise _AuthError("token Meta bị thu hồi")
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _FailingSyncService()
+    try:
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        r = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("sync AuthError không 500", r.status_code == 302, r.status_code)
+    check("sync AuthError redirect kèm err=", "err=" in r.location, r.location)
+    conn = connect()
+    row = conn.execute("SELECT status FROM meta_connection WHERE id=?", (mc_id,)).fetchone()
+    check("connection chuyển NEEDS_REAUTH sau AuthError", row["status"] == "NEEDS_REAUTH", row["status"])
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_oauth_meta_callback_nonascii_state_clean_400():
+    print("\nCallback OAuth Meta: state không phải ASCII trả 400 sạch, không sập 500")
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+
+    with c.session_transaction() as sess:
+        sess["meta_oauth_state"] = "state-ascii-only"
+
+    r = c.get("/oauth/meta/callback?code=abc&state=" + quote("tiếng-việt-é"))
+    check("state non-ASCII trả 400 sạch, không 500", r.status_code == 400, r.status_code)
+
+
+def test_kenh_meta_sync_syncs_all_connections():
+    print("\nĐồng bộ Meta đồng bộ lại TẤT CẢ connection, không chỉ cái gần nhất")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    from acp.core import connections
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    class _ServiceA:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/x"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tokA_multi", expires_in=1000, meta_user_id="multi_user_A")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            return [PageInfo("8100000000001", "Page A1", "tokA1")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    class _ServiceB:
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/y"
+
+        def exchange_code(self, code, redirect_uri):
+            from acp.adapters.base import ExchangedToken
+            return ExchangedToken(token="tokB_multi", expires_in=1000, meta_user_id="multi_user_B")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            return [PageInfo("8200000000001", "Page B1", "tokB1")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    conn = connect()
+    res_a = connections.connect_meta_account(conn, _ServiceA(), "code-a",
+                                              "https://acp.example/oauth/meta/callback")
+    res_b = connections.connect_meta_account(conn, _ServiceB(), "code-b",
+                                              "https://acp.example/oauth/meta/callback")
+    check("kết nối A thành công", res_a.get("ok"), res_a)
+    check("kết nối B thành công", res_b.get("ok"), res_b)
+
+    # Đặt last_sync_at cũ để phát hiện được cả hai connection đều được sync
+    # LẠI thật sự (không chỉ connection tạo sau cùng).
+    old_ts = "2020-01-01T00:00:00+00:00"
+    conn.execute("UPDATE channel SET last_sync_at=? WHERE connection_id IN (?,?)",
+                 (old_ts, res_a["connection_id"], res_b["connection_id"]))
+    conn.close()
+
+    class _CombinedService:
+        """sync_meta_accounts tự giải mã user_token đã lưu theo từng connection
+        rồi gọi list_pages(user_token) -- một mock DUY NHẤT phân biệt được
+        connection nào đang được đồng bộ qua chính token đó."""
+
+        def oauth_authorize_url(self, state, redirect_uri):
+            return "https://mock/z"
+
+        def exchange_code(self, code, redirect_uri):
+            raise AssertionError("không dùng trong test này")
+
+        def list_pages(self, user_token):
+            from acp.adapters.base import PageInfo
+            if user_token == "tokA_multi":
+                return [PageInfo("8100000000001", "Page A1", "tokA1_v2")]
+            return [PageInfo("8200000000001", "Page B1", "tokB1_v2")]
+
+        def instagram_for_page(self, page_id, page_token):
+            return None
+
+    original = factory.get_meta_connection_service
+    factory.get_meta_connection_service = lambda: _CombinedService()
+    try:
+        with c.session_transaction() as sess:
+            csrf = sess["csrf"]
+        r = c.post("/kenh/meta/sync", data={"_csrf": csrf})
+    finally:
+        factory.get_meta_connection_service = original
+
+    check("sync route thành công (redirect /kenh)", r.status_code == 302 and "/kenh" in r.location, r.location)
+    conn = connect()
+    ch_a = conn.execute("SELECT last_sync_at FROM channel WHERE connection_id=?",
+                        (res_a["connection_id"],)).fetchone()
+    ch_b = conn.execute("SELECT last_sync_at FROM channel WHERE connection_id=?",
+                        (res_b["connection_id"],)).fetchone()
+    check("connection A được sync lại (last_sync_at cập nhật)", ch_a["last_sync_at"] != old_ts, ch_a["last_sync_at"])
+    check("connection B được sync lại (last_sync_at cập nhật)", ch_b["last_sync_at"] != old_ts, ch_b["last_sync_at"])
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_create_affiliate_product_accepts_facebook_channel():
+    print("\ncreate_affiliate_product CHẤP NHẬN kênh Facebook qua checklist channel_codes (D1)")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (ulid(), "fb_accept_test", "facebook", "FB Accept", "ACTIVE", 1, now()))
+    conn.close()
+
+    # Tránh gọi HTTP thật ra ngoài -- image_url dùng miền img.example (RFC 2606,
+    # không bao giờ resolve DNS), giống cách test_web_security() đã làm với
+    # _FakeManualShopee. Mục tiêu test này là kiểm chứng route/pipeline chấp
+    # nhận channel_codes Facebook, không phải kiểm chứng tải ảnh qua mạng thật.
+    from acp.adapters.base import RawProduct
+
+    class _FakeManualShopeeAccept:
+        name = "manual_shopee"
+
+        def validate_confirmed_urls(self, affiliate_url, product_url):
+            pass
+
+        def prepare_product(self, confirmed, media_dir):
+            return RawProduct(
+                external_product_id="789", name=confirmed.name,
+                current_price=confirmed.current_price, original_price=confirmed.original_price,
+                commission_value=0, commission_rate=None, category_code="khac",
+                product_url=confirmed.product_url, merchant="shopee.vn",
+                image_url_original=confirmed.image_url, image_path_local=None)
+
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeAccept()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "Váy hoa nữ test",
+        "current_price": "289000",
+        "image_url": "https://img.example/product.jpg",
+        "channel_codes": ["fb_accept_test"],
+    })
+    check("gửi mã kênh Facebook được chấp nhận, redirect sang /duyet",
+          r.status_code == 302 and "/duyet" in r.location, (r.status_code, getattr(r, "location", "")))
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_approve_saves_caption_platform_and_override():
+    print("\n/duyet approve lưu đúng caption theo platform + override theo account, đăng đúng caption")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_duyet_caption_test", "facebook", "FB Duyệt Caption", "ACTIVE", 1, 12, 0, now()))
+    # Kênh Threads riêng cho test này: "ch1" của setup() có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH ở lúc chạy chung cả suite
+    # (xem test_duyet_approve_route_end_to_end() ở trên, cùng lý do), nên
+    # không dùng lại "ch1" làm kênh chính ở đây.
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_duyet_caption_test", "@duyet_caption_test", "uid_duyet_caption_test",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    # Tạo post qua create_post_for_product(channel_codes=[...]) (đã có từ D1)
+    # để post_channel_selection có SẴN cả Threads lẫn Facebook ngay từ lúc
+    # tạo -- nhờ vậy /duyet render field caption_facebook NGAY LẦN GET ĐẦU
+    # TIÊN, kiểm tra được tên field template render khớp với tên route đọc
+    # (D1 từng lọt 1 lỗi Critical vì route/template lệch nhau mà không test
+    # nào bắt được, xem đầu Task 6) mà không cần approve trước rồi mới có.
+    # Kênh Threads đứng đầu -> kênh chính (post.channel_id) là Threads,
+    # giống kịch bản thường gặp nhất.
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "gd2026",
+        channel_codes=["th_duyet_caption_test", "fb_duyet_caption_test"])
+    check("tạo bài đa kênh (facebook + threads) thành công", res.get("ok"), res.get("error"))
+    post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+    conn.close()
+
+    # Kiểm tra TEMPLATE thực sự render đúng tên field mà route sẽ đọc --
+    # không chỉ POST thẳng bằng tên field đúng sẵn.
+    page_before = c.get("/duyet")
+    body_before = page_before.get_data(as_text=True)
+    check("form /duyet render field caption_facebook (post có kênh facebook trong lựa chọn)",
+          'name="caption_facebook"' in body_before, body_before[:2000])
+    check("form /duyet render đúng field caption_override_<channel_id> cho account facebook",
+          f'name="caption_override_{fb_id}"' in body_before, body_before[:2000])
+
+    # caption_facebook đi qua content.validate() y hệt caption gốc (đủ nhãn
+    # tiếp thị liên kết + link) -- ghép từ nhãn mặc định và đúng link đã có
+    # trong caption gốc của bài (post["caption_final"] đã qua validate lúc
+    # tạo bài nên chắc chắn có 1 dòng link).
+    link_line = next(l for l in post["caption_final"].split("\n") if l.startswith("http"))
+    fb_caption = f"Caption Facebook riêng nhập từ /duyet. {content.DISCLOSURE_DEFAULT}\n\n{link_line}"
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [post["channel_id"], fb_id],
+        "caption_facebook": fb_caption,
+        f"caption_override_{fb_id}": "",
+    })
+    check("duyệt thành công, redirect về /duyet", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+
+    conn = connect()
+    post_after = conn.execute("SELECT caption_facebook FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("post.caption_facebook lưu đúng giá trị từ form",
+          post_after["caption_facebook"] == fb_caption, dict(post_after))
+    target_fb = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                             (post["id"], fb_id)).fetchone()
+    check("target facebook không có override (form gửi rỗng)", target_fb["caption_override"] is None, dict(target_fb))
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def _override_field(body: str, post_id: str, channel_id: str) -> tuple:
+    """(thẻ <details ...> mở, nội dung ô caption_override) của account
+    channel_id trong form duyệt của bài post_id -- đúng thứ trình duyệt hiển
+    thị cho operator và sẽ gửi lại khi bấm 'Duyệt & lên lịch'."""
+    start = body.find(f'action="/duyet/{post_id}/approve"')
+    if start < 0:
+        return ("", None)
+    form = body[start:body.find("</form>", start)]
+    idx = form.find(f'name="caption_override_{channel_id}"')
+    if idx < 0:
+        return ("", None)
+    d = form.rfind("<details", 0, idx)
+    details_tag = form[d:form.find(">", d) + 1] if d >= 0 else ""
+    ta = form.find(">", idx) + 1
+    return (details_tag, html.unescape(form[ta:form.find("</textarea>", ta)]))
+
+
+def test_duyet_keeps_channel_override_after_bounce():
+    print("\n/duyet điền lại override theo account sau khi bài bị bounce về PENDING_REVIEW")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_bounce_override_test", "facebook", "FB Bounce Override", "ACTIVE", 1, 12, 0, now()))
+    # Kênh Threads riêng cho test này ("ch1" của setup() có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH khi chạy chung cả suite).
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_bounce_override_test", "@bounce_override_test", "uid_bounce_override",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    res = pipeline.create_post_for_product(
+        conn, {"source": src, "publishers": {}}, target.external_product_id, "gd2026",
+        channel_codes=["th_bounce_override_test", "fb_bounce_override_test"])
+    check("tạo bài đa kênh (threads + facebook) thành công", res.get("ok"), res.get("error"))
+    post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+    link_line = next(l for l in post["caption_final"].split("\n") if l.startswith("http"))
+    override_text = (f"Caption riêng operator gõ cho đúng account Threads này. "
+                     f"{content.DISCLOSURE_DEFAULT}\n\n{link_line}")
+    conn.close()
+
+    # --- Lần duyệt 1: operator nhập override cho riêng account Threads.
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [th_id, fb_id],
+        f"caption_override_{th_id}": override_text,
+        f"caption_override_{fb_id}": "",
+    })
+    check("duyệt lần 1 thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    conn = connect()
+    t1 = conn.execute("SELECT caption_override FROM publish_target WHERE post_id=? AND channel_id=?",
+                      (post["id"], th_id)).fetchone()
+    check("lần duyệt 1 lưu override vào publish_target của account Threads",
+          t1 and t1["caption_override"] == override_text, dict(t1) if t1 else None)
+
+    # --- Bounce: ContentViolationError ở account Facebook đẩy CẢ BÀI về
+    # PENDING_REVIEW và huỷ các target còn lại (core/jobs.py, sub-project D1).
+    # Mô phỏng thẳng trạng thái sau bounce, giống test_pipeline.py vẫn làm.
+    conn.execute("UPDATE publish_target SET status='CANCELLED' WHERE post_id=?", (post["id"],))
+    conn.execute("UPDATE post SET status='PENDING_REVIEW' WHERE id=?", (post["id"],))
+    conn.close()
+
+    # --- Bài quay lại /duyet: ô override phải còn nguyên chữ operator đã gõ.
+    page = c.get("/duyet")
+    body = page.get_data(as_text=True)
+    check("trang /duyet mở được sau bounce", page.status_code == 200, page.status_code)
+    th_tag, th_val = _override_field(body, post["id"], th_id)
+    check("ô override của account Threads được điền lại đúng chữ đã nhập trước đó",
+          th_val == override_text, repr(th_val))
+    check("<details> tự mở khi có override cũ (operator không bỏ sót)", "open" in th_tag, th_tag)
+    fb_tag, fb_val = _override_field(body, post["id"], fb_id)
+    check("account chưa từng có override vẫn để trống và <details> vẫn đóng",
+          fb_val == "" and "open" not in fb_tag, (fb_tag, repr(fb_val)))
+
+    # --- Duyệt lại đúng như form vừa render (operator KHÔNG gõ lại gì cả).
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post['id']}/approve", data={
+        "_csrf": csrf,
+        "caption": post["caption_final"],
+        "channel_ids": [th_id, fb_id],
+        f"caption_override_{th_id}": th_val,
+        f"caption_override_{fb_id}": fb_val,
+    })
+    check("duyệt lại thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    conn = connect()
+    t2 = conn.execute("""SELECT caption_override FROM publish_target
+                         WHERE post_id=? AND channel_id=? AND status='SCHEDULED'""",
+                      (post["id"], th_id)).fetchone()
+    check("publish_target MỚI sau khi duyệt lại vẫn giữ override của operator",
+          t2 and t2["caption_override"] == override_text, dict(t2) if t2 else None)
+    t2fb = conn.execute("""SELECT caption_override FROM publish_target
+                           WHERE post_id=? AND channel_id=? AND status='SCHEDULED'""",
+                        (post["id"], fb_id)).fetchone()
+    check("account Facebook vẫn không có override (ô để trống)",
+          t2fb and t2fb["caption_override"] is None, dict(t2fb) if t2fb else None)
+    conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?)", (th_id, fb_id))
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_thuvien_anh_upload_list_delete_end_to_end():
+    print("\n/thuvien-anh: upload file + dán URL, hiện đúng trong grid, xoá đúng luồng")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    from io import BytesIO
+    from PIL import Image
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước
+    # khi POST -- cùng lý do đã áp dụng ở D1/D2 (route/template lệch nhau
+    # không test nào bắt được).
+    page_before = c.get("/thuvien-anh")
+    check("trang /thuvien-anh mở được", page_before.status_code == 200, page_before.status_code)
+    body_before = page_before.get_data(as_text=True)
+    check("form upload có field file 'image'", 'name="image"' in body_before, body_before[:1000])
+    check("form upload có field 'image_url'", 'name="image_url"' in body_before, body_before[:1000])
+
+    img = Image.new("RGB", (12, 12), (5, 6, 7))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/thuvien-anh/upload", data={
+        "_csrf": csrf,
+        "image": (buf, "test.png"),
+    }, content_type="multipart/form-data")
+    check("upload file thành công, redirect về /thuvien-anh",
+          r.status_code == 302 and "err=" not in (r.location or ""), (r.status_code, r.location))
+
+    page_after = c.get("/thuvien-anh")
+    body_after = page_after.get_data(as_text=True)
+    conn = connect()
+    asset = conn.execute("SELECT * FROM media_asset WHERE source='upload' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    check("asset vừa upload có mặt trong grid", asset["url"] in body_after, asset["url"] if asset else None)
+
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/thuvien-anh/{asset['id']}/xoa", data={"_csrf": csrf2})
+    check("xoá asset không ai dùng thành công",
+          r2.status_code == 302 and "err=" not in (r2.location or ""), (r2.status_code, r2.location))
+    conn = connect()
+    gone = conn.execute("SELECT 1 FROM media_asset WHERE id=?", (asset["id"],)).fetchone()
+    conn.close()
+    check("asset đã bị xoá khỏi CSDL", gone is None)
+
+    # Nhánh "dán URL" -- vẫn chưa test nào đụng tới
+    # materialize_external_image() (đường tải ảnh ngoài qua SafeHttpClient,
+    # có chặn SSRF/redirect). Route thật không nhận http_client tiêm vào nên
+    # giả lập ngay tại tầng HTTP (session + DNS resolver), không mock thẳng
+    # hàm materialize_external_image() -- để hàm thật vẫn chạy nguyên vẹn.
+    from acp.adapters.safe_http import SafeHttpClient
+    import acp.core.media_library as ml
+
+    img2 = Image.new("RGB", (10, 10), (9, 8, 7))
+    buf2 = BytesIO()
+    img2.save(buf2, format="PNG")
+    png_bytes = buf2.getvalue()
+
+    fake_session = _FakeSession([_FakeHttpResponse(200, {"Content-Type": "image/png"}, png_bytes)])
+    orig_safe_http_client = ml.SafeHttpClient
+    ml.SafeHttpClient = lambda *a, **kw: SafeHttpClient(
+        session=fake_session, dns_resolver=_public_dns,
+        **{k: v for k, v in kw.items() if k not in ("session", "dns_resolver")})
+    try:
+        with c.session_transaction() as sess:
+            csrf3 = sess["csrf"]
+        r3 = c.post("/thuvien-anh/upload", data={
+            "_csrf": csrf3,
+            "image_url": "https://cdn.example.com/anh-san-pham.png",
+        })
+        check("dán URL thành công, redirect về /thuvien-anh",
+              r3.status_code == 302 and "err=" not in (r3.location or ""), (r3.status_code, r3.location))
+    finally:
+        ml.SafeHttpClient = orig_safe_http_client
+
+    check("SafeHttpClient giả lập thực sự được gọi (materialize_external_image không bị bypass)",
+          len(fake_session.calls) == 1, fake_session.calls)
+
+    page_after_url = c.get("/thuvien-anh")
+    body_after_url = page_after_url.get_data(as_text=True)
+    conn = connect()
+    asset_url = conn.execute(
+        "SELECT * FROM media_asset WHERE source='url' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    check("asset dán URL được ghi vào media_asset với source='url'",
+          asset_url is not None, dict(asset_url) if asset_url else None)
+    check("asset dán URL có mặt trong grid /thuvien-anh",
+          asset_url is not None and asset_url["url"] in body_after_url,
+          asset_url["url"] if asset_url else None)
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_sanpham_affiliate_create_with_media_asset_ids_end_to_end():
+    print("\n/sanpham affiliate: chọn ảnh thêm từ thư viện lúc tạo bài, ghi đúng post_media")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    asset_id = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (asset_id, "https://fake-storage.example/sanpham-test.jpg", "upload", now()))
+    # Kênh riêng cho test này -- không dùng lại "ch1" của setup() vì các test
+    # chạy trước trong cùng tiến trình (vd. test_web_security()) có thể đã
+    # đẩy nó sang NEEDS_REAUTH (xem ghi chú tương tự ở
+    # test_duyet_approve_saves_caption_platform_and_override()).
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_media_test", "@th_media_test", "uid_th_media_test",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    conn.close()
+
+    from acp.adapters.shopee_affiliate import ProductMetadata, ResolvedAffiliateUrl
+
+    class _FakeManualShopeeMedia:
+        name = "manual_shopee"
+        def resolve(self, affiliate_url):
+            return ResolvedAffiliateUrl(
+                affiliate_url=affiliate_url, product_url="https://shopee.vn/vay-i.123.456")
+        def metadata(self, product_url):
+            return ProductMetadata(
+                name="Váy hoa nữ test D3", current_price=289000, original_price=None,
+                image_url="https://img.example/product.jpg", shop=None)
+        def validate_confirmed_urls(self, affiliate_url, product_url):
+            pass
+        def prepare_product(self, confirmed, media_dir):
+            from acp.adapters.base import RawProduct
+            return RawProduct(
+                external_product_id="media-test-1", name=confirmed.name,
+                current_price=confirmed.current_price, original_price=confirmed.original_price,
+                commission_value=0, commission_rate=None, category_code="khac",
+                product_url=confirmed.product_url, merchant="shopee.vn",
+                image_url_original=confirmed.image_url, image_path_local=None)
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeMedia()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước khi
+    # POST tạo bài thật. GET đơn thuần (không kèm resolve) chỉ ra được màn
+    # hình "Nhập link affiliate" (chưa có checklist vì chưa có resolved) --
+    # /sanpham/affiliate/resolve mới là nơi màn hình xác nhận (có checklist)
+    # được render, và resolve() không tạo post/product nào (an toàn dùng
+    # làm bước xem trước, giống test hiện có "resolve metadata chưa tạo post").
+    page = c.post("/sanpham/affiliate/resolve", data={
+        "_csrf": csrf, "affiliate_url": "https://s.shopee.vn/abc"})
+    body = page.get_data(as_text=True)
+    check("checklist ảnh thêm render đúng field media_asset_ids",
+          'name="media_asset_ids"' in body, body[:500])
+    check("checklist có ảnh vừa tạo trong thư viện",
+          "sanpham-test.jpg" in body, "không thấy trong checklist")
+
+    r = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "Váy hoa nữ test D3",
+        "current_price": "289000",
+        "image_url": "https://img.example/product.jpg",
+        "channel_codes": ["th_media_test"],
+        "media_asset_ids": [asset_id],
+    })
+    check("tạo bài với ảnh thêm thành công, redirect sang /duyet",
+          r.status_code == 302 and "/duyet" in r.location, (r.status_code, getattr(r, "location", "")))
+
+    conn = connect()
+    post = conn.execute("""SELECT p.id FROM post p JOIN product pr ON pr.id = p.product_id
+                           WHERE pr.external_product_id='media-test-1' ORDER BY p.id DESC LIMIT 1""").fetchone()
+    check("tìm được post vừa tạo", post is not None, post)
+    pm = conn.execute("SELECT media_asset_id, position FROM post_media WHERE post_id=?", (post["id"],)).fetchone()
+    check("post_media ghi đúng asset đã chọn, position=1",
+          pm is not None and pm["media_asset_id"] == asset_id and pm["position"] == 1,
+          dict(pm) if pm else None)
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt():
+    print("\n/sanpham tìm kiếm: hiện checklist ảnh thêm + prompt AI riêng từng dòng sản phẩm")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    asset_id = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (asset_id, "https://fake-storage.example/search-mode-test.jpg", "upload", now()))
+    conn.close()
+
+    page = c.get("/sanpham?mode=search&nguon=mock")
+    body = page.get_data(as_text=True)
+    check("checklist ảnh thêm render đúng field media_asset_ids ở chế độ tìm kiếm",
+          'name="media_asset_ids"' in body, body[:500])
+    check("checklist có ảnh vừa tạo trong thư viện",
+          "search-mode-test.jpg" in body, "không thấy trong checklist")
+    # Đếm số dòng sản phẩm từ tiêu đề đã render để đối chiếu số khối prompt per-row
+    product_count_match = re.search(r'<h2>(\d+) sản phẩm</h2>', body)
+    expected_prompt_count = int(product_count_match.group(1)) if product_count_match else 0
+    check("mỗi dòng sản phẩm có khối gợi ý prompt riêng (nhiều khối <details>)",
+          body.count("Gợi ý prompt") == expected_prompt_count,
+          f"thấy {body.count('Gợi ý prompt')}, cần {expected_prompt_count}")
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_kenh_account_group_crud_end_to_end():
+    print("\n/kenh: tạo/sửa/xoá AccountGroup, checklist đúng field, ghi đúng thành viên")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch1 = conn.execute("SELECT id, code FROM channel WHERE code='ch1'").fetchone()
+    aux_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (aux_id, "kenh_ag_test", "facebook", "Kenh AG Test", "ACTIVE", 1, 12, 0, now()))
+    conn.close()
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước
+    # khi POST -- cùng lý do đã áp dụng ở D1/D3.
+    page = c.get("/kenh")
+    check("trang /kenh mở được", page.status_code == 200, page.status_code)
+    body = page.get_data(as_text=True)
+    check("form tạo nhóm có field 'name'", 'name="name"' in body, body[:1000])
+    check("form tạo nhóm có checklist 'channel_ids'", 'name="channel_ids"' in body, body[:1000])
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/kenh/nhom/tao", data={
+        "_csrf": csrf, "name": "Nhóm test D4 kenh",
+        "channel_ids": [ch1["id"], aux_id],
+    })
+    check("tạo nhóm thành công, redirect về /kenh",
+          r.status_code == 302 and "err=" not in (r.location or ""), (r.status_code, r.location))
+
+    page_after = c.get("/kenh")
+    body_after = page_after.get_data(as_text=True)
+    check("tên nhóm vừa tạo có mặt trên trang", "Nhóm test D4 kenh" in body_after, "không thấy")
+
+    conn = connect()
+    group = conn.execute(
+        "SELECT id FROM account_group WHERE name='Nhóm test D4 kenh' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    check("tìm được nhóm vừa tạo", group is not None, group)
+    n_members = conn.execute("SELECT COUNT(*) FROM account_group_channel WHERE group_id=?",
+                             (group["id"],)).fetchone()[0]
+    check("đúng 2 thành viên", n_members == 2, n_members)
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/kenh/nhom/{group['id']}/sua", data={"_csrf": csrf2, "channel_ids": [aux_id]})
+    check("sửa nhóm thành công, redirect về /kenh",
+          r2.status_code == 302 and "err=" not in (r2.location or ""), (r2.status_code, r2.location))
+    conn = connect()
+    members = {r["channel_id"] for r in conn.execute(
+        "SELECT channel_id FROM account_group_channel WHERE group_id=?", (group["id"],)).fetchall()}
+    check("sau khi sửa chỉ còn đúng 1 thành viên (aux_id)", members == {aux_id}, members)
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf3 = sess["csrf"]
+    r3 = c.post(f"/kenh/nhom/{group['id']}/xoa", data={"_csrf": csrf3})
+    check("xoá nhóm thành công, redirect về /kenh",
+          r3.status_code == 302 and "err=" not in (r3.location or ""), (r3.status_code, r3.location))
+    conn = connect()
+    gone = conn.execute("SELECT 1 FROM account_group WHERE id=?", (group["id"],)).fetchone()
+    check("nhóm đã bị xoá khỏi CSDL", gone is None)
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_sanpham_shows_account_group_quick_select_both_modes():
+    print("\n/sanpham cả 2 chế độ: hiện nút chọn nhanh theo nhóm, đúng channel_codes nhúng vào onclick")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch1 = conn.execute("SELECT id, code FROM channel WHERE code='ch1'").fetchone()
+    group_res = pipeline.create_account_group(conn, "Nhóm sanpham test", [ch1["id"]])
+    conn.close()
+    check("tạo nhóm test thành công", group_res.get("ok"), group_res.get("error"))
+
+    # Chế độ Tìm kiếm
+    page_search = c.get("/sanpham?mode=search&nguon=mock")
+    body_search = page_search.get_data(as_text=True)
+    check("chế độ tìm kiếm: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_search, "không thấy")
+    check("chế độ tìm kiếm: đúng channel_codes của nhóm nhúng vào onclick",
+          ('acpTickGroup(this, [&#34;' + ch1["code"] + '&#34;]') in body_search, body_search[:2000])
+
+    # Chế độ Affiliate: nút nhóm nằm trong form xác nhận (product-confirm__form),
+    # chỉ render sau khi có resolved/metadata (xem ghi chú route thật ở D3 --
+    # GET /sanpham?mode=affiliate KHÔNG bao giờ tới được form đó, phải POST
+    # /sanpham/affiliate/resolve, route không mutate DB, dùng làm bước xem
+    # trước đúng khuôn D3 đã lập).
+    from acp.adapters.shopee_affiliate import ResolvedAffiliateUrl, ProductMetadata
+
+    class _FakeManualShopeeAG:
+        name = "manual_shopee"
+        def resolve(self, url):
+            return ResolvedAffiliateUrl(affiliate_url=url, product_url="https://shopee.vn/vay-i.1.1")
+        def metadata(self, product_url):
+            return ProductMetadata(name="SP test", current_price=100000, image_url="https://img/x.jpg")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeAG()
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    resolved_page = c.post("/sanpham/affiliate/resolve", data={
+        "_csrf": csrf, "affiliate_url": "https://s.shopee.vn/abc"})
+    body_affiliate = resolved_page.get_data(as_text=True)
+    check("chế độ affiliate: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_affiliate, "không thấy")
+    check("chế độ affiliate: đúng channel_codes của nhóm nhúng vào onclick",
+          ('acpTickGroup(this, [&#34;' + ch1["code"] + '&#34;]') in body_affiliate, body_affiliate[:2000])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_vanhanh_shows_multi_channel_post_breakdown():
+    print("\n/vanhanh: bài đa kênh hiện breakdown theo publish_target (D4-B)")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_vanhanh_test", "facebook", "FB Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+    ig_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (ig_id, "ig_vanhanh_test", "instagram", "IG Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+    # Kênh riêng cho bài đơn-kênh, KHÔNG dùng "ch1" dùng chung (có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH khi chạy chung cả suite).
+    solo_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (solo_id, "solo_vanhanh_test", "facebook", "Solo Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+
+    src = MockAccessTrade()
+    sample = [p for p in src.fetch_products(limit=50) if p.product_url]
+    multi_target, solo_target = sample[0], sample[1]
+    ctx = {"source": src, "publishers": {}}
+
+    res_multi = pipeline.create_post_for_product(
+        conn, ctx, multi_target.external_product_id, "gd2026",
+        channel_codes=["fb_vanhanh_test", "ig_vanhanh_test"])
+    check("tạo bài đa kênh thành công", res_multi.get("ok"), res_multi.get("error"))
+    post_multi = conn.execute("SELECT * FROM post WHERE id=?", (res_multi["post_id"],)).fetchone()
+    product_multi = conn.execute("SELECT name FROM product WHERE id=?", (post_multi["product_id"],)).fetchone()
+
+    res_solo = pipeline.create_post_for_product(
+        conn, ctx, solo_target.external_product_id, "gd2026", channel_codes=["solo_vanhanh_test"])
+    check("tạo bài đơn kênh thành công", res_solo.get("ok"), res_solo.get("error"))
+    post_solo = conn.execute("SELECT * FROM post WHERE id=?", (res_solo["post_id"],)).fetchone()
+    product_solo = conn.execute("SELECT name FROM product WHERE id=?", (post_solo["product_id"],)).fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post_multi['id']}/approve", data={
+        "_csrf": csrf, "caption": post_multi["caption_final"], "channel_ids": [fb_id, ig_id]})
+    check("duyệt bài đa kênh thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/duyet/{post_solo['id']}/approve", data={
+        "_csrf": csrf2, "caption": post_solo["caption_final"], "channel_ids": [solo_id]})
+    check("duyệt bài đơn kênh thành công", r2.status_code == 302 and "err=" not in (r2.location or ""),
+          (r2.status_code, r2.location))
+
+    conn = connect()
+    targets = conn.execute("SELECT id, channel_id FROM publish_target WHERE post_id=?",
+                           (post_multi["id"],)).fetchall()
+    check("bài đa kênh có đúng 2 publish_target", len(targets) == 2, len(targets))
+    fb_target = next(t for t in targets if t["channel_id"] == fb_id)
+    ig_target = next(t for t in targets if t["channel_id"] == ig_id)
+    conn.execute("UPDATE publish_target SET status='SUCCESS', updated_at=? WHERE id=?", (now(), fb_target["id"]))
+    conn.execute("UPDATE publish_target SET status='FAILED', last_error='lỗi test D4-B', updated_at=? WHERE id=?",
+                 (now(), ig_target["id"]))
+    conn.close()
+
+    page = c.get("/vanhanh")
+    check("trang /vanhanh mở được", page.status_code == 200, page.status_code)
+    body = page.get_data(as_text=True)
+    section = re.search(r'<section id="multi-channel-breakdown">.*?</section>', body, re.S)
+    check("có khối breakdown đa kênh trong trang", section is not None, body[:500])
+    section_html = section.group(0) if section else ""
+    check("bài đa kênh xuất hiện trong breakdown", product_multi["name"] in section_html,
+          product_multi["name"])
+    check("breakdown hiện đủ trạng thái SUCCESS và FAILED của 2 kênh",
+          "SUCCESS" in section_html and "FAILED" in section_html, section_html[:1500])
+    check("bài đơn kênh KHÔNG xuất hiện trong breakdown đa kênh (chỉ <2 target thì không cần breakdown)",
+          product_solo["name"] not in section_html, product_solo["name"])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1336,6 +2775,11 @@ if __name__ == "__main__":
     test_link_response_parsing()
     test_transaction_status_mapping()
     test_factory()
+    test_mock_meta_connection_service()
+    test_live_meta_connection_service_url_building()
+    test_factory_meta_connection_service()
+    test_factory_meta_connection_service_live_routing()
+    test_factory_registers_facebook_instagram_publishers()
     test_single_product_flow()
     test_playbook_hooks_and_cta()
     test_content_post_type()
@@ -1351,7 +2795,27 @@ if __name__ == "__main__":
     test_caption_llm_wired_regardless_of_manual_flow()
     test_web_security()
     test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
+    test_publish_target_retry_route()
+    test_oauth_meta_routes()
+    test_channel_enable_disable_route()
+    test_product_checklist_shows_all_platforms()
     test_production_guard()
+    test_meta_account_import_and_sync()
+    test_meta_sync_marks_vanished_account_reconnect_required()
+    test_oauth_meta_callback_auth_error_no_500()
+    test_kenh_meta_sync_auth_error_marks_needs_reauth()
+    test_oauth_meta_callback_nonascii_state_clean_400()
+    test_kenh_meta_sync_syncs_all_connections()
+    test_create_affiliate_product_accepts_facebook_channel()
+    test_duyet_approve_route_end_to_end()
+    test_duyet_approve_saves_caption_platform_and_override()
+    test_duyet_keeps_channel_override_after_bounce()
+    test_thuvien_anh_upload_list_delete_end_to_end()
+    test_sanpham_affiliate_create_with_media_asset_ids_end_to_end()
+    test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt()
+    test_kenh_account_group_crud_end_to_end()
+    test_sanpham_shows_account_group_quick_select_both_modes()
+    test_vanhanh_shows_multi_channel_post_breakdown()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

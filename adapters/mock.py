@@ -11,8 +11,9 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
 from .base import (
-    ContentSource, PublishingChannel, RawProduct, PublishResult,
+    ContentSource, Publisher, RawProduct, PublishResult,
     PublishError, RateLimitError, ContentViolationError,
+    MetaConnectionService, ExchangedToken, PageInfo, InstagramInfo,
 )
 
 SEED_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "seed", "datafeed_sample.json")
@@ -84,7 +85,7 @@ class MockAccessTrade(ContentSource):
         return [r for r in rows if not since or (r.get("converted_at") or "") >= since]
 
 
-class MockThreads(PublishingChannel):
+class MockThreads(Publisher):
     platform = "threads"
     max_caption_length = 500
 
@@ -94,7 +95,10 @@ class MockThreads(PublishingChannel):
         self._rng = random.Random(seed)
         self.published = []
 
-    def publish(self, channel_row, caption: str, image_url=None) -> PublishResult:
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if len(media) > 1:
+            raise ValueError(f"Threads chưa hỗ trợ nhiều ảnh, nhận {len(media)}")
         if self.rate_limited:
             raise RateLimitError("Đã dùng hết 250 bài trong cửa sổ 24 giờ")
         if len(caption) > self.max_caption_length:
@@ -121,6 +125,102 @@ class MockThreads(PublishingChannel):
             "replies": int(views * r.uniform(0.001, 0.01)),
             "reposts": int(views * r.uniform(0.0005, 0.005)),
         }
+
+
+class MockMetaConnectionService(MetaConnectionService):
+    """Fixture cố định: 2 Page giả, Page đầu có 1 Instagram gắn kèm. Không cần
+    mạng, dùng cho dev/test giống MockThreads/MockAccessTrade."""
+
+    def oauth_authorize_url(self, state: str, redirect_uri: str) -> str:
+        return f"https://mock.meta.example/oauth/authorize?state={state}&redirect_uri={redirect_uri}"
+
+    def exchange_code(self, code: str, redirect_uri: str) -> ExchangedToken:
+        return ExchangedToken(token=f"mock_user_token_{code}", expires_in=5184000,
+                               meta_user_id="mock_meta_user_1")
+
+    def list_pages(self, user_token: str) -> list:
+        return [
+            PageInfo(external_account_id="1000000000001", name="Fashion Page Test",
+                     page_token="mock_page_token_1"),
+            PageInfo(external_account_id="1000000000002", name="Tech Deals Test",
+                     page_token="mock_page_token_2"),
+        ]
+
+    def instagram_for_page(self, page_id: str, page_token: str):
+        if page_id == "1000000000001":
+            return InstagramInfo(external_account_id="1700000000001",
+                                  username="test.fashion", page_token=page_token)
+        return None
+
+
+class MockFacebookPublisher(Publisher):
+    """Fixture xác định, không cần mạng. Giới hạn 1-10 ảnh/bài -- con số cần
+    xác nhận lại với giới hạn thật của Facebook lúc go-live."""
+
+    platform = "facebook"
+    max_caption_length = 63206
+
+    def __init__(self, fail_rate: float = 0.0, rate_limited: bool = False,
+                 seed: int = None, native_label_status: str = "applied"):
+        self.fail_rate = fail_rate
+        self.rate_limited = rate_limited
+        self._rng = random.Random(seed)
+        self.native_label_status = native_label_status
+        self.published = []
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if not (1 <= len(media) <= 10):
+            raise ContentViolationError(f"Facebook cần 1-10 ảnh, nhận {len(media)}")
+        if self.rate_limited:
+            raise RateLimitError("Đã dùng hết hạn mức đăng bài Facebook")
+        if self._rng.random() < self.fail_rate:
+            raise PublishError("Lỗi tạm thời khi tạo bài Facebook")
+        pid = f"mock_fb_{self._rng.randrange(10**12, 10**13)}"
+        self.published.append((pid, caption, list(media)))
+        return PublishResult(external_post_id=pid,
+                              published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                              native_label_status=self.native_label_status)
+
+    def remaining_quota(self, channel_row) -> int:
+        return 0 if self.rate_limited else 999
+
+
+class MockInstagramPublisher(Publisher):
+    """1 ảnh -> nhánh single, 2-10 ảnh -> nhánh carousel (mock gộp làm một,
+    bản live tách hai luồng khác nhau, xem adapters/live.py)."""
+
+    platform = "instagram"
+    max_caption_length = 2200
+
+    def __init__(self, fail_rate: float = 0.0, rate_limited: bool = False,
+                 seed: int = None, native_label_status: str = "applied"):
+        self.fail_rate = fail_rate
+        self.rate_limited = rate_limited
+        self._rng = random.Random(seed)
+        self.native_label_status = native_label_status
+        self.published = []
+
+    def publish(self, channel_row, caption: str, media: list = None) -> PublishResult:
+        media = media or []
+        if len(media) == 0 or len(media) > 10:
+            raise ContentViolationError(
+                f"Instagram cần 1 ảnh (single) hoặc 2-10 ảnh (carousel), nhận {len(media)}")
+        if len(caption) > self.max_caption_length:
+            raise ContentViolationError(
+                f"Caption {len(caption)} ký tự, Instagram chỉ cho {self.max_caption_length}")
+        if self.rate_limited:
+            raise RateLimitError("Đã dùng hết hạn mức đăng bài Instagram")
+        if self._rng.random() < self.fail_rate:
+            raise PublishError("Lỗi tạm thời khi tạo media container Instagram")
+        pid = f"mock_ig_{self._rng.randrange(10**12, 10**13)}"
+        self.published.append((pid, caption, list(media)))
+        return PublishResult(external_post_id=pid,
+                              published_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                              native_label_status=self.native_label_status)
+
+    def remaining_quota(self, channel_row) -> int:
+        return 0 if self.rate_limited else 999
 
 
 def simulate_postbacks(posts, rng: random.Random):

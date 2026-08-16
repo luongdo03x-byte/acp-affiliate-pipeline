@@ -114,14 +114,38 @@
           <label for="image_url">URL ảnh sản phẩm</label>
           <input id="image_url" name="image_url" inputmode="url" value="{{ metadata.image_url or '' }}" required>
         </div>
+        {% if account_groups %}
         <div class="field field--full">
-          <label for="channel_code">Kênh Threads</label>
-          <select id="channel_code" name="channel_code" required>
-            <option value="">Chọn kênh...</option>
-            {% for ch in channels %}
-            <option value="{{ ch.code }}" {{ 'selected' if selected_channel == ch.code }}>{{ ch.handle }} · {{ ch.code }}</option>
-            {% endfor %}
-          </select>
+          <label>Chọn nhanh theo nhóm</label>
+          <div class="quick-group-row">
+          {% for g in account_groups %}
+            <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson|forceescape }})">{{ g.name }}</button>
+          {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        <div class="field field--full">
+          <label>Kênh đăng bài</label>
+          <div class="niche-grid">
+          {% for ch in channels %}
+            <label class="niche-tile"><input type="checkbox" name="channel_codes" value="{{ ch.code }}" {{ 'checked' if ch.code in selected_channels }}><span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+          {% endfor %}
+          </div>
+        </div>
+        <div class="field field--full">
+          <details><summary>💡 Gợi ý prompt tạo ảnh AI (dán vào ChatGPT/DALL-E ngoài, tự upload kết quả vào /thuvien-anh)</summary>
+            <textarea readonly rows="4">Ảnh sản phẩm quảng cáo cho "{{ metadata.name or '' }}"{% if metadata.current_price %}, giá {{ metadata.current_price|vnd }}{% endif %}.
+Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơn sắc, ánh sáng tự nhiên, không có chữ/logo/watermark, tỷ lệ vuông 1:1. KHÔNG vẽ bao bì/nhãn hiệu cụ thể nào ngoài mô tả trên.</textarea>
+          </details>
+        </div>
+        <div class="field field--full">
+          <label>Ảnh thêm cho carousel (tối đa 9, ảnh ghép tự động luôn là ảnh đầu tiên)</label>
+          <div class="niche-grid">
+          {% for asset in media_assets %}
+            <label class="niche-tile"><input type="checkbox" name="media_asset_ids" value="{{ asset.id }}">
+              <img src="{{ asset.url }}" alt="Ảnh thư viện" style="width:100%;border-radius:6px" loading="lazy"></label>
+          {% endfor %}
+          </div>
         </div>
       </div>
       <div class="form-actions">
@@ -218,6 +242,24 @@
   </script>
   {% endif %}
 {% else %}
+{% if mode == 'search' %}
+  <form method="get" class="card search-panel">
+    <input type="hidden" name="mode" value="search">
+    <div class="field field--grow">
+      <label for="q">Từ khoá</label>
+      <input id="q" name="q" value="{{ q }}" placeholder="máy xay, tai nghe, thảm yoga...">
+    </div>
+    <div class="field search-panel__source">
+      <label for="nguon">Nguồn</label>
+      <select id="nguon" name="nguon">
+        {% for s in ['', 'tiktokshop', 'shopee', 'mock'] %}
+        <option value="{{ s }}" {{ 'selected' if s == request.args.get('nguon','') }}>{{ s or 'mặc định' }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn--primary" type="submit">Tìm sản phẩm</button>
+  </form>
+{% else %}
   <section class="catalog-summary" aria-label="Tổng quan catalog">
     <div class="catalog-stat"><span>Đồng bộ gần nhất</span><strong>{{ catalog.last_synced_at or '—' }}</strong></div>
     <div class="catalog-stat"><span>Trong catalog</span><strong>{{ catalog.count|num }}</strong></div>
@@ -308,10 +350,74 @@
       <button class="btn" type="submit">Lọc catalog</button>
     </form>
   </div>
+{% endif %}
 
   {% if items %}
+  {% if mode == 'search' %}
+  <form method="post" action="/sanpham/tao-bai" class="card">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="nguon" value="{{ request.args.get('nguon','') }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <div class="section-heading section-heading--spaced">
+      <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
+    </div>
+    {% if account_groups %}
+    <div class="field field--full">
+      <label>Chọn nhanh theo nhóm (áp dụng cho checklist kênh ngay bên dưới)</label>
+      <div class="quick-group-row">
+      {% for g in account_groups %}
+        <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson|forceescape }})">{{ g.name }}</button>
+      {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    <div class="field field--full">
+      <label>Kênh đăng bài (áp dụng cho nút "Tạo bài" ở bất kỳ dòng nào bên dưới)</label>
+      <div class="niche-grid">
+      {% for ch in channels %}
+        <label class="niche-tile"><input type="checkbox" name="channel_codes" value="{{ ch.code }}"><span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+      {% endfor %}
+      </div>
+    </div>
+    <div class="field field--full">
+      <label>Ảnh thêm cho carousel (áp dụng cho nút "Tạo bài" ở bất kỳ dòng nào bên dưới, tối đa 9)</label>
+      <div class="niche-grid">
+      {% for asset in media_assets %}
+        <label class="niche-tile"><input type="checkbox" name="media_asset_ids" value="{{ asset.id }}">
+          <img src="{{ asset.url }}" alt="Ảnh thư viện" style="width:100%;border-radius:6px" loading="lazy"></label>
+      {% endfor %}
+      </div>
+    </div>
+    <div class="table-card">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Sản phẩm</th><th>Shop</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Đã bán</th><th></th></tr></thead>
+          <tbody>
+          {% for p in items %}
+            <tr>
+              <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span>
+              <details><summary>💡 Gợi ý prompt AI</summary>
+                <textarea readonly rows="3">Ảnh sản phẩm quảng cáo cho "{{ p.name }}", giá {{ p.current_price|vnd }}.
+Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơn sắc, ánh sáng tự nhiên, không có chữ/logo/watermark, tỷ lệ vuông 1:1. KHÔNG vẽ bao bì/nhãn hiệu cụ thể nào ngoài mô tả trên.</textarea>
+              </details>
+            </td>
+              <td class="dim">{{ p.merchant }}</td>
+              <td class="n">{{ p.current_price|vnd }}</td>
+              <td class="n money">{{ p.commission_value|vnd }}</td>
+              <td class="n dim">{{ p.sold_count|num }}</td>
+              <td class="table-action">
+                <button class="btn btn--small" type="submit" name="external_product_id" value="{{ p.external_product_id }}">Tạo bài</button>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </form>
+  {% else %}
   <div class="section-heading section-heading--spaced">
-    <div><h2>{{ items|length }} sản phẩm trong catalog</h2><p class="note">Dữ liệu đọc từ database cục bộ.</p></div>
+    <div><h2>{{ items|length }} sản phẩm trong catalog</h2><p class="note">Dữ liệu đọc từ database cục bộ. Đa kênh/ảnh thêm/nhóm nhanh chưa nối vào chế độ này -- xem <a href="{{ url_for('products', mode='search') }}">chế độ tìm kiếm</a>.</p></div>
   </div>
 
   <!-- Không lồng trong .catalog-grid: mỗi thẻ sản phẩm bên dưới đã có form
@@ -382,6 +488,7 @@
     </article>
     {% endfor %}
   </div>
+  {% endif %}
   {% elif not err %}
   <div class="empty-state">Catalog chưa có sản phẩm phù hợp. Đồng bộ từ ACCESSTRADE để bắt đầu.</div>
   {% endif %}
@@ -417,4 +524,17 @@
   })();
   </script>
 {% endif %}
+<script>
+// D4-A: preset chọn nhanh theo nhóm -- tick THÊM checkbox channel_codes
+// khớp nhóm được bấm, KHÔNG bỏ tick cái đang tick sẵn. Operator vẫn tự tay
+// điều chỉnh trước khi submit. <script> đầu tiên trong codebase -- giữ
+// thuần vanilla, không framework/build step.
+function acpTickGroup(btn, codes) {
+  const form = btn.closest('form') || document;
+  codes.forEach(function (code) {
+    const box = form.querySelector('input[name="channel_codes"][value="' + code + '"]');
+    if (box) box.checked = true;
+  });
+}
+</script>
 {% endblock %}

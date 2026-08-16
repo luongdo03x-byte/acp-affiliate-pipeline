@@ -125,11 +125,23 @@ def run_once(conn, limit: int = 10, ctx: dict = None) -> dict:
             stats["deferred"] += 1
 
         except ContentViolationError as e:
-            # Không bao giờ retry. Đẩy bài về hàng đợi duyệt để người xem lại.
+            # Không bao giờ retry. Đẩy bài về hàng đợi duyệt để người xem lại --
+            # NHƯNG chỉ khi bài chưa từng đăng thành công ở kênh nào khác. Nếu
+            # post.status đã là PUBLISHED (một publish_target khác của cùng bài
+            # đã SUCCESS -- có thể xảy ra từ sub-project D, một post có N target
+            # độc lập), đẩy về PENDING_REVIEW ở đây sẽ: (1) rút bài đang live
+            # khỏi báo cáo PUBLISHED dù published_at vẫn còn, (2) khiến các
+            # target khác đang chờ tự huỷ oan (điều kiện huỷ ở publish_post()
+            # coi PENDING_REVIEW là "bài không còn đăng được"), (3) khi duyệt
+            # lại thì kênh đã SUCCESS bị tạo target mới, đăng trùng. Chỉ target
+            # bị từ chối cần biết -- nó đã FAILED (_fail bên dưới), operator
+            # xem/retry đúng target đó ở /vanhanh, không cần rút cả bài.
             payload = json.loads(job["payload"])
             if payload.get("post_id"):
-                conn.execute("UPDATE post SET status='PENDING_REVIEW', reject_reason=?, updated_at=? WHERE id=?",
-                             (f"Nền tảng từ chối nội dung: {e}", now(), payload["post_id"]))
+                post = conn.execute("SELECT status FROM post WHERE id=?", (payload["post_id"],)).fetchone()
+                if post and post["status"] != "PUBLISHED":
+                    conn.execute("UPDATE post SET status='PENDING_REVIEW', reject_reason=?, updated_at=? WHERE id=?",
+                                 (f"Nền tảng từ chối nội dung: {e}", now(), payload["post_id"]))
             _fail(conn, job, str(e), retryable=False)
             stats["failed"] += 1
 
