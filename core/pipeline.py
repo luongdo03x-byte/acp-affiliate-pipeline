@@ -200,6 +200,15 @@ def _save_channel_selection(conn, post_id: str, channel_ids: list) -> None:
                      (post_id, cid, now()))
 
 
+def post_media_urls(conn, post_id: str) -> list:
+    """Ảnh THÊM (không gồm ảnh ghép tự động ở post.image_url_composited),
+    đúng thứ tự position. Dùng ở publish_post() để dựng carousel."""
+    return [r["url"] for r in conn.execute("""
+        SELECT ma.url FROM post_media pm JOIN media_asset ma ON ma.id = pm.media_asset_id
+        WHERE pm.post_id=? ORDER BY pm.position
+    """, (post_id,)).fetchall()]
+
+
 def post_channel_selections(conn, post_ids: list) -> dict:
     """post_id -> list[channel row dict] đã chọn lúc tạo bài (sắp theo
     platform, code). Dùng để tick sẵn checklist ở /duyet."""
@@ -253,10 +262,20 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                                   template_code: str = None,
                                   variant_code: str = "A", prebuilt_affiliate_link: str = None,
                                   attribution_payload: dict = None,
-                                  audit_action: str = "created_single") -> dict:
+                                  audit_action: str = "created_single",
+                                  media_asset_ids: list = None) -> dict:
     campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
     if not campaign:
         return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
+    if media_asset_ids:
+        # Validate NGAY TRONG HÀM NÀY (không chỉ ở route web) -- pipeline là
+        # nguồn sự thật duy nhất, web chỉ là 1 trong nhiều caller có thể có,
+        # đúng khuôn channel_codes/_resolve_channels_by_code đã làm ở D1.
+        if len(media_asset_ids) > 9:
+            return {"ok": False, "error": f"Tối đa 9 ảnh thêm, nhận {len(media_asset_ids)}"}
+        for aid in media_asset_ids:
+            if not conn.execute("SELECT 1 FROM media_asset WHERE id=?", (aid,)).fetchone():
+                return {"ok": False, "error": f"Không tìm thấy ảnh {aid} trong thư viện"}
     if channel_codes:
         # Đa kênh (sub-project D) -- kênh ĐẦU TIÊN trong danh sách là "kênh
         # chính" (post.channel_id, watermark khi chỉ 1 kênh, tracking link).
@@ -321,6 +340,10 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                   image_url, link, json.dumps(stored_attribution, ensure_ascii=False, sort_keys=True), None,
                   status, "; ".join(problems) if problems else None, now(), now()))
     _save_channel_selection(conn, post_id, channel_ids)
+    if media_asset_ids:
+        for i, aid in enumerate(media_asset_ids, start=1):
+            conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",
+                         (post_id, aid, i))
     audit(conn, "post", post_id, audit_action, actor="operator",
           detail={"source": source.name, "external_product_id": raw.external_product_id,
                   "template": template["code"], "problems": problems, "channel_ids": channel_ids})
@@ -333,7 +356,8 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
 
 def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: str,
                             channel_code: str = None, channel_codes: list = None,
-                            template_code: str = None, variant_code: str = "A") -> dict:
+                            template_code: str = None, variant_code: str = "A",
+                            media_asset_ids: list = None) -> dict:
     """Một sản phẩm cụ thể -> một bài PENDING_REVIEW. Không đăng."""
     source = ctx["source"]
     raw = source.get_product(external_product_id) if hasattr(source, "get_product") else None
@@ -344,14 +368,16 @@ def create_post_for_product(conn, ctx, external_product_id: str, campaign_code: 
     return _create_post_from_raw_product(
         conn, ctx, source, raw, campaign_code,
         channel_code=channel_code, channel_codes=channel_codes,
-        template_code=template_code, variant_code=variant_code)
+        template_code=template_code, variant_code=variant_code,
+        media_asset_ids=media_asset_ids)
 
 
 def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_url: str,
                                                campaign_code: str, channel_code: str = None,
                                                channel_codes: list = None,
                                                template_code: str = None,
-                                               variant_code: str = "A") -> dict:
+                                               variant_code: str = "A",
+                                               media_asset_ids: list = None) -> dict:
     """Tạo bài review từ sản phẩm Shopee + affiliate URL có sẵn; không publish."""
     if not affiliate_url or not affiliate_url.startswith(("http://", "https://")):
         return {"ok": False, "error": "Thiếu link affiliate hợp lệ"}
@@ -361,6 +387,7 @@ def create_post_from_manual_affiliate_product(conn, ctx, source, raw, affiliate_
         conn, ctx, source, raw, campaign_code,
         channel_code=channel_code, channel_codes=channel_codes,
         template_code=template_code, variant_code=variant_code,
+        media_asset_ids=media_asset_ids,
         prebuilt_affiliate_link=affiliate_url,
         attribution_payload={"provider": "shopee_direct", "link_mode": "prebuilt"},
         audit_action="created_manual_shopee")

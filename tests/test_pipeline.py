@@ -2073,6 +2073,97 @@ def test_media_library_create_list_delete_asset():
     conn.close()
 
 
+def test_create_post_with_media_asset_ids():
+    print("\nTạo post với media_asset_ids -> đúng N dòng post_media, đúng thứ tự position")
+    conn = connect()
+    asset_ids = []
+    for i in range(3):
+        aid = ulid()
+        conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                     (aid, f"https://fake.example/{i}.jpg", "upload", now()))
+        asset_ids.append(aid)
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(
+            conn, ctx, target.external_product_id, "test", media_asset_ids=asset_ids)
+        check("tạo bài với media_asset_ids thành công", res.get("ok"), res.get("error"))
+        rows = conn.execute(
+            "SELECT media_asset_id, position FROM post_media WHERE post_id=? ORDER BY position",
+            (res["post_id"],)).fetchall()
+        check("đúng 3 dòng post_media", len(rows) == 3, len(rows))
+        check("đúng thứ tự position khớp asset_ids đã submit",
+              [r["media_asset_id"] for r in rows] == asset_ids, [dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+def test_create_post_media_asset_ids_over_cap_rejected():
+    print("\nTạo post với hơn 9 media_asset_ids -> lỗi rõ, không tạo post")
+    conn = connect()
+    asset_ids = []
+    for i in range(10):
+        aid = ulid()
+        conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                     (aid, f"https://fake.example/cap{i}.jpg", "upload", now()))
+        asset_ids.append(aid)
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    before = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "test", media_asset_ids=asset_ids)
+    check("tạo bài thất bại vì vượt trần 9 ảnh thêm", res.get("ok") is False, res)
+    check("thông báo lỗi nêu rõ số lượng", "10" in (res.get("error") or ""), res.get("error"))
+    after = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    check("không tạo post nào", before == after, (before, after))
+    conn.close()
+
+
+def test_create_post_media_asset_id_not_found_rejected():
+    print("\nTạo post với 1 media_asset_id không tồn tại -> lỗi rõ, không tạo post, không tạo post_media")
+    conn = connect()
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    before = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    fake_id = ulid()
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "test", media_asset_ids=[fake_id])
+    check("tạo bài thất bại vì asset không tồn tại", res.get("ok") is False, res)
+    check("thông báo lỗi nêu rõ asset id", fake_id in (res.get("error") or ""), res.get("error"))
+    after = conn.execute("SELECT COUNT(*) FROM post").fetchone()[0]
+    check("không tạo post nào", before == after, (before, after))
+    conn.close()
+
+
+def test_post_media_urls_returns_ordered_urls():
+    print("\npost_media_urls() trả đúng URL theo thứ tự position")
+    conn = connect()
+    asset_ids, urls = [], []
+    for i in range(3):
+        aid = ulid()
+        url = f"https://fake.example/ordered{i}.jpg"
+        conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                     (aid, url, "upload", now()))
+        asset_ids.append(aid)
+        urls.append(url)
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    # Submit theo thứ tự ĐẢO NGƯỢC để chắc chắn kiểm tra đúng position, không
+    # phải trùng hợp thứ tự insert.
+    reversed_ids = list(reversed(asset_ids))
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "test", media_asset_ids=reversed_ids)
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    result = pipeline.post_media_urls(conn, res["post_id"])
+    check("post_media_urls trả đúng thứ tự theo submit (đảo ngược)",
+          result == list(reversed(urls)), (result, urls))
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2137,6 +2228,10 @@ if __name__ == "__main__":
     test_media_asset_and_post_media_schema()
     test_media_library_validates_and_stores_uploaded_bytes()
     test_media_library_create_list_delete_asset()
+    test_create_post_with_media_asset_ids()
+    test_create_post_media_asset_ids_over_cap_rejected()
+    test_create_post_media_asset_id_not_found_rejected()
+    test_post_media_urls_returns_ordered_urls()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
