@@ -385,11 +385,19 @@ def create_app():
         has_meta_connection = bool(conn.execute("SELECT 1 FROM meta_connection LIMIT 1").fetchone())
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        # D4-A: preset chọn nhanh -- checklist tạo nhóm cần TOÀN BỘ channel
+        # ACTIVE (không lọc thêm enabled=1, khác /sanpham -- nhóm là preset
+        # lâu dài, channel tạm tắt vẫn nên giữ trong nhóm để bật lại là dùng
+        # được ngay, không cần tạo lại nhóm).
+        all_active_channels = [r for r in rows if r["status"] == "ACTIVE"]
+        account_groups = pipeline.list_account_groups(conn)
         conn.close()
         return render_template("channels.html", page="kenh", by_platform=by_platform,
                                all_niches=niche_mod.NICHES, saved=saved, pending_review=pending,
                                has_meta_connection=has_meta_connection,
-                               summary=request.args.get("summary"))
+                               summary=request.args.get("summary"),
+                               all_active_channels=all_active_channels,
+                               account_groups=account_groups, platform_labels=PLATFORM_LABELS)
 
     @app.route("/kenh/<channel_id>/enable", methods=["POST"])
     def channel_enable(channel_id):
@@ -406,6 +414,34 @@ def create_app():
         pipeline.audit(conn, "channel", channel_id, "disabled", actor="operator")
         conn.close()
         return redirect(url_for("channels"))
+
+    # ------------------------------------------------- nhóm account (D4-A)
+
+    @app.route("/kenh/nhom/tao", methods=["POST"])
+    def account_group_create():
+        name = request.form.get("name", "").strip()
+        channel_ids = request.form.getlist("channel_ids")
+        if not name:
+            return redirect(url_for("channels", err="Thiếu tên nhóm"))
+        conn = connect()
+        res = pipeline.create_account_group(conn, name, channel_ids)
+        conn.close()
+        return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
+
+    @app.route("/kenh/nhom/<group_id>/sua", methods=["POST"])
+    def account_group_update(group_id):
+        channel_ids = request.form.getlist("channel_ids")
+        conn = connect()
+        res = pipeline.update_account_group_channels(conn, group_id, channel_ids)
+        conn.close()
+        return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
+
+    @app.route("/kenh/nhom/<group_id>/xoa", methods=["POST"])
+    def account_group_delete(group_id):
+        conn = connect()
+        res = pipeline.delete_account_group(conn, group_id)
+        conn.close()
+        return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
     # ----------------------------------------------------------- duyệt bài
 

@@ -41,4 +41,49 @@
 </div>
 {% endfor %}
 {% if not by_platform %}<div class="empty-state">Chưa có kênh nào.</div>{% endif %}
+
+<div class="section-heading section-heading--spaced"><div><h2>Nhóm account (preset chọn nhanh)</h2><p class="note">Bấm nút tên nhóm ở /sanpham để tick nhanh cả nhóm thay vì tích từng kênh. Không ảnh hưởng bài đã tạo/đã đăng.</p></div></div>
+
+<form method="post" action="/kenh/nhom/tao" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <div class="field"><label for="group-name">Tên nhóm</label>
+    <input id="group-name" name="name" required placeholder="VD: FB Page chính"></div>
+  <div class="niche-grid">
+  {% for ch in all_active_channels %}
+    <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ ch.id }}">
+      <span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+  {% endfor %}
+  </div>
+  <button class="btn btn--primary" type="submit">Tạo nhóm</button>
+</form>
+
+{% if account_groups %}
+<div class="channel-list">
+{% for g in account_groups %}
+<section class="card channel-card">
+  <div class="channel-card__head">
+    <div><div class="channel-card__title">{{ g.name }}</div><span class="mono-sub">{{ g.code }} · {{ g.channels|length }} kênh</span></div>
+  </div>
+  <div class="channel-meta">
+  {% for ch in g.channels %}
+    <span class="tag">[{{ platform_labels[ch.platform] }}] {{ ch.handle }}</span>
+  {% endfor %}
+  </div>
+  <form method="post" action="/kenh/nhom/{{ g.id }}/sua">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="niche-grid">
+    {% for ch in all_active_channels %}
+      <label class="niche-tile"><input type="checkbox" name="channel_ids" value="{{ ch.id }}" {{ 'checked' if ch.id in (g.channels|map(attribute='id')|list) }}>
+        <span>[{{ platform_labels[ch.platform] }}] {{ ch.handle }}<small>{{ ch.code }}</small></span></label>
+    {% endfor %}
+    </div>
+    <div class="channel-card__foot">
+      <button class="btn btn--primary" type="submit">Lưu thành viên cho {{ g.name }}</button>
+      <button class="btn btn--danger" type="submit" formaction="/kenh/nhom/{{ g.id }}/xoa">Xoá nhóm</button>
+    </div>
+  </form>
+</section>
+{% endfor %}
+</div>
+{% endif %}
 {% endblock %}

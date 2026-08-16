@@ -2075,6 +2075,81 @@ def test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt():
         os.environ.pop(var, None)
 
 
+def test_kenh_account_group_crud_end_to_end():
+    print("\n/kenh: tạo/sửa/xoá AccountGroup, checklist đúng field, ghi đúng thành viên")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch1 = conn.execute("SELECT id, code FROM channel WHERE code='ch1'").fetchone()
+    aux_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (aux_id, "kenh_ag_test", "facebook", "Kenh AG Test", "ACTIVE", 1, 12, 0, now()))
+    conn.close()
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước
+    # khi POST -- cùng lý do đã áp dụng ở D1/D3.
+    page = c.get("/kenh")
+    check("trang /kenh mở được", page.status_code == 200, page.status_code)
+    body = page.get_data(as_text=True)
+    check("form tạo nhóm có field 'name'", 'name="name"' in body, body[:1000])
+    check("form tạo nhóm có checklist 'channel_ids'", 'name="channel_ids"' in body, body[:1000])
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post("/kenh/nhom/tao", data={
+        "_csrf": csrf, "name": "Nhóm test D4 kenh",
+        "channel_ids": [ch1["id"], aux_id],
+    })
+    check("tạo nhóm thành công, redirect về /kenh",
+          r.status_code == 302 and "err=" not in (r.location or ""), (r.status_code, r.location))
+
+    page_after = c.get("/kenh")
+    body_after = page_after.get_data(as_text=True)
+    check("tên nhóm vừa tạo có mặt trên trang", "Nhóm test D4 kenh" in body_after, "không thấy")
+
+    conn = connect()
+    group = conn.execute(
+        "SELECT id FROM account_group WHERE name='Nhóm test D4 kenh' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    check("tìm được nhóm vừa tạo", group is not None, group)
+    n_members = conn.execute("SELECT COUNT(*) FROM account_group_channel WHERE group_id=?",
+                             (group["id"],)).fetchone()[0]
+    check("đúng 2 thành viên", n_members == 2, n_members)
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/kenh/nhom/{group['id']}/sua", data={"_csrf": csrf2, "channel_ids": [aux_id]})
+    check("sửa nhóm thành công, redirect về /kenh",
+          r2.status_code == 302 and "err=" not in (r2.location or ""), (r2.status_code, r2.location))
+    conn = connect()
+    members = {r["channel_id"] for r in conn.execute(
+        "SELECT channel_id FROM account_group_channel WHERE group_id=?", (group["id"],)).fetchall()}
+    check("sau khi sửa chỉ còn đúng 1 thành viên (aux_id)", members == {aux_id}, members)
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf3 = sess["csrf"]
+    r3 = c.post(f"/kenh/nhom/{group['id']}/xoa", data={"_csrf": csrf3})
+    check("xoá nhóm thành công, redirect về /kenh",
+          r3.status_code == 302 and "err=" not in (r3.location or ""), (r3.status_code, r3.location))
+    conn = connect()
+    gone = conn.execute("SELECT 1 FROM account_group WHERE id=?", (group["id"],)).fetchone()
+    check("nhóm đã bị xoá khỏi CSDL", gone is None)
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2119,6 +2194,7 @@ if __name__ == "__main__":
     test_thuvien_anh_upload_list_delete_end_to_end()
     test_sanpham_affiliate_create_with_media_asset_ids_end_to_end()
     test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt()
+    test_kenh_account_group_crud_end_to_end()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
