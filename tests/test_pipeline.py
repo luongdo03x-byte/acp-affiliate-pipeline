@@ -2354,6 +2354,26 @@ def test_update_account_group_channels_not_found_rejected():
     conn.close()
 
 
+def test_update_account_group_channels_invalid_channel_leaves_membership_untouched():
+    print("\nupdate_account_group_channels() với channel_id không tồn tại -> không ghi đè thành viên")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    # Tạo nhóm với 1 kênh hợp lệ
+    res = pipeline.create_account_group(conn, "Nhóm test all-or-nothing", [ch1])
+    group_id = res["group_id"]
+
+    # Thử sửa với 1 kênh hợp lệ + 1 kênh giả (không tồn tại)
+    fake_channel_id = ulid()
+    upd = pipeline.update_account_group_channels(conn, group_id, [ch1, fake_channel_id])
+    check("sửa thất bại vì channel_id giả không tồn tại", upd.get("ok") is False, upd)
+
+    # Kiểm tra thành viên vẫn chỉ có ch1 (không bị xoá sạch, không bị cập nhật từng phần)
+    rows = {r["channel_id"] for r in conn.execute(
+        "SELECT channel_id FROM account_group_channel WHERE group_id=?", (group_id,)).fetchall()}
+    check("thành viên không thay đổi, vẫn chỉ có ch1", rows == {ch1}, rows)
+    conn.close()
+
+
 def test_delete_account_group_removes_group_and_members():
     print("\ndelete_account_group() xoá cả account_group lẫn account_group_channel liên quan")
     conn = connect()
@@ -2467,6 +2487,7 @@ if __name__ == "__main__":
     test_create_account_group_duplicate_channel_ids_deduplicated()
     test_update_account_group_channels_overwrites_membership()
     test_update_account_group_channels_not_found_rejected()
+    test_update_account_group_channels_invalid_channel_leaves_membership_untouched()
     test_delete_account_group_removes_group_and_members()
     test_delete_account_group_not_found_rejected()
     test_list_account_groups_returns_channels_and_codes()
