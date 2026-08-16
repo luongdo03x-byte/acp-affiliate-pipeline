@@ -11,6 +11,8 @@
 import json
 import os
 import random
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from . import attribution, content, imaging, niche, scoring, storage
@@ -132,6 +134,85 @@ def active_niches(conn, channel_id: str = None) -> list:
         return channel_niches(conn, channel_id)
     _, filters = scoring.active_config(conn)
     return filters.get("niches") or []
+
+
+# --------------------------------------------------- AccountGroup/preset
+
+def _slugify(name: str) -> str:
+    """Bỏ dấu tiếng Việt, hạ chữ thường, thay ký tự không phải chữ/số bằng
+    '-' -- dùng để tự sinh account_group.code từ name (operator không tự
+    gõ code tay)."""
+    s = unicodedata.normalize("NFD", name or "")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = s.replace("đ", "d").replace("Đ", "D").lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s or "nhom"
+
+
+def create_account_group(conn, name: str, channel_ids: list) -> dict:
+    """Tạo 1 AccountGroup mới -- preset chọn nhanh channel ở /sanpham, thuần
+    tiện ích UI, KHÔNG ảnh hưởng logic tạo bài/publish. Tất-cả-hoặc-không-gì:
+    có 1 channel không tồn tại thì không tạo nhóm nào."""
+    channel_ids = list(dict.fromkeys(channel_ids or []))  # bỏ trùng, giữ thứ tự
+    for cid in channel_ids:
+        if not conn.execute("SELECT 1 FROM channel WHERE id=?", (cid,)).fetchone():
+            return {"ok": False, "error": f"Không tìm thấy kênh {cid}"}
+    group_id = ulid()
+    code = f"{_slugify(name)}-{group_id[:6]}"
+    conn.execute("INSERT INTO account_group (id, code, name, created_at) VALUES (?,?,?,?)",
+                 (group_id, code, name, now()))
+    for cid in channel_ids:
+        conn.execute(
+            "INSERT INTO account_group_channel (group_id, channel_id, created_at) VALUES (?,?,?)",
+            (group_id, cid, now()))
+    audit(conn, "account_group", group_id, "created", actor="operator",
+          detail={"name": name, "channel_ids": channel_ids})
+    return {"ok": True, "group_id": group_id}
+
+
+def update_account_group_channels(conn, group_id: str, channel_ids: list) -> dict:
+    """Ghi đè TOÀN BỘ thành viên của 1 nhóm (không thêm/bớt từng cái)."""
+    if not conn.execute("SELECT 1 FROM account_group WHERE id=?", (group_id,)).fetchone():
+        return {"ok": False, "error": f"Không tìm thấy nhóm {group_id}"}
+    channel_ids = list(dict.fromkeys(channel_ids or []))  # bỏ trùng, giữ thứ tự
+    for cid in channel_ids:
+        if not conn.execute("SELECT 1 FROM channel WHERE id=?", (cid,)).fetchone():
+            return {"ok": False, "error": f"Không tìm thấy kênh {cid}"}
+    conn.execute("DELETE FROM account_group_channel WHERE group_id=?", (group_id,))
+    for cid in channel_ids:
+        conn.execute(
+            "INSERT INTO account_group_channel (group_id, channel_id, created_at) VALUES (?,?,?)",
+            (group_id, cid, now()))
+    audit(conn, "account_group", group_id, "updated_channels", actor="operator",
+          detail={"channel_ids": channel_ids})
+    return {"ok": True}
+
+
+def delete_account_group(conn, group_id: str) -> dict:
+    """Xoá nhóm + mọi dòng account_group_channel liên quan. Không có bảng
+    nào khác tham chiếu account_group.id nên không cần chặn kiểu
+    media_asset phải chặn khi còn post_media tham chiếu."""
+    if not conn.execute("SELECT 1 FROM account_group WHERE id=?", (group_id,)).fetchone():
+        return {"ok": False, "error": f"Không tìm thấy nhóm {group_id}"}
+    conn.execute("DELETE FROM account_group_channel WHERE group_id=?", (group_id,))
+    conn.execute("DELETE FROM account_group WHERE id=?", (group_id,))
+    audit(conn, "account_group", group_id, "deleted", actor="operator")
+    return {"ok": True}
+
+
+def list_account_groups(conn) -> list:
+    """Mỗi nhóm kèm channels (đủ object channel, theo thứ tự tạo thành
+    viên) + channel_codes (list code phẳng, rút từ channels) -- dùng ở
+    /kenh hiển thị + /sanpham dựng nút chọn nhanh."""
+    groups = [dict(r) for r in conn.execute(
+        "SELECT * FROM account_group ORDER BY created_at").fetchall()]
+    for g in groups:
+        g["channels"] = [dict(r) for r in conn.execute(
+            """SELECT ch.* FROM account_group_channel agc
+               JOIN channel ch ON ch.id = agc.channel_id
+               WHERE agc.group_id=? ORDER BY agc.created_at""", (g["id"],)).fetchall()]
+        g["channel_codes"] = [c["code"] for c in g["channels"]]
+    return groups
 
 
 def upsert_one(conn, source, raw) -> str:

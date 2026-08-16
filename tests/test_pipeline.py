@@ -2282,6 +2282,115 @@ def test_account_group_schema():
     conn.close()
 
 
+def test_create_account_group():
+    print("\ncreate_account_group() -- đúng tên, đúng N dòng account_group_channel")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    aux_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (aux_id, "ag_test_ch2", "facebook", "AG Test FB", "ACTIVE", 1, 12, 0, now()))
+    res = pipeline.create_account_group(conn, "Nhóm test D4", [ch1, aux_id])
+    check("tạo nhóm thành công", res.get("ok"), res.get("error"))
+    rows = conn.execute("SELECT channel_id FROM account_group_channel WHERE group_id=?",
+                        (res["group_id"],)).fetchall()
+    check("đúng 2 dòng account_group_channel", len(rows) == 2, len(rows))
+    grp = conn.execute("SELECT name, code FROM account_group WHERE id=?", (res["group_id"],)).fetchone()
+    check("tên đúng", grp["name"] == "Nhóm test D4", dict(grp))
+    check("code tự sinh không rỗng, khác id", bool(grp["code"]) and grp["code"] != res["group_id"], grp["code"])
+    conn.close()
+
+
+def test_create_account_group_channel_not_found_rejected():
+    print("\ncreate_account_group() với channel không tồn tại -> lỗi rõ, không tạo nhóm")
+    conn = connect()
+    before = conn.execute("SELECT COUNT(*) FROM account_group").fetchone()[0]
+    fake_id = ulid()
+    res = pipeline.create_account_group(conn, "Nhóm lỗi", [fake_id])
+    check("tạo nhóm thất bại vì kênh không tồn tại", res.get("ok") is False, res)
+    check("thông báo lỗi nêu rõ channel id", fake_id in (res.get("error") or ""), res.get("error"))
+    after = conn.execute("SELECT COUNT(*) FROM account_group").fetchone()[0]
+    check("không tạo nhóm nào", before == after, (before, after))
+    conn.close()
+
+
+def test_create_account_group_duplicate_channel_ids_deduplicated():
+    print("\ncreate_account_group() với channel_ids trùng -> tự bỏ trùng, không vỡ INSERT")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    res = pipeline.create_account_group(conn, "Nhóm trùng", [ch1, ch1])
+    check("tạo nhóm thành công dù channel_ids trùng", res.get("ok"), res.get("error"))
+    n = conn.execute("SELECT COUNT(*) FROM account_group_channel WHERE group_id=?",
+                     (res["group_id"],)).fetchone()[0]
+    check("chỉ 1 dòng account_group_channel dù submit trùng 2 lần", n == 1, n)
+    conn.close()
+
+
+def test_update_account_group_channels_overwrites_membership():
+    print("\nupdate_account_group_channels() ghi đè toàn bộ thành viên")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    aux_a, aux_b = ulid(), ulid()
+    for cid, code in [(aux_a, "ag_upd_a"), (aux_b, "ag_upd_b")]:
+        conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                        daily_post_cap, min_gap_minutes, created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (cid, code, "facebook", code, "ACTIVE", 1, 12, 0, now()))
+    res = pipeline.create_account_group(conn, "Nhóm sửa", [ch1, aux_a])
+    upd = pipeline.update_account_group_channels(conn, res["group_id"], [aux_a, aux_b])
+    check("sửa thành công", upd.get("ok"), upd.get("error"))
+    rows = {r["channel_id"] for r in conn.execute(
+        "SELECT channel_id FROM account_group_channel WHERE group_id=?", (res["group_id"],)).fetchall()}
+    check("thành viên đúng {aux_a, aux_b}, không còn ch1", rows == {aux_a, aux_b}, rows)
+    conn.close()
+
+
+def test_update_account_group_channels_not_found_rejected():
+    print("\nupdate_account_group_channels() với group_id không tồn tại -> lỗi rõ")
+    conn = connect()
+    res = pipeline.update_account_group_channels(conn, ulid(), [])
+    check("sửa thất bại vì nhóm không tồn tại", res.get("ok") is False, res)
+    conn.close()
+
+
+def test_delete_account_group_removes_group_and_members():
+    print("\ndelete_account_group() xoá cả account_group lẫn account_group_channel liên quan")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    res = pipeline.create_account_group(conn, "Nhóm xoá", [ch1])
+    d = pipeline.delete_account_group(conn, res["group_id"])
+    check("xoá thành công", d.get("ok"), d.get("error"))
+    gone_group = conn.execute("SELECT 1 FROM account_group WHERE id=?", (res["group_id"],)).fetchone()
+    check("account_group đã bị xoá", gone_group is None)
+    gone_members = conn.execute("SELECT COUNT(*) FROM account_group_channel WHERE group_id=?",
+                                (res["group_id"],)).fetchone()[0]
+    check("account_group_channel liên quan đã bị xoá hết", gone_members == 0, gone_members)
+    conn.close()
+
+
+def test_delete_account_group_not_found_rejected():
+    print("\ndelete_account_group() với group_id không tồn tại -> lỗi rõ")
+    conn = connect()
+    res = pipeline.delete_account_group(conn, ulid())
+    check("xoá thất bại vì nhóm không tồn tại", res.get("ok") is False, res)
+    conn.close()
+
+
+def test_list_account_groups_returns_channels_and_codes():
+    print("\nlist_account_groups() trả đúng nhóm + đúng channel_codes theo đúng nhóm")
+    conn = connect()
+    ch1 = conn.execute("SELECT id, code FROM channel WHERE code='ch1'").fetchone()
+    res = pipeline.create_account_group(conn, "Nhóm list", [ch1["id"]])
+    groups = pipeline.list_account_groups(conn)
+    grp = next((g for g in groups if g["id"] == res["group_id"]), None)
+    check("tìm được nhóm vừa tạo", grp is not None, res["group_id"])
+    check("channel_codes chứa đúng ch1", grp["channel_codes"] == [ch1["code"]], grp["channel_codes"])
+    check("channels có đủ object channel (không chỉ id)",
+          grp["channels"] and grp["channels"][0]["code"] == ch1["code"], grp["channels"])
+    conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2353,6 +2462,14 @@ if __name__ == "__main__":
     test_post_media_urls_returns_ordered_urls()
     test_publish_post_clips_media_to_platform_limit()
     test_account_group_schema()
+    test_create_account_group()
+    test_create_account_group_channel_not_found_rejected()
+    test_create_account_group_duplicate_channel_ids_deduplicated()
+    test_update_account_group_channels_overwrites_membership()
+    test_update_account_group_channels_not_found_rejected()
+    test_delete_account_group_removes_group_and_members()
+    test_delete_account_group_not_found_rejected()
+    test_list_account_groups_returns_channels_and_codes()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
