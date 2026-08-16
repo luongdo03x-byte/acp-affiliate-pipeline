@@ -100,6 +100,21 @@
           {% endfor %}
           </div>
         </div>
+        <div class="field field--full">
+          <details><summary>💡 Gợi ý prompt tạo ảnh AI (dán vào ChatGPT/DALL-E ngoài, tự upload kết quả vào /thuvien-anh)</summary>
+            <textarea readonly rows="4">Ảnh sản phẩm quảng cáo cho "{{ metadata.name or '' }}"{% if metadata.current_price %}, giá {{ metadata.current_price|vnd }}{% endif %}.
+Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơn sắc, ánh sáng tự nhiên, không có chữ/logo/watermark, tỷ lệ vuông 1:1. KHÔNG vẽ bao bì/nhãn hiệu cụ thể nào ngoài mô tả trên.</textarea>
+          </details>
+        </div>
+        <div class="field field--full">
+          <label>Ảnh thêm cho carousel (tối đa 9, ảnh ghép tự động luôn là ảnh đầu tiên)</label>
+          <div class="niche-grid">
+          {% for asset in media_assets %}
+            <label class="niche-tile"><input type="checkbox" name="media_asset_ids" value="{{ asset.id }}">
+              <img src="{{ asset.url }}" alt="Ảnh thư viện" style="width:100%;border-radius:6px" loading="lazy"></label>
+          {% endfor %}
+          </div>
+        </div>
       </div>
       <div class="form-actions">
         <a class="btn btn--ghost" href="{{ url_for('products', mode='affiliate') }}">Dùng link khác</a>
@@ -142,6 +157,15 @@
       {% endfor %}
       </div>
     </div>
+    <div class="field field--full">
+      <label>Ảnh thêm cho carousel (áp dụng cho nút "Tạo bài" ở bất kỳ dòng nào bên dưới, tối đa 9)</label>
+      <div class="niche-grid">
+      {% for asset in media_assets %}
+        <label class="niche-tile"><input type="checkbox" name="media_asset_ids" value="{{ asset.id }}">
+          <img src="{{ asset.url }}" alt="Ảnh thư viện" style="width:100%;border-radius:6px" loading="lazy"></label>
+      {% endfor %}
+      </div>
+    </div>
     <div class="table-card">
       <div class="table-scroll">
         <table class="data-table">
@@ -149,7 +173,12 @@
           <tbody>
           {% for p in items %}
             <tr>
-              <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span></td>
+              <td><strong>{{ p.name }}</strong><span class="mono-sub">{{ p.external_product_id }}</span>
+              <details><summary>💡 Gợi ý prompt AI</summary>
+                <textarea readonly rows="3">Ảnh sản phẩm quảng cáo cho "{{ p.name }}", giá {{ p.current_price|vnd }}.
+Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơn sắc, ánh sáng tự nhiên, không có chữ/logo/watermark, tỷ lệ vuông 1:1. KHÔNG vẽ bao bì/nhãn hiệu cụ thể nào ngoài mô tả trên.</textarea>
+              </details>
+            </td>
               <td class="dim">{{ p.merchant }}</td>
               <td class="n">{{ p.current_price|vnd }}</td>
               <td class="n money">{{ p.commission_value|vnd }}</td>

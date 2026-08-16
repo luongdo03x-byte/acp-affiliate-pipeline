@@ -190,18 +190,20 @@ def create_app():
         channels = [dict(r) for r in conn.execute(
             "SELECT code, platform, handle FROM channel WHERE status='ACTIVE' AND enabled=1 "
             "ORDER BY platform, code").fetchall()]
+        media_assets = media_library.list_media_assets(conn)
         conn.close()
-        return pending, channels
+        return pending, channels, media_assets
 
     def _render_affiliate(*, affiliate_url="", resolved=None, metadata=None,
                           err=None, warning=None, selected_channels=None, status=200):
-        pending, channels = _product_common_context()
+        pending, channels, media_assets = _product_common_context()
         return render_template(
             "products.html", page="san-pham", mode="affiliate", items=[], q="", err=err,
             source_name="manual_shopee", pending_review=pending, channels=channels,
             affiliate_url=affiliate_url, resolved=resolved,
             metadata=metadata or ProductMetadata(), metadata_warning=warning,
             selected_channels=selected_channels or [], platform_labels=PLATFORM_LABELS,
+            media_assets=media_assets,
         ), status
 
     @app.route("/sanpham")
@@ -222,12 +224,13 @@ def create_app():
                 err = err or f"Nguồn {src.name} không hỗ trợ tìm kiếm."
         except Exception as e:
             err = err or str(e)
-        pending, channels = _product_common_context()
+        pending, channels, media_assets = _product_common_context()
         return render_template(
             "products.html", page="san-pham", mode="search", items=items, q=q, err=err,
             source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
             pending_review=pending, channels=channels, resolved=None,
-            metadata=ProductMetadata(), affiliate_url="", platform_labels=PLATFORM_LABELS)
+            metadata=ProductMetadata(), affiliate_url="", platform_labels=PLATFORM_LABELS,
+            media_assets=media_assets)
 
     @app.route("/sanpham/tao-bai", methods=["POST"])
     def create_from_product():
@@ -235,6 +238,7 @@ def create_app():
         source_name = request.form.get("nguon") or None
         q = request.form.get("q", "")
         channel_codes = request.form.getlist("channel_codes")
+        media_asset_ids = request.form.getlist("media_asset_ids")
         if not external_id:
             return redirect(url_for("products", q=q, err="Thiếu mã sản phẩm"))
         if not channel_codes:
@@ -244,7 +248,7 @@ def create_app():
             res = pipeline.create_post_for_product(
                 conn, factory.build_context(source_name), external_id,
                 campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
-                channel_codes=channel_codes)
+                channel_codes=channel_codes, media_asset_ids=media_asset_ids or None)
         except Exception as e:
             conn.close()
             return redirect(url_for("products", q=q, err=str(e)))
@@ -281,6 +285,7 @@ def create_app():
         image_url = request.form.get("image_url", "").strip()
         shop = request.form.get("shop", "").strip() or None
         channel_codes = request.form.getlist("channel_codes")
+        media_asset_ids = request.form.getlist("media_asset_ids")
 
         def _positive_int(value):
             text = str(value or "").strip().replace(" ", "")
@@ -333,7 +338,7 @@ def create_app():
                 conn, {"storage": storage.get_storage()}, source, raw,
                 affiliate_url=affiliate_url,
                 campaign_code=os.environ.get("ACP_CAMPAIGN_CODE", "gd2026"),
-                channel_codes=channel_codes)
+                channel_codes=channel_codes, media_asset_ids=media_asset_ids or None)
         except AffiliateImportError as exc:
             conn.close()
             return _render_affiliate(

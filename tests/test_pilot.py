@@ -1946,6 +1946,131 @@ def test_thuvien_anh_upload_list_delete_end_to_end():
         os.environ.pop(var, None)
 
 
+def test_sanpham_affiliate_create_with_media_asset_ids_end_to_end():
+    print("\n/sanpham affiliate: chọn ảnh thêm từ thư viện lúc tạo bài, ghi đúng post_media")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    asset_id = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (asset_id, "https://fake-storage.example/sanpham-test.jpg", "upload", now()))
+    # Kênh riêng cho test này -- không dùng lại "ch1" của setup() vì các test
+    # chạy trước trong cùng tiến trình (vd. test_web_security()) có thể đã
+    # đẩy nó sang NEEDS_REAUTH (xem ghi chú tương tự ở
+    # test_duyet_approve_saves_caption_platform_and_override()).
+    th_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, external_user_id, status,
+                    enabled, token_encrypted, daily_post_cap, min_gap_minutes, niches, created_at)
+                    VALUES (?,?,'threads',?,?,'ACTIVE',1,?,?,?,?,?)""",
+                 (th_id, "th_media_test", "@th_media_test", "uid_th_media_test",
+                  crypto.encrypt("tok"), 12, 0, "[]", now()))
+    conn.close()
+
+    from acp.adapters.shopee_affiliate import ProductMetadata, ResolvedAffiliateUrl
+
+    class _FakeManualShopeeMedia:
+        name = "manual_shopee"
+        def resolve(self, affiliate_url):
+            return ResolvedAffiliateUrl(
+                affiliate_url=affiliate_url, product_url="https://shopee.vn/vay-i.123.456")
+        def metadata(self, product_url):
+            return ProductMetadata(
+                name="Váy hoa nữ test D3", current_price=289000, original_price=None,
+                image_url="https://img.example/product.jpg", shop=None)
+        def validate_confirmed_urls(self, affiliate_url, product_url):
+            pass
+        def prepare_product(self, confirmed, media_dir):
+            from acp.adapters.base import RawProduct
+            return RawProduct(
+                external_product_id="media-test-1", name=confirmed.name,
+                current_price=confirmed.current_price, original_price=confirmed.original_price,
+                commission_value=0, commission_rate=None, category_code="khac",
+                product_url=confirmed.product_url, merchant="shopee.vn",
+                image_url_original=confirmed.image_url, image_path_local=None)
+        def create_tracking_link(self, *args, **kwargs):
+            raise AssertionError("manual Shopee không được gọi create_tracking_link")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeMedia()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    # Kiểm tra TEMPLATE thực sự render đúng field mà route sẽ đọc, trước khi
+    # POST tạo bài thật. GET đơn thuần (không kèm resolve) chỉ ra được màn
+    # hình "Nhập link affiliate" (chưa có checklist vì chưa có resolved) --
+    # /sanpham/affiliate/resolve mới là nơi màn hình xác nhận (có checklist)
+    # được render, và resolve() không tạo post/product nào (an toàn dùng
+    # làm bước xem trước, giống test hiện có "resolve metadata chưa tạo post").
+    page = c.post("/sanpham/affiliate/resolve", data={
+        "_csrf": csrf, "affiliate_url": "https://s.shopee.vn/abc"})
+    body = page.get_data(as_text=True)
+    check("checklist ảnh thêm render đúng field media_asset_ids",
+          'name="media_asset_ids"' in body, body[:500])
+    check("checklist có ảnh vừa tạo trong thư viện",
+          "sanpham-test.jpg" in body, "không thấy trong checklist")
+
+    r = c.post("/sanpham/affiliate/create", data={
+        "_csrf": csrf,
+        "affiliate_url": "https://s.shopee.vn/abc",
+        "product_url": "https://shopee.vn/vay-i.123.456",
+        "name": "Váy hoa nữ test D3",
+        "current_price": "289000",
+        "image_url": "https://img.example/product.jpg",
+        "channel_codes": ["th_media_test"],
+        "media_asset_ids": [asset_id],
+    })
+    check("tạo bài với ảnh thêm thành công, redirect sang /duyet",
+          r.status_code == 302 and "/duyet" in r.location, (r.status_code, getattr(r, "location", "")))
+
+    conn = connect()
+    post = conn.execute("""SELECT p.id FROM post p JOIN product pr ON pr.id = p.product_id
+                           WHERE pr.external_product_id='media-test-1' ORDER BY p.id DESC LIMIT 1""").fetchone()
+    check("tìm được post vừa tạo", post is not None, post)
+    pm = conn.execute("SELECT media_asset_id, position FROM post_media WHERE post_id=?", (post["id"],)).fetchone()
+    check("post_media ghi đúng asset đã chọn, position=1",
+          pm is not None and pm["media_asset_id"] == asset_id and pm["position"] == 1,
+          dict(pm) if pm else None)
+    conn.close()
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt():
+    print("\n/sanpham tìm kiếm: hiện checklist ảnh thêm + prompt AI riêng từng dòng sản phẩm")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    asset_id = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (asset_id, "https://fake-storage.example/search-mode-test.jpg", "upload", now()))
+    conn.close()
+
+    page = c.get("/sanpham?nguon=mock")
+    body = page.get_data(as_text=True)
+    check("checklist ảnh thêm render đúng field media_asset_ids ở chế độ tìm kiếm",
+          'name="media_asset_ids"' in body, body[:500])
+    check("checklist có ảnh vừa tạo trong thư viện",
+          "search-mode-test.jpg" in body, "không thấy trong checklist")
+    check("mỗi dòng sản phẩm có khối gợi ý prompt riêng (nhiều khối <details>)",
+          body.count("Gợi ý prompt") >= 1, body.count("Gợi ý prompt"))
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -1988,6 +2113,8 @@ if __name__ == "__main__":
     test_duyet_approve_saves_caption_platform_and_override()
     test_duyet_keeps_channel_override_after_bounce()
     test_thuvien_anh_upload_list_delete_end_to_end()
+    test_sanpham_affiliate_create_with_media_asset_ids_end_to_end()
+    test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
