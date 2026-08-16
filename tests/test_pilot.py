@@ -2150,6 +2150,57 @@ def test_kenh_account_group_crud_end_to_end():
         os.environ.pop(var, None)
 
 
+def test_sanpham_shows_account_group_quick_select_both_modes():
+    print("\n/sanpham cả 2 chế độ: hiện nút chọn nhanh theo nhóm, đúng channel_codes nhúng vào onclick")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    ch1 = conn.execute("SELECT id, code FROM channel WHERE code='ch1'").fetchone()
+    group_res = pipeline.create_account_group(conn, "Nhóm sanpham test", [ch1["id"]])
+    conn.close()
+    check("tạo nhóm test thành công", group_res.get("ok"), group_res.get("error"))
+
+    # Chế độ Tìm kiếm
+    page_search = c.get("/sanpham?nguon=mock")
+    body_search = page_search.get_data(as_text=True)
+    check("chế độ tìm kiếm: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_search, "không thấy")
+    check("chế độ tìm kiếm: đúng channel_codes của nhóm nhúng vào onclick",
+          ('acpTickGroup(this, ["' + ch1["code"] + '"]') in body_search, body_search[:2000])
+
+    # Chế độ Affiliate: nút nhóm nằm trong form xác nhận (product-confirm__form),
+    # chỉ render sau khi có resolved/metadata (xem ghi chú route thật ở D3 --
+    # GET /sanpham?mode=affiliate KHÔNG bao giờ tới được form đó, phải POST
+    # /sanpham/affiliate/resolve, route không mutate DB, dùng làm bước xem
+    # trước đúng khuôn D3 đã lập).
+    from acp.adapters.shopee_affiliate import ResolvedAffiliateUrl, ProductMetadata
+
+    class _FakeManualShopeeAG:
+        name = "manual_shopee"
+        def resolve(self, url):
+            return ResolvedAffiliateUrl(affiliate_url=url, product_url="https://shopee.vn/vay-i.1.1")
+        def metadata(self, product_url):
+            return ProductMetadata(name="SP test", current_price=100000, image_url="https://img/x.jpg")
+
+    app.config["SHOPEE_SOURCE_FACTORY"] = lambda: _FakeManualShopeeAG()
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    resolved_page = c.post("/sanpham/affiliate/resolve", data={
+        "_csrf": csrf, "affiliate_url": "https://s.shopee.vn/abc"})
+    body_affiliate = resolved_page.get_data(as_text=True)
+    check("chế độ affiliate: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_affiliate, "không thấy")
+    check("chế độ affiliate: đúng channel_codes của nhóm nhúng vào onclick",
+          ('acpTickGroup(this, ["' + ch1["code"] + '"]') in body_affiliate, body_affiliate[:2000])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2195,6 +2246,7 @@ if __name__ == "__main__":
     test_sanpham_affiliate_create_with_media_asset_ids_end_to_end()
     test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt()
     test_kenh_account_group_crud_end_to_end()
+    test_sanpham_shows_account_group_quick_select_both_modes()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

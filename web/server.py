@@ -191,19 +191,24 @@ def create_app():
             "SELECT code, platform, handle FROM channel WHERE status='ACTIVE' AND enabled=1 "
             "ORDER BY platform, code").fetchall()]
         media_assets = media_library.list_media_assets(conn)
+        # D4-A: nhóm chỉ dùng channel_codes (đủ so khớp checkbox), không cần
+        # object channel đầy đủ ở đây -- khác /kenh nơi cần hiển thị chi
+        # tiết từng thành viên.
+        account_groups = [{"id": g["id"], "name": g["name"], "channel_codes": g["channel_codes"]}
+                          for g in pipeline.list_account_groups(conn)]
         conn.close()
-        return pending, channels, media_assets
+        return pending, channels, media_assets, account_groups
 
     def _render_affiliate(*, affiliate_url="", resolved=None, metadata=None,
                           err=None, warning=None, selected_channels=None, status=200):
-        pending, channels, media_assets = _product_common_context()
+        pending, channels, media_assets, account_groups = _product_common_context()
         return render_template(
             "products.html", page="san-pham", mode="affiliate", items=[], q="", err=err,
             source_name="manual_shopee", pending_review=pending, channels=channels,
             affiliate_url=affiliate_url, resolved=resolved,
             metadata=metadata or ProductMetadata(), metadata_warning=warning,
             selected_channels=selected_channels or [], platform_labels=PLATFORM_LABELS,
-            media_assets=media_assets,
+            media_assets=media_assets, account_groups=account_groups,
         ), status
 
     @app.route("/sanpham")
@@ -224,13 +229,13 @@ def create_app():
                 err = err or f"Nguồn {src.name} không hỗ trợ tìm kiếm."
         except Exception as e:
             err = err or str(e)
-        pending, channels, media_assets = _product_common_context()
+        pending, channels, media_assets, account_groups = _product_common_context()
         return render_template(
             "products.html", page="san-pham", mode="search", items=items, q=q, err=err,
             source_name=source_name or os.environ.get("ACP_SOURCE", "mock"),
             pending_review=pending, channels=channels, resolved=None,
             metadata=ProductMetadata(), affiliate_url="", platform_labels=PLATFORM_LABELS,
-            media_assets=media_assets)
+            media_assets=media_assets, account_groups=account_groups)
 
     @app.route("/sanpham/tao-bai", methods=["POST"])
     def create_from_product():

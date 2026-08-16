@@ -92,6 +92,16 @@
           <label for="image_url">URL ảnh sản phẩm</label>
           <input id="image_url" name="image_url" inputmode="url" value="{{ metadata.image_url or '' }}" required>
         </div>
+        {% if account_groups %}
+        <div class="field field--full">
+          <label>Chọn nhanh theo nhóm</label>
+          <div class="quick-group-row">
+          {% for g in account_groups %}
+            <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson }})">{{ g.name }}</button>
+          {% endfor %}
+          </div>
+        </div>
+        {% endif %}
         <div class="field field--full">
           <label>Kênh đăng bài</label>
           <div class="niche-grid">
@@ -149,6 +159,16 @@ Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơ
     <div class="section-heading section-heading--spaced">
       <div><h2>{{ items|length }} sản phẩm</h2><p class="note">Nguồn: {{ source_name }}</p></div>
     </div>
+    {% if account_groups %}
+    <div class="field field--full">
+      <label>Chọn nhanh theo nhóm (áp dụng cho checklist kênh ngay bên dưới)</label>
+      <div class="quick-group-row">
+      {% for g in account_groups %}
+        <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson }})">{{ g.name }}</button>
+      {% endfor %}
+      </div>
+    </div>
+    {% endif %}
     <div class="field field--full">
       <label>Kênh đăng bài (áp dụng cho nút "Tạo bài" ở bất kỳ dòng nào bên dưới)</label>
       <div class="niche-grid">
@@ -197,4 +217,17 @@ Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơ
   <div class="empty-state">Không tìm thấy sản phẩm nào.</div>
   {% endif %}
 {% endif %}
+<script>
+// D4-A: preset chọn nhanh theo nhóm -- tick THÊM checkbox channel_codes
+// khớp nhóm được bấm, KHÔNG bỏ tick cái đang tick sẵn. Operator vẫn tự tay
+// điều chỉnh trước khi submit. <script> đầu tiên trong codebase -- giữ
+// thuần vanilla, không framework/build step.
+function acpTickGroup(btn, codes) {
+  const form = btn.closest('form') || document;
+  codes.forEach(function (code) {
+    const box = form.querySelector('input[name="channel_codes"][value="' + code + '"]');
+    if (box) box.checked = true;
+  });
+}
+</script>
 {% endblock %}
