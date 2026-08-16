@@ -2164,6 +2164,74 @@ def test_post_media_urls_returns_ordered_urls():
     conn.close()
 
 
+def test_publish_post_clips_media_to_platform_limit():
+    print("\npublish_post: cắt đúng số ảnh theo trần platform trước khi gọi publisher")
+    conn = connect()
+    # "ch1" (kênh Threads dùng chung từ setup()) đã tích luỹ đủ publish_target
+    # SUCCESS từ các test khác chạy trước trong CÙNG file để chạm trần
+    # daily_post_cap=12 mặc định -- không liên quan gì tới việc cắt ảnh, chỉ
+    # là hệ quả cộng dồn của toàn bộ suite dùng chung DB/"hôm nay" (xem
+    # test_daily_cap() dùng idiom tương tự). Nếu không nới, RateLimitError sẽ
+    # chặn publish_post() TRƯỚC khi kịp tới đoạn build media, che mất đúng
+    # điều test này cần chứng minh (Threads không bị ValueError vì thừa ảnh).
+    conn.execute("UPDATE channel SET daily_post_cap = 999 WHERE code='ch1'")
+    fb_id, ig_id = ulid(), ulid()
+    for cid, code, platform, handle in [
+        (fb_id, "fb_media_clip_test", "facebook", "FB Media Clip"),
+        (ig_id, "ig_media_clip_test", "instagram", "IG Media Clip"),
+    ]:
+        conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                        daily_post_cap, min_gap_minutes, created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (cid, code, platform, handle, "ACTIVE", 1, 12, 0, now()))
+    asset_ids = []
+    for i in range(3):
+        aid = ulid()
+        conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                     (aid, f"https://fake.example/clip{i}.jpg", "upload", now()))
+        asset_ids.append(aid)
+    try:
+        src = MockAccessTrade()
+        target_product = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(
+            conn, ctx, target_product.external_product_id, "test",
+            channel_codes=["ch1", "fb_media_clip_test", "ig_media_clip_test"],
+            media_asset_ids=asset_ids)
+        check("tạo bài đa kênh với ảnh thêm thành công", res.get("ok"), res.get("error"))
+        post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+
+        approve_res = pipeline.approve_post(
+            conn, post["id"], channel_ids=[post["channel_id"], fb_id, ig_id])
+        check("duyệt thành công", approve_res["ok"], approve_res)
+        for t in approve_res["targets"]:
+            conn.execute("UPDATE job_queue SET run_after=? WHERE idempotency_key=?",
+                         (now(), f"pub:{t['publish_target_id']}"))
+
+        th_pub, fb_pub, ig_pub = MockThreads(seed=141), MockFacebookPublisher(seed=142), MockInstagramPublisher(seed=143)
+        jobs.drain(conn, ctx={"source": MockAccessTrade(),
+                              "publishers": {"threads": th_pub, "facebook": fb_pub, "instagram": ig_pub}})
+
+        # MockThreads.published chỉ lưu (pid, caption), không lưu media -- kiểm
+        # tra bằng publish_target SUCCESS (chứng minh không bị ValueError chặn
+        # vì thừa ảnh, đúng thứ Task 5 cần chứng minh cho Threads) là đủ; FB/IG
+        # thì .published lưu cả media nên kiểm tra được trực tiếp độ dài.
+        target_th = conn.execute("SELECT status FROM publish_target WHERE post_id=? AND channel_id=?",
+                                 (post["id"], post["channel_id"])).fetchone()
+        check("target Threads SUCCESS (không bị ValueError vì thừa ảnh)",
+              target_th["status"] == "SUCCESS", dict(target_th))
+
+        fb_media = fb_pub.published[0][2]
+        ig_media = ig_pub.published[0][2]
+        check("target Facebook nhận đủ 4 ảnh (1 ghép + 3 thêm)", len(fb_media) == 4, fb_media)
+        check("target Instagram nhận đủ 4 ảnh (1 ghép + 3 thêm)", len(ig_media) == 4, ig_media)
+        check("ảnh ghép luôn là ảnh đầu tiên trong media Facebook",
+              fb_media[0] == post["image_url_composited"], (fb_media[0], post["image_url_composited"]))
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id IN (?,?)", (fb_id, ig_id))
+        conn.close()
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -2232,6 +2300,7 @@ if __name__ == "__main__":
     test_create_post_media_asset_ids_over_cap_rejected()
     test_create_post_media_asset_id_not_found_rejected()
     test_post_media_urls_returns_ordered_urls()
+    test_publish_post_clips_media_to_platform_limit()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

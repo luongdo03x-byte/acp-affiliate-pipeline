@@ -645,6 +645,13 @@ def _find_or_create_legacy_target(conn, post_id: str, channel_id: str) -> str:
     return target_id
 
 
+# Trùng đúng giới hạn đã hard-code trong publish() của từng Publisher
+# (adapters/mock.py, adapters/live.py: Threads len(media)>1 báo lỗi,
+# Facebook/Instagram 1-10 ảnh) -- 2 nguồn cùng giá trị, sửa 1 chỗ nhớ sửa
+# chỗ kia, cùng rủi ro/cách xử lý đã chốt ở content.PLATFORM_MAX_LEN (D2).
+MEDIA_MAX_COUNT = {"threads": 1, "facebook": 10, "instagram": 10}
+
+
 @handler("PUBLISH_POST")
 def publish_post(conn, payload, ctx):
     target_id = payload.get("publish_target_id")
@@ -721,6 +728,8 @@ def publish_post(conn, payload, ctx):
     try:
         publisher = ctx["publishers"][channel["platform"]]
         media = [post["image_url_composited"]] if post["image_url_composited"] else []
+        media += post_media_urls(conn, post["id"])
+        media = media[:MEDIA_MAX_COUNT.get(channel["platform"], 1)]
         caption = _resolve_caption(post, target, channel)
         result = publisher.publish(channel, caption, media=media)
     except Exception as e:
