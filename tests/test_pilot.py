@@ -1897,6 +1897,51 @@ def test_thuvien_anh_upload_list_delete_end_to_end():
     conn.close()
     check("asset đã bị xoá khỏi CSDL", gone is None)
 
+    # Nhánh "dán URL" -- vẫn chưa test nào đụng tới
+    # materialize_external_image() (đường tải ảnh ngoài qua SafeHttpClient,
+    # có chặn SSRF/redirect). Route thật không nhận http_client tiêm vào nên
+    # giả lập ngay tại tầng HTTP (session + DNS resolver), không mock thẳng
+    # hàm materialize_external_image() -- để hàm thật vẫn chạy nguyên vẹn.
+    from acp.adapters.safe_http import SafeHttpClient
+    import acp.core.media_library as ml
+
+    img2 = Image.new("RGB", (10, 10), (9, 8, 7))
+    buf2 = BytesIO()
+    img2.save(buf2, format="PNG")
+    png_bytes = buf2.getvalue()
+
+    fake_session = _FakeSession([_FakeHttpResponse(200, {"Content-Type": "image/png"}, png_bytes)])
+    orig_safe_http_client = ml.SafeHttpClient
+    ml.SafeHttpClient = lambda *a, **kw: SafeHttpClient(
+        session=fake_session, dns_resolver=_public_dns,
+        **{k: v for k, v in kw.items() if k not in ("session", "dns_resolver")})
+    try:
+        with c.session_transaction() as sess:
+            csrf3 = sess["csrf"]
+        r3 = c.post("/thuvien-anh/upload", data={
+            "_csrf": csrf3,
+            "image_url": "https://cdn.example.com/anh-san-pham.png",
+        })
+        check("dán URL thành công, redirect về /thuvien-anh",
+              r3.status_code == 302 and "err=" not in (r3.location or ""), (r3.status_code, r3.location))
+    finally:
+        ml.SafeHttpClient = orig_safe_http_client
+
+    check("SafeHttpClient giả lập thực sự được gọi (materialize_external_image không bị bypass)",
+          len(fake_session.calls) == 1, fake_session.calls)
+
+    page_after_url = c.get("/thuvien-anh")
+    body_after_url = page_after_url.get_data(as_text=True)
+    conn = connect()
+    asset_url = conn.execute(
+        "SELECT * FROM media_asset WHERE source='url' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    check("asset dán URL được ghi vào media_asset với source='url'",
+          asset_url is not None, dict(asset_url) if asset_url else None)
+    check("asset dán URL có mặt trong grid /thuvien-anh",
+          asset_url is not None and asset_url["url"] in body_after_url,
+          asset_url["url"] if asset_url else None)
+
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)
 
