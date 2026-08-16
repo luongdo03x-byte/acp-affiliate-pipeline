@@ -30,6 +30,21 @@
 </tr>{% endfor %}
 </tbody></table></div></div>{% else %}<div class="empty-state">Chưa có publish target nào.</div>{% endif %}
 
+<section id="multi-channel-breakdown">
+<div class="section-heading section-heading--spaced"><div><h2>Bài đa kênh</h2><p class="note">post.status chỉ báo "đã có ít nhất 1 kênh đăng thành công", không phải tất cả -- xem đúng từng kênh ở đây.</p></div></div>
+{% if multi_channel_posts %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Bài</th><th>Từng kênh</th></tr></thead><tbody>
+{% for mp in multi_channel_posts %}<tr>
+  <td>{{ mp.product_name }}<span class="mono-sub">{{ mp.post_id[:10] }}</span></td>
+  <td>
+  {% for t in mp.targets %}
+    <span class="tag {{ 'ok' if t.status=='SUCCESS' else ('bad' if t.status=='FAILED' else '') }}">{{ t.channel_handle }}: {{ t.status }}</span>
+    {% if t.status=='FAILED' %}<form method="post" action="/vanhanh/{{ t.id }}/retry" class="inline-form"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">Thử lại</button></form>{% endif %}
+  {% endfor %}
+  </td>
+</tr>{% endfor %}
+</tbody></table></div></div>{% else %}<div class="empty-state">Chưa có bài đa kênh nào.</div>{% endif %}
+</section>
+
 <div class="grid2">
 <section class="card panel"><div class="panel-header"><h2>Bài đăng theo trạng thái</h2></div><div class="table-card"><table class="data-table"><tbody>{% for s in posts_by_status %}<tr><td>{{ s.status }}</td><td class="n">{{ s.n }}</td></tr>{% endfor %}</tbody></table></div></section>
 <section class="card panel"><div class="panel-header"><h2>Job bị hoãn</h2></div>{% if deferred %}<div class="table-card"><table class="data-table"><tbody>{% for j in deferred %}<tr><td>{{ j.job_type }}<span class="mono-sub">{{ j.last_error[:70] }}</span></td><td class="n dim">{{ j.run_after[11:16] }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-state">Không có job nào bị hoãn.</div>{% endif %}</section>

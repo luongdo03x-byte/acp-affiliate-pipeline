@@ -565,6 +565,32 @@ def create_app():
             audit=[dict(r) for r in conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT 12").fetchall()],
         )
+        # D4-B: post.status là rollup thô ("PUBLISHED" = ít nhất 1/N kênh
+        # thành công, không phải tất cả) -- gộp publish_target theo post_id
+        # để operator thấy đúng từng kênh của bài đa kênh thay vì đoán qua
+        # con số tổng. Quét rộng hơn 100 target gần nhất (không chỉ 20 như
+        # bảng phẳng ở trên) để không bỏ sót bài đa kênh có target không lọt
+        # top-20 theo thời gian cập nhật.
+        wide_targets = conn.execute("""
+            SELECT pt.*, pr.name AS product_name, ch.handle AS channel_handle, ch.platform AS channel_platform
+            FROM publish_target pt
+            JOIN post p ON p.id = pt.post_id
+            JOIN product pr ON pr.id = p.product_id
+            JOIN channel ch ON ch.id = pt.channel_id
+            ORDER BY pt.updated_at DESC LIMIT 100""").fetchall()
+        by_post = {}
+        for r in wide_targets:
+            g = by_post.setdefault(r["post_id"], {"product_name": r["product_name"], "targets": []})
+            g["targets"].append(dict(r))
+        # dict giữ nguyên thứ tự chèn (Python 3.7+) -- vì wide_targets đã
+        # ORDER BY updated_at DESC, post nào có target cập nhật gần nhất sẽ
+        # được thêm vào by_post trước, nên thứ tự duyệt ở đây đã đúng ý
+        # "bài có hoạt động gần đây nhất lên trước" mà không cần sort thêm.
+        multi_channel_posts = [
+            {"post_id": pid, "product_name": g["product_name"], "targets": g["targets"]}
+            for pid, g in by_post.items() if len(g["targets"]) >= 2
+        ][:15]
+        data["multi_channel_posts"] = multi_channel_posts
         conn.close()
         return render_template("ops.html", page="van-hanh", **data)
 

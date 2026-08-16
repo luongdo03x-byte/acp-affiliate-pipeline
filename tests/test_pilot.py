@@ -2201,6 +2201,95 @@ def test_sanpham_shows_account_group_quick_select_both_modes():
         os.environ.pop(var, None)
 
 
+def test_vanhanh_shows_multi_channel_post_breakdown():
+    print("\n/vanhanh: bài đa kênh hiện breakdown theo publish_target (D4-B)")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    fb_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (fb_id, "fb_vanhanh_test", "facebook", "FB Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+    ig_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (ig_id, "ig_vanhanh_test", "instagram", "IG Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+    # Kênh riêng cho bài đơn-kênh, KHÔNG dùng "ch1" dùng chung (có thể đã bị
+    # test_web_security() đẩy sang NEEDS_REAUTH khi chạy chung cả suite).
+    solo_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (solo_id, "solo_vanhanh_test", "facebook", "Solo Vận Hành Test", "ACTIVE", 1, 12, 0, now()))
+
+    src = MockAccessTrade()
+    sample = [p for p in src.fetch_products(limit=50) if p.product_url]
+    multi_target, solo_target = sample[0], sample[1]
+    ctx = {"source": src, "publishers": {}}
+
+    res_multi = pipeline.create_post_for_product(
+        conn, ctx, multi_target.external_product_id, "gd2026",
+        channel_codes=["fb_vanhanh_test", "ig_vanhanh_test"])
+    check("tạo bài đa kênh thành công", res_multi.get("ok"), res_multi.get("error"))
+    post_multi = conn.execute("SELECT * FROM post WHERE id=?", (res_multi["post_id"],)).fetchone()
+    product_multi = conn.execute("SELECT name FROM product WHERE id=?", (post_multi["product_id"],)).fetchone()
+
+    res_solo = pipeline.create_post_for_product(
+        conn, ctx, solo_target.external_product_id, "gd2026", channel_codes=["solo_vanhanh_test"])
+    check("tạo bài đơn kênh thành công", res_solo.get("ok"), res_solo.get("error"))
+    post_solo = conn.execute("SELECT * FROM post WHERE id=?", (res_solo["post_id"],)).fetchone()
+    product_solo = conn.execute("SELECT name FROM product WHERE id=?", (post_solo["product_id"],)).fetchone()
+    conn.close()
+
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+    r = c.post(f"/duyet/{post_multi['id']}/approve", data={
+        "_csrf": csrf, "caption": post_multi["caption_final"], "channel_ids": [fb_id, ig_id]})
+    check("duyệt bài đa kênh thành công", r.status_code == 302 and "err=" not in (r.location or ""),
+          (r.status_code, r.location))
+    with c.session_transaction() as sess:
+        csrf2 = sess["csrf"]
+    r2 = c.post(f"/duyet/{post_solo['id']}/approve", data={
+        "_csrf": csrf2, "caption": post_solo["caption_final"], "channel_ids": [solo_id]})
+    check("duyệt bài đơn kênh thành công", r2.status_code == 302 and "err=" not in (r2.location or ""),
+          (r2.status_code, r2.location))
+
+    conn = connect()
+    targets = conn.execute("SELECT id, channel_id FROM publish_target WHERE post_id=?",
+                           (post_multi["id"],)).fetchall()
+    check("bài đa kênh có đúng 2 publish_target", len(targets) == 2, len(targets))
+    fb_target = next(t for t in targets if t["channel_id"] == fb_id)
+    ig_target = next(t for t in targets if t["channel_id"] == ig_id)
+    conn.execute("UPDATE publish_target SET status='SUCCESS', updated_at=? WHERE id=?", (now(), fb_target["id"]))
+    conn.execute("UPDATE publish_target SET status='FAILED', last_error='lỗi test D4-B', updated_at=? WHERE id=?",
+                 (now(), ig_target["id"]))
+    conn.close()
+
+    page = c.get("/vanhanh")
+    check("trang /vanhanh mở được", page.status_code == 200, page.status_code)
+    body = page.get_data(as_text=True)
+    section = re.search(r'<section id="multi-channel-breakdown">.*?</section>', body, re.S)
+    check("có khối breakdown đa kênh trong trang", section is not None, body[:500])
+    section_html = section.group(0) if section else ""
+    check("bài đa kênh xuất hiện trong breakdown", product_multi["name"] in section_html,
+          product_multi["name"])
+    check("breakdown hiện đủ trạng thái SUCCESS và FAILED của 2 kênh",
+          "SUCCESS" in section_html and "FAILED" in section_html, section_html[:1500])
+    check("bài đơn kênh KHÔNG xuất hiện trong breakdown đa kênh (chỉ <2 target thì không cần breakdown)",
+          product_solo["name"] not in section_html, product_solo["name"])
+
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2247,6 +2336,7 @@ if __name__ == "__main__":
     test_sanpham_search_mode_shows_media_checklist_and_per_row_prompt()
     test_kenh_account_group_crud_end_to_end()
     test_sanpham_shows_account_group_quick_select_both_modes()
+    test_vanhanh_shows_multi_channel_post_breakdown()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
