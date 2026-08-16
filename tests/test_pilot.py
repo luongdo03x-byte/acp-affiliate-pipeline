@@ -352,8 +352,12 @@ def test_single_product_flow():
     check("post_id nằm trong link", res["post_id"] in post["affiliate_link"])
     check("sub_id_payload có đủ 4 trường", post["sub_id_payload"].count("sub") >= 4)
 
-    # Bỏ qua chấm điểm là có chủ ý, nhưng rào chắn nội dung thì không được bỏ.
-    check("vẫn có disclosure", pipeline.content.DISCLOSURE_DEFAULT in post["caption_final"])
+    # content.generate() không còn tự thêm disclosure mặc định (disclosure=''
+    # theo signature mới của main, người dùng đã xác nhận giữ nguyên khi
+    # merge) -- pipeline không truyền disclosure= vào bất kỳ lời gọi generate()
+    # nào nên caption tự động không còn nhãn tiếp thị liên kết theo mặc định.
+    check("caption không tự thêm disclosure mặc định (đã tắt theo quyết định, xem core/content.py)",
+          pipeline.content.DISCLOSURE_DEFAULT not in post["caption_final"], post["caption_final"])
 
     again = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
     check("gọi lại tạo bài mới chứ không trùng sản phẩm trong kho",
@@ -402,7 +406,8 @@ def test_manual_shopee_post_flow():
     check("manual ghi link mode prebuilt", payload.get("link_mode") == "prebuilt", payload)
     check("manual không giả sub1", not any(k.startswith("sub") for k in payload), payload)
     check("manual không nhúng post id vào link", res["post_id"] not in post["affiliate_link"])
-    check("manual vẫn có disclosure", content.DISCLOSURE_DEFAULT in post["caption_final"])
+    check("manual caption không tự thêm disclosure mặc định (đã tắt theo quyết định)",
+          content.DISCLOSURE_DEFAULT not in post["caption_final"], post["caption_final"])
     conn.close()
 
 
@@ -456,11 +461,18 @@ def test_playbook_hooks_and_cta():
 
 def test_content_post_type():
     print("\ncontent.validate() theo post_type")
+    # Toàn bộ khối "if post_type == 'SALES': ..." (thiếu link/disclosure/CTA,
+    # nhiều hơn 1 CTA) đã bị comment out trong content.validate() -- quyết
+    # định tắt rào chắn của main, người dùng đã xác nhận giữ nguyên khi merge
+    # nhánh multi-account. post_type vẫn là tham số hợp lệ (dùng để phân biệt
+    # bài SALES/VALUE ở nơi khác), chỉ riêng nhánh rào chắn theo post_type
+    # này hiện không còn kiểm tra gì -- test dưới đây xác nhận đúng hiện
+    # trạng "không còn chặn" thay vì hiện trạng cũ.
     product = {"name": "Nồi chiên không dầu 5L", "current_price": 890000, "sold_count": 300,
                "rating": 4.7, "review_count": 150, "category_code": "gia-dung", "description": "Dung tích 5L"}
     caption = content.generate(product, "price_drop", "https://go.isclix.com/x", discount_pct=0.1,
-                                hook_code="H1_GIAGIAM")
-    check("caption bán hàng có hook, CTA, link, disclosure",
+                                hook_code="H1_GIAGIAM", disclosure=content.DISCLOSURE_DEFAULT)
+    check("caption bán hàng có hook, CTA, link, disclosure (disclosure truyền vào rõ ràng)",
           caption.startswith(playbook.render_hook("H1_GIAGIAM", product, 0.1)[:10])
           and "https://go.isclix.com/x" in caption and content.DISCLOSURE_DEFAULT in caption)
     check("bài bán hàng hợp lệ thì validate() rỗng",
@@ -470,12 +482,14 @@ def test_content_post_type():
     check("bài giá trị không có link vẫn qua validate() khi post_type=VALUE",
           content.validate(value_caption, disclosure=valuepost.DISCLOSURE_VALUE,
                             post_type="VALUE") == [])
-    check("cùng caption đó nhưng validate() như bài bán hàng thì bị chặn thiếu link/disclosure/CTA",
-          len(content.validate(value_caption, post_type="SALES")) >= 2)
+    check("cùng caption đó, validate() như bài bán hàng KHÔNG còn chặn thiếu link/disclosure/CTA (rào chắn đã tắt)",
+          content.validate(value_caption, post_type="SALES") == [],
+          content.validate(value_caption, post_type="SALES"))
 
     two_cta = f"{playbook.CTA_LIBRARY[0]} {playbook.CTA_LIBRARY[1]} https://x.com {content.DISCLOSURE_DEFAULT}"
-    check("hai CTA trong bài bán hàng bị validate() chặn",
-          any("CTA" in p for p in content.validate(two_cta, post_type="SALES")))
+    check("hai CTA trong bài bán hàng KHÔNG còn bị validate() chặn (rào chắn đã tắt)",
+          not any("CTA" in p for p in content.validate(two_cta, post_type="SALES")),
+          content.validate(two_cta, post_type="SALES"))
 
 
 def test_hook_rotation_in_plan_content():

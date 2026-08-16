@@ -75,23 +75,40 @@ def test_crypto():
 
 def test_content_guards():
     print("\nRào chắn nội dung")
+    # 4 rào chắn (thiếu disclosure/link, từ tuyệt đối hoá, bịa trải nghiệm cá
+    # nhân) đã bị TẮT có chủ đích trên main (commit 0a98dfc, người dùng đã xác
+    # nhận lại rõ ràng khi merge nhánh multi-account vào main) -- comment out
+    # trong content.validate(), không phải bug. Bài test này giờ xác nhận
+    # ĐÚNG hiện trạng "không còn chặn" thay vì hiện trạng cũ, để không báo
+    # đỏ giả trên 1 quyết định đã chốt. EFFICACY_CLAIMS (cam kết công dụng)
+    # và giới hạn 500 ký tự VẪN CÒN CHẶN -- không nằm trong quyết định trên.
     link = "https://go.isclix.com/x?sub1=abc"
     ok = f"Nồi chiên Bear 4L\n\nĐang bán 890.000đ.\n\n{link}\n\n{content.DISCLOSURE_DEFAULT}"
     check("caption hợp lệ không bị bắt lỗi", content.validate(ok) == [], content.validate(ok))
-    check("thiếu disclosure bị chặn",
-          any("nhãn tiếp thị" in p for p in content.validate(ok.replace(content.DISCLOSURE_DEFAULT, ""))))
-    check("từ tuyệt đối hoá bị chặn",
-          any("tuyệt đối hoá" in p for p in content.validate(ok.replace("Nồi chiên", "Nồi chiên tốt nhất"))))
-    check("bịa trải nghiệm cá nhân bị chặn",
-          any("trải nghiệm" in p for p in content.validate(ok.replace("Đang bán", "Mình đã dùng và thấy hay. Đang bán"))))
-    check("thiếu link bị chặn", any("link" in p for p in content.validate(ok.replace(link, ""))))
-    check("vượt 500 ký tự bị chặn", any("500" in p for p in content.validate(ok + "x" * 500)))
+    check("thiếu disclosure KHÔNG còn bị chặn (rào chắn đã tắt)",
+          content.validate(ok.replace(content.DISCLOSURE_DEFAULT, "")) == [],
+          content.validate(ok.replace(content.DISCLOSURE_DEFAULT, "")))
+    check("từ tuyệt đối hoá KHÔNG còn bị chặn (rào chắn đã tắt)",
+          content.validate(ok.replace("Nồi chiên", "Nồi chiên tốt nhất")) == [],
+          content.validate(ok.replace("Nồi chiên", "Nồi chiên tốt nhất")))
+    check("bịa trải nghiệm cá nhân KHÔNG còn bị chặn (rào chắn đã tắt)",
+          content.validate(ok.replace("Đang bán", "Mình đã dùng và thấy hay. Đang bán")) == [],
+          content.validate(ok.replace("Đang bán", "Mình đã dùng và thấy hay. Đang bán")))
+    check("thiếu link KHÔNG còn bị chặn (rào chắn đã tắt)",
+          content.validate(ok.replace(link, "")) == [], content.validate(ok.replace(link, "")))
+    check("vượt 500 ký tự vẫn bị chặn (không nằm trong quyết định tắt rào chắn)",
+          any("500" in p or "Dài" in p for p in content.validate(ok + "x" * 500)))
 
     conn = connect()
     p = conn.execute("SELECT * FROM product ORDER BY length(name) DESC LIMIT 1").fetchone()
     long_cap = content.generate(p, "spec_highlight", "https://x.co/" + "a" * 180)
     check("caption luôn được cắt vừa 500 ký tự", len(long_cap) <= 500, len(long_cap))
-    check("cắt xong vẫn giữ disclosure", content.DISCLOSURE_DEFAULT in long_cap)
+    # generate() không còn tự thêm disclosure mặc định (disclosure='' theo
+    # signature mới) -- chỉ còn giữ lại khi được truyền vào rõ ràng.
+    long_cap_with_disclosure = content.generate(p, "spec_highlight", "https://x.co/" + "a" * 180,
+                                                disclosure=content.DISCLOSURE_DEFAULT)
+    check("cắt xong vẫn giữ disclosure khi có truyền disclosure vào",
+          content.DISCLOSURE_DEFAULT in long_cap_with_disclosure, long_cap_with_disclosure)
     conn.close()
 
 
