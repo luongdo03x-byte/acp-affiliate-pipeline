@@ -268,6 +268,10 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
     if not campaign:
         return {"ok": False, "error": f"Chưa có chiến dịch {campaign_code}"}
     if media_asset_ids:
+        # Bỏ trùng, giữ thứ tự -- chọn cùng 1 ảnh 2 lần không nên báo lỗi, và
+        # post_media có UNIQUE(post_id, media_asset_id) nên submit trùng sẽ vỡ
+        # INSERT sau nếu không bỏ trùng ở đây.
+        media_asset_ids = list(dict.fromkeys(media_asset_ids))
         # Validate NGAY TRONG HÀM NÀY (không chỉ ở route web) -- pipeline là
         # nguồn sự thật duy nhất, web chỉ là 1 trong nhiều caller có thể có,
         # đúng khuôn channel_codes/_resolve_channels_by_code đã làm ở D1.

@@ -2121,6 +2121,27 @@ def test_create_post_media_asset_ids_over_cap_rejected():
     conn.close()
 
 
+def test_create_post_media_asset_ids_duplicate_deduplicated():
+    print("\nTạo post với media_asset_ids trùng lặp -> bỏ trùng, không vỡ INSERT, vẫn audit đầy đủ")
+    conn = connect()
+    aid = ulid()
+    conn.execute("INSERT INTO media_asset (id, url, source, created_at) VALUES (?,?,?,?)",
+                 (aid, "https://fake.example/dup.jpg", "upload", now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "test", media_asset_ids=[aid, aid])
+    check("tạo bài thành công dù submit trùng media_asset_ids", res.get("ok"), res.get("error"))
+    rows = conn.execute(
+        "SELECT media_asset_id FROM post_media WHERE post_id=?", (res["post_id"],)).fetchall()
+    check("chỉ 1 dòng post_media cho asset bị trùng", len(rows) == 1, len(rows))
+    audit_row = conn.execute(
+        "SELECT * FROM audit_log WHERE entity='post' AND entity_id=?", (res["post_id"],)).fetchone()
+    check("có audit_log cho post (hàm chạy trọn vẹn, không bị vỡ giữa chừng)", audit_row is not None)
+    conn.close()
+
+
 def test_create_post_media_asset_id_not_found_rejected():
     print("\nTạo post với 1 media_asset_id không tồn tại -> lỗi rõ, không tạo post, không tạo post_media")
     conn = connect()
@@ -2298,6 +2319,7 @@ if __name__ == "__main__":
     test_media_library_create_list_delete_asset()
     test_create_post_with_media_asset_ids()
     test_create_post_media_asset_ids_over_cap_rejected()
+    test_create_post_media_asset_ids_duplicate_deduplicated()
     test_create_post_media_asset_id_not_found_rejected()
     test_post_media_urls_returns_ordered_urls()
     test_publish_post_clips_media_to_platform_limit()
