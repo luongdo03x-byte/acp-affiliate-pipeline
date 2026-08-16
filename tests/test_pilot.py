@@ -2171,7 +2171,7 @@ def test_sanpham_shows_account_group_quick_select_both_modes():
     body_search = page_search.get_data(as_text=True)
     check("chế độ tìm kiếm: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_search, "không thấy")
     check("chế độ tìm kiếm: đúng channel_codes của nhóm nhúng vào onclick",
-          ('acpTickGroup(this, ["' + ch1["code"] + '"]') in body_search, body_search[:2000])
+          ('acpTickGroup(this, [&#34;' + ch1["code"] + '&#34;]') in body_search, body_search[:2000])
 
     # Chế độ Affiliate: nút nhóm nằm trong form xác nhận (product-confirm__form),
     # chỉ render sau khi có resolved/metadata (xem ghi chú route thật ở D3 --
@@ -2195,7 +2195,7 @@ def test_sanpham_shows_account_group_quick_select_both_modes():
     body_affiliate = resolved_page.get_data(as_text=True)
     check("chế độ affiliate: tên nhóm hiện trên trang", "Nhóm sanpham test" in body_affiliate, "không thấy")
     check("chế độ affiliate: đúng channel_codes của nhóm nhúng vào onclick",
-          ('acpTickGroup(this, ["' + ch1["code"] + '"]') in body_affiliate, body_affiliate[:2000])
+          ('acpTickGroup(this, [&#34;' + ch1["code"] + '&#34;]') in body_affiliate, body_affiliate[:2000])
 
     for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
         os.environ.pop(var, None)

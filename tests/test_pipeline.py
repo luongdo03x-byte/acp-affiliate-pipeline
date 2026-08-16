@@ -2327,6 +2327,23 @@ def test_create_account_group_duplicate_channel_ids_deduplicated():
     conn.close()
 
 
+def test_create_account_group_duplicate_name_does_not_crash():
+    print("\ncreate_account_group() gọi 2 lần liên tiếp cùng tên -> không crash IntegrityError")
+    conn = connect()
+    ch1 = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()["id"]
+    res1 = pipeline.create_account_group(conn, "Nhóm trùng tên", [ch1])
+    check("lần 1 tạo thành công", res1.get("ok"), res1)
+    res2 = pipeline.create_account_group(conn, "Nhóm trùng tên", [ch1])
+    check("lần 2 không raise exception (có kết quả dict trả về)", isinstance(res2, dict), res2)
+    if res2.get("ok"):
+        code1 = conn.execute("SELECT code FROM account_group WHERE id=?", (res1["group_id"],)).fetchone()["code"]
+        code2 = conn.execute("SELECT code FROM account_group WHERE id=?", (res2["group_id"],)).fetchone()["code"]
+        check("2 nhóm cùng tên có code khác nhau", code1 != code2, (code1, code2))
+    else:
+        check("lần 2 thất bại gọn gàng có thông báo lỗi rõ ràng", bool(res2.get("error")), res2)
+    conn.close()
+
+
 def test_update_account_group_channels_overwrites_membership():
     print("\nupdate_account_group_channels() ghi đè toàn bộ thành viên")
     conn = connect()
@@ -2485,6 +2502,7 @@ if __name__ == "__main__":
     test_create_account_group()
     test_create_account_group_channel_not_found_rejected()
     test_create_account_group_duplicate_channel_ids_deduplicated()
+    test_create_account_group_duplicate_name_does_not_crash()
     test_update_account_group_channels_overwrites_membership()
     test_update_account_group_channels_not_found_rejected()
     test_update_account_group_channels_invalid_channel_leaves_membership_untouched()

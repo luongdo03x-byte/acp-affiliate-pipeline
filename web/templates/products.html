@@ -97,7 +97,7 @@
           <label>Chọn nhanh theo nhóm</label>
           <div class="quick-group-row">
           {% for g in account_groups %}
-            <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson }})">{{ g.name }}</button>
+            <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson|forceescape }})">{{ g.name }}</button>
           {% endfor %}
           </div>
         </div>
@@ -164,7 +164,7 @@ Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơ
       <label>Chọn nhanh theo nhóm (áp dụng cho checklist kênh ngay bên dưới)</label>
       <div class="quick-group-row">
       {% for g in account_groups %}
-        <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson }})">{{ g.name }}</button>
+        <button type="button" class="btn btn--small" onclick="acpTickGroup(this, {{ g.channel_codes|tojson|forceescape }})">{{ g.name }}</button>
       {% endfor %}
       </div>
     </div>

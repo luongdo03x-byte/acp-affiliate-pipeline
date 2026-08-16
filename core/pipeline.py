@@ -12,6 +12,7 @@ import json
 import os
 import random
 import re
+import sqlite3
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
@@ -158,9 +159,12 @@ def create_account_group(conn, name: str, channel_ids: list) -> dict:
         if not conn.execute("SELECT 1 FROM channel WHERE id=?", (cid,)).fetchone():
             return {"ok": False, "error": f"Không tìm thấy kênh {cid}"}
     group_id = ulid()
-    code = f"{_slugify(name)}-{group_id[:6]}"
-    conn.execute("INSERT INTO account_group (id, code, name, created_at) VALUES (?,?,?,?)",
-                 (group_id, code, name, now()))
+    code = f"{_slugify(name)}-{group_id[-6:]}"
+    try:
+        conn.execute("INSERT INTO account_group (id, code, name, created_at) VALUES (?,?,?,?)",
+                     (group_id, code, name, now()))
+    except sqlite3.IntegrityError:
+        return {"ok": False, "error": "Tên nhóm đã tồn tại (trùng mã tự sinh), thử lại hoặc đổi tên khác"}
     for cid in channel_ids:
         conn.execute(
             "INSERT INTO account_group_channel (group_id, channel_id, created_at) VALUES (?,?,?)",

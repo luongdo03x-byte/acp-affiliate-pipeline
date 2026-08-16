@@ -428,24 +428,32 @@ def create_app():
         channel_ids = request.form.getlist("channel_ids")
         if not name:
             return redirect(url_for("channels", err="Thiếu tên nhóm"))
+        if not channel_ids:
+            return redirect(url_for("channels", err="Chọn ít nhất 1 kênh cho nhóm"))
         conn = connect()
-        res = pipeline.create_account_group(conn, name, channel_ids)
-        conn.close()
+        try:
+            res = pipeline.create_account_group(conn, name, channel_ids)
+        finally:
+            conn.close()
         return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
     @app.route("/kenh/nhom/<group_id>/sua", methods=["POST"])
     def account_group_update(group_id):
         channel_ids = request.form.getlist("channel_ids")
         conn = connect()
-        res = pipeline.update_account_group_channels(conn, group_id, channel_ids)
-        conn.close()
+        try:
+            res = pipeline.update_account_group_channels(conn, group_id, channel_ids)
+        finally:
+            conn.close()
         return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
     @app.route("/kenh/nhom/<group_id>/xoa", methods=["POST"])
     def account_group_delete(group_id):
         conn = connect()
-        res = pipeline.delete_account_group(conn, group_id)
-        conn.close()
+        try:
+            res = pipeline.delete_account_group(conn, group_id)
+        finally:
+            conn.close()
         return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
     # ----------------------------------------------------------- duyệt bài
