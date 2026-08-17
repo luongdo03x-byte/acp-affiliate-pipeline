@@ -48,7 +48,14 @@ class FactoryService:
     def __init__(self, repository):
         self.repo = repository
 
-    def create_batch(self, name: str, count: int = 50, seed: int | None = None) -> dict:
+    def create_batch(
+        self,
+        name: str,
+        count: int = 50,
+        seed: int | None = None,
+        *,
+        execution_target: str | None = None,
+    ) -> dict:
         if count <= 0:
             raise ValueError("count must be positive")
         batch_id = ulid()
@@ -82,6 +89,7 @@ class FactoryService:
                 "avatar_prompt": profile.avatar_prompt,
                 "stage": AccountStage.PROFILE_READY.value,
                 "last_safe_stage": AccountStage.PROFILE_READY.value,
+                "execution_target": execution_target,
                 "created_at": created_at,
                 "updated_at": created_at,
             })
@@ -89,6 +97,39 @@ class FactoryService:
             self.repo.create_batch(batch_row)
             self.repo.insert_accounts(account_rows)
         return self.repo.get_batch(batch_id)
+
+    def _validate_execution_target(self, execution_target: str) -> str:
+        target = _clean_runner_text(execution_target, "execution_target", max_length=180)
+        if target == "AUTO_AVD":
+            return target
+        if target in {"AUTO", "THIS_PHONE"} or target.startswith("AUTO_AVD:"):
+            raise ValueError("unsupported execution_target")
+
+        worker = self.repo.get_worker(target)
+        if worker is None:
+            raise KeyError(target)
+        if worker.get("runner_type") not in {
+            RunnerType.LOCAL_DEVICE.value,
+            RunnerType.REMOTE_AVD.value,
+        }:
+            raise ValueError("unsupported runner type")
+        if worker.get("state") != WorkerState.READY.value or worker.get("draining"):
+            raise ValueError("selected runner is not ready")
+        return worker["id"]
+
+    def create_single_account(
+        self,
+        *,
+        execution_target: str,
+        batch_name: str = "Phone/AVD Pilot",
+    ) -> dict:
+        target = self._validate_execution_target(execution_target)
+        name = " ".join(str(batch_name or "").split()) or "Phone/AVD Pilot"
+        if len(name) > 120:
+            raise ValueError("batch_name is too long")
+        batch = self.create_batch(name, count=1, execution_target=target)
+        account = self.repo.list_accounts(batch["id"])[0]
+        return {"batch": batch, "account": account}
 
     def register_local_runner(self, device_id: str, device_name: str) -> dict:
         device_id = _clean_runner_text(device_id, "device_id", max_length=160)
