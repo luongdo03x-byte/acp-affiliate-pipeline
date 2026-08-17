@@ -1,19 +1,23 @@
 // background.js — ACP Shopee Helper (service worker, Manifest V3)
 //
-// Nguyên tắc bảo mật (đừng phá khi sửa file này):
-//   1. Không đọc cookie, không đọc localStorage, không đọc session Shopee.
-//   2. Không tự động hoá thao tác trên Shopee -- extension chỉ đọc DOM đã
-//      render sẵn của tab người dùng đang xem, đúng lúc người dùng bấm icon
-//      (activeTab chỉ cấp quyền cho tab đó, đúng thời điểm đó).
-//   3. Không cố bypass CAPTCHA/anti-bot của Shopee.
-//   4. Chỉ gửi 5 trường: name, current_price, original_price, image_url, shop.
-//   5. Chỉ gửi về localhost/127.0.0.1:5000 -- xem host_permissions.
-//   6. Token một lần dùng -- xoá khỏi bộ nhớ ngay sau khi gửi, không giữ lại.
+// Security rules:
+//   1. Never read cookies, localStorage, sessionStorage or Shopee auth state.
+//   2. Never automate Shopee. Read the rendered DOM only after the operator
+//      explicitly clicks the extension on the active tab.
+//   3. Never bypass CAPTCHA/anti-bot checks.
+//   4. Submit only product metadata plus the active tab URL used to prove the
+//      observed product identity server-side.
+//   5. Send only to ACP loopback origin relayed by the ACP content script.
 
 var pairing = null; // { token, productUrl, origin }
 
+function isAllowedAcpOrigin(origin) {
+  return origin === "http://127.0.0.1:5000" || origin === "http://localhost:5000";
+}
+
 chrome.runtime.onMessage.addListener(function (msg) {
-  if (msg && msg.type === "ACP_PAIRING") {
+  if (msg && msg.type === "ACP_PAIRING" && msg.token && msg.productUrl &&
+      isAllowedAcpOrigin(msg.origin)) {
     pairing = { token: msg.token, productUrl: msg.productUrl, origin: msg.origin };
   }
 });
@@ -28,45 +32,53 @@ function flashBadge(text, color, tabId) {
 
 chrome.action.onClicked.addListener(function (tab) {
   if (!tab.url || !/^https:\/\/shopee\.vn\//.test(tab.url)) {
-    flashBadge("!", "#EF4444", tab.id); // không phải trang Shopee
+    flashBadge("!", "#EF4444", tab.id);
     return;
   }
-  if (!pairing) {
-    flashBadge("?", "#F59E0B", tab.id); // chưa mở tab ACP / chưa bấm nút bên đó
+  if (!pairing || !isAllowedAcpOrigin(pairing.origin)) {
+    flashBadge("?", "#F59E0B", tab.id);
     return;
   }
 
   chrome.scripting.executeScript({ target: { tabId: tab.id }, func: extractShopeeMetadata })
     .then(function (results) {
-      var metadata = results && results[0] && results[0].result;
-      if (!metadata) {
+      var observed = results && results[0] && results[0].result;
+      if (!observed || !observed.observed_url || !observed.metadata ||
+          !/^https:\/\/shopee\.vn\//.test(observed.observed_url)) {
         flashBadge("×", "#EF4444", tab.id);
-        return;
+        return null;
       }
+
       return fetch(pairing.origin + "/api/helper/shopee-product", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           token: pairing.token,
           product_url: pairing.productUrl,
-          metadata: metadata,
+          observed_url: observed.observed_url,
+          metadata: observed.metadata,
         }),
       }).then(function (resp) {
-        flashBadge(resp.ok ? "✓" : "×", resp.ok ? "#22C55E" : "#EF4444", tab.id);
+        if (resp.ok) {
+          pairing = null; // one-time pairing completed successfully
+          flashBadge("✓", "#22C55E", tab.id);
+        } else {
+          // Keep pairing on failure so a user who clicked the wrong Shopee tab
+          // can switch to the intended product and retry before the 5-minute TTL.
+          flashBadge("×", "#EF4444", tab.id);
+        }
       });
     })
     .catch(function () {
+      // Keep the pairing for a retry; server-side expiry still caps its life.
       flashBadge("×", "#EF4444", tab.id);
-    })
-    .finally(function () {
-      pairing = null; // một lần dùng
     });
 });
 
-// Chạy TRONG trang Shopee đã render (chrome.scripting.executeScript tiêm hàm
-// này vào tab, không phải fetch từ background). Chỉ đọc DOM công khai của
-// trang -- JSON-LD rồi tới thẻ meta OpenGraph -- không đọc cookie, không đọc
-// localStorage, không gọi request nào ra ngoài từ trang Shopee.
+// Runs inside the rendered Shopee tab through chrome.scripting.executeScript.
+// It reads only public DOM/metadata already present on the page. The observed
+// URL is returned separately and is NOT trusted as product metadata; ACP uses
+// it only to verify this tab matches the token-bound canonical product.
 function extractShopeeMetadata() {
   function fromJsonLd() {
     var nodes = document.querySelectorAll('script[type="application/ld+json"]');
@@ -110,10 +122,13 @@ function extractShopeeMetadata() {
 
   var jsonld = fromJsonLd() || {};
   return {
-    name: jsonld.name || metaContent("og:title") || null,
-    current_price: jsonld.current_price || parsePrice(metaContent("product:price:amount")) || null,
-    original_price: jsonld.original_price || parsePrice(metaContent("product:original_price:amount")) || null,
-    image_url: jsonld.image_url || metaContent("og:image") || null,
-    shop: jsonld.shop || null,
+    observed_url: location.href,
+    metadata: {
+      name: jsonld.name || metaContent("og:title") || null,
+      current_price: jsonld.current_price || parsePrice(metaContent("product:price:amount")) || null,
+      original_price: jsonld.original_price || parsePrice(metaContent("product:original_price:amount")) || null,
+      image_url: jsonld.image_url || metaContent("og:image") || null,
+      shop: jsonld.shop || null,
+    },
   };
 }
