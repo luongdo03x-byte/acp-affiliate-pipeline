@@ -88,6 +88,17 @@ class FactoryV2ApiTests(unittest.TestCase):
         })
         return checkpoint_id
 
+    def assert_no_sensitive_keys(self, value):
+        forbidden = ("token", "password", "otp", "captcha", "secret", "master_key")
+        if isinstance(value, dict):
+            for key, child in value.items():
+                lowered = str(key).lower()
+                self.assertFalse(any(term in lowered for term in forbidden), key)
+                self.assert_no_sensitive_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                self.assert_no_sensitive_keys(child)
+
     def test_dashboard_requires_factory_key(self):
         res = self.client.get("/api/factory/v2/dashboard")
         self.assertEqual(401, res.status_code)
@@ -157,6 +168,27 @@ class FactoryV2ApiTests(unittest.TestCase):
         )
         self.assertEqual(202, valid.status_code)
         self.assertTrue(self.repo.get_checkpoint(checkpoint_id)["snoozed_until"])
+
+    def test_read_responses_never_expose_sensitive_keys(self):
+        responses = [
+            self.client.get("/api/factory/v2/dashboard", headers=self.auth),
+            self.client.get("/api/factory/v2/accounts", headers=self.auth),
+            self.client.get("/api/factory/v2/workers", headers=self.auth),
+            self.client.get("/api/factory/v2/checkpoints", headers=self.auth),
+        ]
+        for response in responses:
+            self.assertEqual(200, response.status_code)
+            self.assert_no_sensitive_keys(response.get_json())
+
+
+class FactoryV2LauncherTests(unittest.TestCase):
+    def test_companion_launcher_registers_oauth_and_v2_routes(self):
+        from account_factory_server import build_app
+
+        app = build_app()
+        rules = {rule.rule for rule in app.url_map.iter_rules()}
+        self.assertIn("/oauth/account-factory/start", rules)
+        self.assertIn("/api/factory/v2/dashboard", rules)
 
 
 if __name__ == "__main__":
