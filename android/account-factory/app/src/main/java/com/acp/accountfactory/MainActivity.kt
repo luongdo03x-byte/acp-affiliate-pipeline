@@ -1,6 +1,5 @@
 package com.acp.accountfactory
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -25,12 +24,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.acp.accountfactory.network.FactoryConnection
 import com.acp.accountfactory.network.FactoryV2Api
 import com.acp.accountfactory.runner.AccessibilityReadiness
-import com.acp.accountfactory.runner.LocalDeviceActions
-import com.acp.accountfactory.runner.LocalDeviceRunner
 import com.acp.accountfactory.runner.LocalRunnerIdentityStore
+import com.acp.accountfactory.runner.LocalRunnerService
+import com.acp.accountfactory.settings.FactorySettingsStore
 import com.acp.accountfactory.ui.AccountsScreen
 import com.acp.accountfactory.ui.CheckpointsScreen
 import com.acp.accountfactory.ui.CreateAccountScreen
@@ -41,23 +39,16 @@ import com.acp.accountfactory.ui.FactoryViewModel
 import com.acp.accountfactory.ui.WorkersScreen
 
 class MainActivity : ComponentActivity() {
-    private lateinit var settingsStore: SettingsStore
+    private lateinit var settingsStore: FactorySettingsStore
     private lateinit var api: FactoryV2Api
     private lateinit var identityStore: LocalRunnerIdentityStore
-    private lateinit var localRunner: LocalDeviceRunner
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        settingsStore = SettingsStore(this)
+        settingsStore = FactorySettingsStore(this)
         api = FactoryV2Api()
         identityStore = LocalRunnerIdentityStore(this)
-        localRunner = LocalDeviceRunner(
-            api = api,
-            connectionProvider = { settingsStore.connection() },
-            identityStore = identityStore,
-            actions = LocalDeviceActions(this),
-        )
-        if (settingsStore.isConfigured()) localRunner.start()
+        if (settingsStore.isConfigured()) LocalRunnerService.start(this)
         val localDeviceId = identityStore.getOrCreate().deviceId
 
         setContent {
@@ -66,38 +57,18 @@ class MainActivity : ComponentActivity() {
                     settings = settingsStore,
                     api = api,
                     localDeviceId = localDeviceId,
-                    onControllerConfigured = { localRunner.start() },
+                    onControllerConfigured = { LocalRunnerService.start(this) },
                 )
             }
         }
-    }
-
-    override fun onDestroy() {
-        localRunner.stop()
-        super.onDestroy()
     }
 }
 
 private enum class Screen { DASHBOARD, CREATE_ACCOUNT, ACCOUNTS, CHECKPOINTS, WORKERS }
 
-private class SettingsStore(context: Context) {
-    private val prefs = context.getSharedPreferences("factory_settings", Context.MODE_PRIVATE)
-
-    var baseUrl: String
-        get() = prefs.getString("base_url", "") ?: ""
-        set(value) = prefs.edit().putString("base_url", value.trim()).apply()
-
-    var factoryKey: String
-        get() = prefs.getString("factory_key", "") ?: ""
-        set(value) = prefs.edit().putString("factory_key", value.trim()).apply()
-
-    fun connection(): FactoryConnection = FactoryConnection(baseUrl, factoryKey)
-    fun isConfigured(): Boolean = baseUrl.isNotBlank() && factoryKey.isNotBlank()
-}
-
 @Composable
 private fun FactoryApp(
-    settings: SettingsStore,
+    settings: FactorySettingsStore,
     api: FactoryV2Api,
     localDeviceId: String,
     onControllerConfigured: () -> Unit,
@@ -199,7 +170,7 @@ private fun FactoryApp(
 
 @Composable
 private fun SettingsDialog(
-    settings: SettingsStore,
+    settings: FactorySettingsStore,
     onClose: () -> Unit,
     onSaved: () -> Unit,
 ) {
