@@ -29,6 +29,7 @@ class WorkerSupervisor:
         avd_manager,
         metrics_sampler,
         *,
+        worker_processes=None,
         stability_seconds: int = 45,
         max_starting: int = 1,
         clock=time.monotonic,
@@ -36,6 +37,7 @@ class WorkerSupervisor:
         self.repo = repository
         self.avd = avd_manager
         self.metrics = metrics_sampler
+        self.worker_processes = worker_processes
         self.stability_seconds = max(0, int(stability_seconds))
         self.max_starting = max(1, min(2, int(max_starting)))
         self.clock = clock
@@ -88,6 +90,36 @@ class WorkerSupervisor:
                     (now(), worker["id"]),
                 )
 
+    def _sync_worker_agents(self) -> None:
+        if self.worker_processes is None:
+            return
+        online = set(self.avd.list_online_devices())
+        workers = self.repo.conn.execute(
+            """SELECT * FROM factory_worker
+               WHERE state IN ('READY','RUNNING','WAITING_HUMAN')
+               ORDER BY id"""
+        ).fetchall()
+        for worker in workers:
+            serial = worker["adb_serial"]
+            if not serial or serial not in online or not self.avd.is_boot_completed(serial):
+                continue
+            worker_id = worker["id"]
+            try:
+                if not self.worker_processes.is_running(worker_id):
+                    self.worker_processes.start(worker_id, worker["avd_name"], serial)
+                heartbeat = self.worker_processes.heartbeat(worker_id)
+                if heartbeat.get("worker_id") != worker_id or heartbeat.get("adb_serial") != serial:
+                    raise RuntimeError("worker heartbeat identity mismatch")
+                progress = heartbeat.get("last_progress_at") or now()
+                self.repo.conn.execute(
+                    """UPDATE factory_worker
+                       SET last_heartbeat_at=?, last_progress_at=?, last_error=NULL
+                       WHERE id=?""",
+                    (now(), progress, worker_id),
+                )
+            except Exception:
+                self.reconcile_missing_heartbeat(worker_id)
+
     def _stop_persisted_worker(self, worker, *, action: str, capacity, target) -> SupervisorDecision:
         worker_id = worker["id"]
         self.repo.conn.execute(
@@ -95,6 +127,8 @@ class WorkerSupervisor:
             (worker_id,),
         )
         try:
+            if self.worker_processes is not None:
+                self.worker_processes.stop(worker_id)
             if worker["adb_serial"]:
                 self.avd.stop(worker["adb_serial"])
             self.repo.conn.execute(
@@ -140,6 +174,7 @@ class WorkerSupervisor:
 
     def tick(self) -> SupervisorDecision:
         self._promote_booted_starting_workers()
+        self._sync_worker_agents()
         sample = self.metrics.sample()
         capacity = classify_capacity(sample)
         workers = self._workers()
