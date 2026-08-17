@@ -8,8 +8,10 @@ nền tảng cho E2+ (Angle/Hook/Variant/Scoring), chưa nối vào pipeline.
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
+from .content import EFFICACY_CLAIMS, FABRICATED_EXPERIENCE
 from .db import now
 
 PROMPT_VERSION = "e1-v1"
@@ -38,6 +40,46 @@ class ProductFacts:
 
 def _source_hash(description: str) -> str:
     return hashlib.sha256((description or "").encode("utf-8")).hexdigest()
+
+
+FABRICATED_SOCIAL_PROOF = [
+    "đã bán hết", "ai dùng cũng khen", "best seller", "bán chạy nhất",
+    "được nhiều người tin dùng",
+]
+
+FABRICATED_URGENCY = [
+    "sắp hết hàng", "chỉ còn hôm nay", "số lượng có hạn", "nhanh tay kẻo lỡ",
+]
+
+_SOCIAL_PROOF_COUNT_RE = re.compile(r"\d[\d.,]*\s*(người|khách|đơn)\s*(đã\s*)?(mua|đặt)")
+
+
+def check_fact_safety(caption: str) -> list:
+    """[] nghĩa là FACT_SAFETY = PASS. Non-empty là FAIL (PTYC mục 8.4).
+
+    Không nhận ProductFacts: E1 không đối chiếu semantic giữa caption và
+    facts.facts/unknown (spec E1 §2, §5) -- toàn bộ cơ chế là blacklist/regex
+    cố định. Nếu E4+ cần semantic check thật, đó là lúc thêm tham số facts.
+    """
+    problems = []
+    flat = unicodedata.normalize("NFC", caption).lower()
+
+    for phrase in FABRICATED_EXPERIENCE:
+        if phrase in flat:
+            problems.append(f'Bịa trải nghiệm cá nhân chưa từng có: "{phrase}"')
+    for phrase in EFFICACY_CLAIMS:
+        if phrase in flat:
+            problems.append(f'Cam kết công dụng: "{phrase}"')
+    for phrase in FABRICATED_SOCIAL_PROOF:
+        if phrase in flat:
+            problems.append(f'Bịa social proof: "{phrase}"')
+    if _SOCIAL_PROOF_COUNT_RE.search(flat):
+        problems.append("Bịa số lượng người mua/đặt không có nguồn")
+    for phrase in FABRICATED_URGENCY:
+        if phrase in flat:
+            problems.append(f'Bịa cảm giác khan hiếm: "{phrase}"')
+
+    return problems
 
 
 def _heuristic_facts(description: str):

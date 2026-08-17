@@ -237,6 +237,61 @@ def test_build_product_facts_extractor_always_fails_falls_back():
         content_facts.set_extractor(None)
 
 
+def test_check_fact_safety_clean_caption_passes():
+    print("\ncheck_fact_safety() PASS với caption sạch")
+    from acp.core import content_facts
+    clean = "Nồi chiên Bear 4L, đang bán 890.000đ. Trang bán ghi nhận đã bán 1.234 lượt."
+    check("caption sạch trả []", content_facts.check_fact_safety(clean) == [], content_facts.check_fact_safety(clean))
+
+
+def test_check_fact_safety_blocks_fabricated_experience():
+    print("\ncheck_fact_safety() chặn bịa trải nghiệm cá nhân (mục 8.1)")
+    from acp.core import content_facts
+    bad = "Mình đã dùng 2 tuần rồi, thấy rất ổn."
+    result = content_facts.check_fact_safety(bad)
+    check("bịa trải nghiệm bị chặn", len(result) > 0, result)
+
+
+def test_check_fact_safety_blocks_fabricated_social_proof_phrase():
+    print("\ncheck_fact_safety() chặn social proof bịa dạng cụm cố định (mục 8.2)")
+    from acp.core import content_facts
+    bad = "Sản phẩm này là best seller, ai dùng cũng khen."
+    result = content_facts.check_fact_safety(bad)
+    check("cụm social proof cố định bị chặn", len(result) > 0, result)
+
+
+def test_check_fact_safety_blocks_fabricated_social_proof_count():
+    print("\ncheck_fact_safety() chặn social proof bịa dạng số lượng (mục 8.2)")
+    from acp.core import content_facts
+    bad = "Đã có 10.000 người đã mua sản phẩm này."
+    result = content_facts.check_fact_safety(bad)
+    check("số lượng người mua bịa bị chặn", len(result) > 0, result)
+
+
+def test_check_fact_safety_does_not_block_real_sold_count_phrasing():
+    print("\ncheck_fact_safety() không chặn nhầm cụm 'đã bán ... lượt' thật (khác 'người đã mua')")
+    from acp.core import content_facts
+    real = "Trang bán ghi nhận đã bán 1.234 lượt, 4.8/5 từ 200 đánh giá."
+    check("cụm 'đã bán ... lượt' hợp lệ không bị chặn nhầm",
+          content_facts.check_fact_safety(real) == [], content_facts.check_fact_safety(real))
+
+
+def test_check_fact_safety_blocks_fabricated_urgency():
+    print("\ncheck_fact_safety() chặn urgency bịa (mục 8.3)")
+    from acp.core import content_facts
+    bad = "Sắp hết hàng, mua ngay kẻo lỡ."
+    result = content_facts.check_fact_safety(bad)
+    check("urgency bịa bị chặn", len(result) > 0, result)
+
+
+def test_check_fact_safety_blocks_efficacy_claim():
+    print("\ncheck_fact_safety() chặn cam kết công dụng (tái sử content.EFFICACY_CLAIMS)")
+    from acp.core import content_facts
+    bad = "Dùng sản phẩm này cam kết hiệu quả, hết mụn sau 1 tuần."
+    result = content_facts.check_fact_safety(bad)
+    check("cam kết công dụng bị chặn", len(result) > 0, result)
+
+
 def test_imaging_compose_skips_watermark_when_handle_none():
     print("\nimaging.compose bỏ watermark handle khi handle=None")
     from PIL import Image
@@ -2574,6 +2629,13 @@ if __name__ == "__main__":
     test_build_product_facts_extractor_valid_json()
     test_build_product_facts_extractor_retries_then_succeeds()
     test_build_product_facts_extractor_always_fails_falls_back()
+    test_check_fact_safety_clean_caption_passes()
+    test_check_fact_safety_blocks_fabricated_experience()
+    test_check_fact_safety_blocks_fabricated_social_proof_phrase()
+    test_check_fact_safety_blocks_fabricated_social_proof_count()
+    test_check_fact_safety_does_not_block_real_sold_count_phrasing()
+    test_check_fact_safety_blocks_fabricated_urgency()
+    test_check_fact_safety_blocks_efficacy_claim()
     test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()
