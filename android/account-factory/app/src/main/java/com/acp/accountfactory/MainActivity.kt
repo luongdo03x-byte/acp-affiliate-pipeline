@@ -177,7 +177,6 @@ private fun FactoryApp(
             onBack = { screen = Screen.DASHBOARD },
             onRetry = viewModel::retryAccount,
             onStop = viewModel::stopAccount,
-            onConnectOAuth = viewModel::startOAuth,
         )
 
         Screen.CHECKPOINTS -> CheckpointsScreen(
