@@ -44,18 +44,20 @@ fun AccountsScreen(
                         account.channelCode?.let { Text("ACP: $it") }
                         account.lastErrorMessage?.let { Text("Lỗi: $it") }
 
-                        when (account.stage) {
-                            "THREADS_CREATED" -> Button(
+                        when (primaryAccountAction(account.stage, account.lastErrorCode)) {
+                            AccountAction.CONNECT_OAUTH -> Button(
                                 onClick = { onConnectOAuth(account.id) },
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text("CONNECT ACP") }
+                            ) { Text(if (account.stage == "RETRY_PENDING") "RETRY OAUTH" else "CONNECT ACP") }
+                            AccountAction.RETRY -> TextButton(onClick = { onRetry(account.id) }) { Text("RETRY") }
+                            AccountAction.NONE -> Unit
+                        }
+
+                        when (account.stage) {
                             "ACP_CONNECTING" -> Text("Đang chờ Threads OAuth…")
                             "ACP_ACTIVE" -> Text("✓ ACP ACTIVE")
                         }
 
-                        if (account.stage in setOf("ERROR", "RETRY_PENDING", "NEEDS_CONFIRMATION")) {
-                            TextButton(onClick = { onRetry(account.id) }) { Text("RETRY") }
-                        }
                         if (account.stage !in setOf("ACP_ACTIVE", "DISABLED")) {
                             TextButton(onClick = { onStop(account.id) }) { Text("STOP ACCOUNT") }
                         }
