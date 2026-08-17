@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ..adapters import factory
 from ..adapters.accesstrade_client import AccessTradeClient
@@ -82,6 +83,12 @@ def _safe_external_url(value):
 
 def create_app():
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    # Chạy sau ngrok (TLS kết thúc ở ngrok, chuyển tiếp về Flask bằng HTTP thô)
+    # -- không có ProxyFix thì request.host_url/request.scheme luôn báo "http"
+    # dù người dùng vào bằng URL https thật, khiến redirect_uri gửi cho OAuth
+    # Meta/Threads sai lược đồ (Facebook từ chối thẳng "không dùng kết nối bảo
+    # mật"). Chỉ tin đúng 1 lớp proxy (ngrok) cho từng header.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     app.jinja_env.filters["vnd"] = _fmt_vnd
     app.jinja_env.filters["num"] = _fmt_int
 
