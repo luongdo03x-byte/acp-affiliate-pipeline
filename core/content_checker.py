@@ -1,8 +1,8 @@
 """Anti-Industrial Checker + Rule-based Scoring cho ContentVariant (Content
-Engine v2, PTYC muc 16-17, 29-31).
+Engine v2, PTYC mục 16-17, 29-31).
 
-Khong dung core/pipeline.py/core/content.py -- dormant nhu E1/E2/E3's
-content_variant.py, chua noi vao luong tao bai that (viec cua E6).
+Không đụng core/pipeline.py/core/content.py -- dormant như E1/E2/E3's
+content_variant.py, chưa nối vào luồng tạo bài thật (việc của E6).
 """
 import re
 import unicodedata
@@ -47,7 +47,7 @@ def _ngrams(text: str, n: int = 4) -> set:
 
 
 def check_variant_rules(variant) -> list:
-    """Return list of dicts with rule and message keys."""
+    """list[dict] {"rule": ..., "message": ...}. [] nghĩa là sạch."""
     violations = []
     text = _variant_text(variant)
     flat_main = unicodedata.normalize("NFC", variant.main_message or "").strip().lower()
@@ -58,7 +58,7 @@ def check_variant_rules(variant) -> list:
 
     for phrase in check_industrial_phrases(text):
         violations.append({"rule": "marketing_cliche",
-                            "message": f'Cụm công nghiệp: "{phrase}"'})
+                            "message": f'Cụm công nghiệp: “{phrase}”'})
 
     flat_text = unicodedata.normalize("NFC", text).lower()
     cta_spam_hits = [p for p in CTA_SPAM_PHRASES if p in flat_text]
@@ -70,10 +70,10 @@ def check_variant_rules(variant) -> list:
         for sentence in re.split(r"[.!?]", item):
             if len(sentence.split()) > _LONG_SENTENCE_WORDS:
                 violations.append({"rule": "long_sentence",
-                                    "message": f'Câu quá dài (>{_LONG_SENTENCE_WORDS} từ): "{sentence.strip()}"'})
+                                    "message": f'Câu quá dài (>{_LONG_SENTENCE_WORDS} từ): “{sentence.strip()}”'})
         if len(item.split()) > _LONG_PARAGRAPH_WORDS:
             violations.append({"rule": "long_paragraph",
-                                "message": f'Đoạn quá dài (>{_LONG_PARAGRAPH_WORDS} từ): "{item}"'})
+                                "message": f'Đoạn quá dài (>{_LONG_PARAGRAPH_WORDS} từ): “{item}”'})
 
     hook_grams = _ngrams(variant.hook)
     if any(hook_grams & _ngrams(item) for item in variant.body):
