@@ -55,6 +55,38 @@ class FakeAvd:
         return serial in self.booted
 
 
+class FakeWorkerProcesses:
+    def __init__(self):
+        self.started = []
+        self.stopped = []
+        self.running = set()
+        self.heartbeats = []
+
+    def is_running(self, worker_id):
+        return worker_id in self.running
+
+    def start(self, worker_id, avd_name, serial):
+        self.started.append((worker_id, avd_name, serial))
+        self.running.add(worker_id)
+        return type("P", (), {"pid": 9876})()
+
+    def heartbeat(self, worker_id):
+        self.heartbeats.append(worker_id)
+        return {
+            "worker_id": worker_id,
+            "adb_serial": "emulator-5554",
+            "state": "READY",
+            "current_account_id": None,
+            "current_job_id": None,
+            "observed_state": None,
+            "last_progress_at": "2026-08-17T06:00:00+00:00",
+        }
+
+    def stop(self, worker_id):
+        self.stopped.append(worker_id)
+        self.running.discard(worker_id)
+
+
 class FactoryV2SupervisorTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", isolation_level=None)
@@ -63,6 +95,7 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         ensure_schema(self.conn)
         self.repo = FactoryRepository(self.conn)
         self.avd = FakeAvd()
+        self.worker_processes = FakeWorkerProcesses()
 
     def tearDown(self):
         self.conn.close()
@@ -72,6 +105,7 @@ class FactoryV2SupervisorTests(unittest.TestCase):
             self.repo,
             self.avd,
             FakeMetrics(sample),
+            worker_processes=self.worker_processes,
             stability_seconds=0,
         )
 
@@ -113,7 +147,7 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         self.assertEqual(3, worker["recovery_count"])
         self.assertEqual("ERROR", worker["state"])
 
-    def test_started_avd_records_serial_and_reaches_ready_after_boot(self):
+    def test_started_avd_records_serial_reaches_ready_and_heartbeats_worker_agent(self):
         supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
 
         decision = supervisor.tick()
@@ -129,6 +163,13 @@ class FactoryV2SupervisorTests(unittest.TestCase):
 
         worker = self.repo.get_worker(decision.worker_id)
         self.assertEqual("READY", worker["state"])
+        self.assertEqual(
+            [(decision.worker_id, "acp-worker-01", "emulator-5554")],
+            self.worker_processes.started,
+        )
+        self.assertEqual([decision.worker_id], self.worker_processes.heartbeats)
+        self.assertIsNotNone(worker["last_heartbeat_at"])
+        self.assertEqual("2026-08-17T06:00:00+00:00", worker["last_progress_at"])
 
     def test_manual_drain_intent_stops_idle_worker_before_green_scale_up(self):
         self.repo.insert_worker({
@@ -138,12 +179,14 @@ class FactoryV2SupervisorTests(unittest.TestCase):
             "state": "DRAINING",
             "draining": 1,
         })
+        self.worker_processes.running.add("drain-me")
         supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
 
         decision = supervisor.tick()
 
         self.assertEqual("DRAIN", decision.action)
         self.assertEqual("drain-me", decision.worker_id)
+        self.assertEqual(["drain-me"], self.worker_processes.stopped)
         self.assertEqual(["emulator-5554"], self.avd.stopped)
         self.assertEqual([], self.avd.started)
         self.assertEqual("STOPPED", self.repo.get_worker("drain-me")["state"])
@@ -156,11 +199,13 @@ class FactoryV2SupervisorTests(unittest.TestCase):
             "state": "RECOVERING",
             "last_error": "manual restart requested",
         })
+        self.worker_processes.running.add("restart-me")
         supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
 
         stop_decision = supervisor.tick()
 
         self.assertEqual("RESTART_STOP", stop_decision.action)
+        self.assertEqual(["restart-me"], self.worker_processes.stopped)
         self.assertEqual(["emulator-5554"], self.avd.stopped)
         self.assertEqual([], self.avd.started)
         self.assertEqual("STOPPED", self.repo.get_worker("restart-me")["state"])
