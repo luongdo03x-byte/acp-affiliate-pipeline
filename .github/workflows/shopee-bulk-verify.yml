@@ -1,0 +1,45 @@
+name: Verify Shopee Bulk Affiliate
+
+on:
+  push:
+    branches:
+      - feat/shopee-bulk-affiliate
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      ACP_ADAPTER: mock
+      ACP_SOURCE: mock
+      ACP_ENV: development
+      SHOPEE_AFFILIATE_ID: "14354840000"
+    steps:
+      - name: Checkout as acp package
+        uses: actions/checkout@v4
+        with:
+          path: acp
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r acp/requirements.txt
+
+      - name: Focused Shopee bulk tests
+        run: python -m acp.tests.test_shopee_bulk_affiliate
+
+      - name: Pipeline regression
+        run: python -m acp.tests.test_pipeline
+
+      - name: Pilot regression
+        run: python -m acp.tests.test_pilot
+
+      - name: Manager tests
+        working-directory: acp
+        run: python tests/test_manage.py
+
+      - name: Release verification
+        working-directory: acp
+        run: ./manage.sh test
