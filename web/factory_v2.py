@@ -6,7 +6,9 @@ import os
 
 from flask import abort, jsonify, request
 
+from core.account_factory import ThreadsOAuthClient
 from core.db import connect, ulid
+from core.factory_v2.oauth_bridge import start_account_oauth, sync_account_from_oauth_session
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.service import FactoryService
 
@@ -63,6 +65,20 @@ def _require_factory_key() -> None:
     received = request.headers.get(FACTORY_KEY_HEADER, "")
     if not received or not hmac.compare_digest(received.encode(), expected.encode()):
         abort(401, "Factory key không hợp lệ")
+
+
+def _base_url() -> str:
+    configured = os.environ.get("ACP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    return configured or request.host_url.rstrip("/")
+
+
+def _redirect_uri() -> str:
+    return _base_url() + "/oauth/account-factory/threads/callback"
+
+
+def _provider(app):
+    factory = app.config.get("ACCOUNT_FACTORY_OAUTH_FACTORY")
+    return factory() if factory else ThreadsOAuthClient()
 
 
 def _pick(row: dict | None, fields) -> dict | None:
@@ -157,6 +173,51 @@ def register_factory_v2_routes(app):
             if account is None:
                 return jsonify(ok=False, error="Account không tồn tại"), 404
             return jsonify(ok=True, account=_pick(account, _ACCOUNT_FIELDS))
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/accounts/<account_id>/oauth/start")
+    def factory_v2_oauth_start(account_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            if repo.get_account(account_id) is None:
+                return jsonify(ok=False, error="Account không tồn tại"), 404
+            try:
+                result = start_account_oauth(
+                    conn,
+                    account_id,
+                    _redirect_uri(),
+                    _provider(app),
+                )
+            except KeyError:
+                return jsonify(ok=False, error="Account không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            except RuntimeError:
+                return jsonify(ok=False, error="Threads OAuth chưa được cấu hình trên ACP"), 503
+            return jsonify(ok=True, **result), 201
+        finally:
+            conn.close()
+
+    @app.get("/api/factory/v2/accounts/<account_id>/oauth/status")
+    def factory_v2_oauth_status(account_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            account = repo.get_account(account_id)
+            if account is None:
+                return jsonify(ok=False, error="Account không tồn tại"), 404
+            session_id = account.get("oauth_session_id")
+            if not session_id:
+                return jsonify(ok=False, error="Account chưa có OAuth session"), 409
+            try:
+                updated = sync_account_from_oauth_session(conn, session_id)
+            except KeyError:
+                return jsonify(ok=False, error="OAuth session không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return jsonify(ok=True, account=_pick(updated, _ACCOUNT_FIELDS))
         finally:
             conn.close()
 
