@@ -38,15 +38,13 @@ class LocalRunnerService : Service() {
         bootstrapJob = serviceScope.launch {
             val settings = FactorySettingsStore(this@LocalRunnerService)
             val identityStore = LocalRunnerIdentityStore(this@LocalRunnerService)
-            if (!settings.isConfigured()) {
-                ZeroConfigBootstrap(
-                    context = this@LocalRunnerService,
-                    settings = settings,
-                    identityStore = identityStore,
-                ).ensureConfigured()
-            }
+            val bootstrap = ZeroConfigBootstrap(
+                context = this@LocalRunnerService,
+                settings = settings,
+                identityStore = identityStore,
+            ).ensureConfigured()
 
-            if (!settings.isConfigured()) {
+            if (!bootstrap.ready || !settings.isConfigured()) {
                 stopSelf(startId)
                 return@launch
             }
