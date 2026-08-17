@@ -110,28 +110,40 @@ class FactoryRepository:
             "SELECT * FROM factory_worker WHERE id=?", (worker_id,)
         ).fetchone())
 
+    def get_worker_by_device_id(self, device_id: str) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_worker WHERE device_id=?", (device_id,)
+        ).fetchone())
+
     def list_workers(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM factory_worker ORDER BY id"
         ).fetchall()]
 
-    def upsert_worker_heartbeat(self, worker_id: str, **values) -> dict:
+    def update_worker_fields(self, worker_id: str, **values) -> dict:
         if not values:
             return self.get_worker(worker_id)
         allowed = {
-            "adb_serial", "state", "current_account_id", "current_job_id", "pid",
+            "runner_type", "avd_name", "adb_serial", "device_id", "device_name",
+            "state", "current_account_id", "current_job_id", "pid", "started_at",
             "last_heartbeat_at", "last_progress_at", "processed_count", "recovery_count",
-            "estimated_ram_mb", "current_ram_mb", "current_cpu_percent", "draining", "last_error",
+            "estimated_ram_mb", "current_ram_mb", "current_cpu_percent", "draining",
+            "last_error",
         }
         unknown = set(values) - allowed
         if unknown:
             raise ValueError(f"unsupported worker fields: {sorted(unknown)}")
         assignments = ",".join(f"{name}=?" for name in values)
-        self.conn.execute(
+        cursor = self.conn.execute(
             f"UPDATE factory_worker SET {assignments} WHERE id=?",
             (*values.values(), worker_id),
         )
+        if cursor.rowcount == 0:
+            return None
         return self.get_worker(worker_id)
+
+    def upsert_worker_heartbeat(self, worker_id: str, **values) -> dict:
+        return self.update_worker_fields(worker_id, **values)
 
     def create_job_lease(self, row: Mapping[str, Any]) -> dict:
         try:
