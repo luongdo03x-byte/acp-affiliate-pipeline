@@ -32,7 +32,7 @@ def _summary(results):
 def _render(*, raw_urls="", sub_tag="default", results=None, err=None, status=200):
     return render_template(
         "shopee_bulk_affiliate.html",
-        page="san-pham",
+        page="shopee-affiliate",
         mode="bulk-affiliate",
         raw_urls=raw_urls,
         sub_tag=sub_tag,
