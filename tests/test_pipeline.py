@@ -758,6 +758,85 @@ def test_generate_body_invalid_body_type_falls_back_to_template():
         content_variant.set_body_generator(None)
 
 
+def _mk_test_variant(**overrides):
+    from acp.core import content_variant
+    base = dict(angle="DEAL_PRICE", hook="Giá này có gì hay vậy?",
+                main_message="Giá hiện tại đáng chú ý", body=["Đang bán 400.000đ."],
+                cta="Giá hiện tại mình để ở link.", structure="DEAL_BENEFIT_CTA")
+    base.update(overrides)
+    return content_variant.ContentVariant(**base)
+
+
+def test_check_industrial_phrases():
+    print("\ncheck_industrial_phrases() chặn cụm công nghiệp, NFC-normalize trước khi so khớp")
+    from acp.core import content_checker
+    import unicodedata
+    check("mỗi cụm trong INDUSTRIAL_PHRASES tự chặn được chính nó",
+          all(content_checker.check_industrial_phrases(p) == [p] for p in content_checker.INDUSTRIAL_PHRASES))
+    check("caption sạch không bị chặn", content_checker.check_industrial_phrases("Giá đang giảm mạnh hôm nay.") == [])
+    nfd = unicodedata.normalize("NFD", "Đây là trải nghiệm tuyệt vời nhất")
+    check("dạng NFD vẫn bị chặn đúng", "trải nghiệm tuyệt vời" in content_checker.check_industrial_phrases(nfd))
+
+
+def test_check_variant_rules_clean_variant_passes():
+    print("\ncheck_variant_rules() variant sạch trả []")
+    from acp.core import content_checker
+    v = _mk_test_variant()
+    check("variant sạch không có vi phạm", content_checker.check_variant_rules(v) == [], content_checker.check_variant_rules(v))
+
+
+def test_check_variant_rules_generic_opening():
+    print("\ncheck_variant_rules() chặn main_message mở đầu chung chung")
+    from acp.core import content_checker
+    v = _mk_test_variant(main_message="Sản phẩm này rất đáng mua")
+    rules = [x["rule"] for x in content_checker.check_variant_rules(v)]
+    check("có vi phạm generic_opening", "generic_opening" in rules, rules)
+
+
+def test_check_variant_rules_marketing_cliche():
+    print("\ncheck_variant_rules() chặn cụm công nghiệp, 1 vi phạm/cụm khớp")
+    from acp.core import content_checker
+    v = _mk_test_variant(body=["Đây là trải nghiệm tuyệt vời và giải pháp tối ưu cho bạn"])
+    violations = [x for x in content_checker.check_variant_rules(v) if x["rule"] == "marketing_cliche"]
+    check("đúng 2 vi phạm marketing_cliche (2 cụm khớp)", len(violations) == 2, violations)
+
+
+def test_check_variant_rules_too_many_ctas():
+    print("\ncheck_variant_rules() chặn khi có >1 cụm CTA spam")
+    from acp.core import content_checker
+    v = _mk_test_variant(cta="Mua ngay! Đừng bỏ lỡ!")
+    rules = [x["rule"] for x in content_checker.check_variant_rules(v)]
+    check("có vi phạm too_many_ctas", "too_many_ctas" in rules, rules)
+
+
+def test_check_variant_rules_long_sentence_and_paragraph():
+    print("\ncheck_variant_rules() chặn câu/đoạn quá dài")
+    from acp.core import content_checker
+    long_text = " ".join(["từ"] * 45)
+    v = _mk_test_variant(body=[long_text])
+    violations = content_checker.check_variant_rules(v)
+    rules = [x["rule"] for x in violations]
+    check("có vi phạm long_sentence", "long_sentence" in rules, rules)
+    check("có vi phạm long_paragraph", "long_paragraph" in rules, rules)
+
+
+def test_check_variant_rules_repeated_phrase():
+    print("\ncheck_variant_rules() chặn hook và body lặp cụm 4 từ")
+    from acp.core import content_checker
+    v = _mk_test_variant(hook="Nồi chiên này có gì đáng chú ý vậy?",
+                          body=["Nồi chiên này có gì đáng chú ý thật sự"])
+    rules = [x["rule"] for x in content_checker.check_variant_rules(v)]
+    check("có vi phạm repeated_phrase", "repeated_phrase" in rules, rules)
+
+
+def test_check_variant_rules_excessive_emoji():
+    print("\ncheck_variant_rules() chặn quá nhiều emoji, 1 vi phạm/emoji vượt ngưỡng")
+    from acp.core import content_checker
+    v = _mk_test_variant(cta="Xem ngay 😍😍😍😍😍")
+    violations = [x for x in content_checker.check_variant_rules(v) if x["rule"] == "excessive_emoji"]
+    check("đúng 2 vi phạm excessive_emoji (5 emoji - ngưỡng 3)", len(violations) == 2, violations)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3218,6 +3297,14 @@ if __name__ == "__main__":
     test_generate_body_valid_json()
     test_generate_body_generator_raises_exception_falls_back_to_template()
     test_generate_body_invalid_body_type_falls_back_to_template()
+    test_check_industrial_phrases()
+    test_check_variant_rules_clean_variant_passes()
+    test_check_variant_rules_generic_opening()
+    test_check_variant_rules_marketing_cliche()
+    test_check_variant_rules_too_many_ctas()
+    test_check_variant_rules_long_sentence_and_paragraph()
+    test_check_variant_rules_repeated_phrase()
+    test_check_variant_rules_excessive_emoji()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
