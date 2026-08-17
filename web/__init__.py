@@ -7,6 +7,7 @@ without growing the server monolith further.
 from . import server as _server
 from .shopee_bulk import register_shopee_bulk_routes
 from .shopee_helper import register_shopee_helper_hardening
+from .shopee_product_intel import register_shopee_product_intel
 
 _base_create_app = _server.create_app
 
@@ -14,6 +15,7 @@ _base_create_app = _server.create_app
 def create_app():
     app = _base_create_app()
     register_shopee_helper_hardening(app)
+    register_shopee_product_intel(app)
     register_shopee_bulk_routes(app)
     return app
 
