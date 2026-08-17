@@ -1,6 +1,7 @@
 import sqlite3
 import unittest
 
+from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.scheduler import Scheduler
 from core.factory_v2.schema import ensure_schema
@@ -61,8 +62,8 @@ class FactoryV2RuntimeAtomicityTests(unittest.TestCase):
         account = self.repo.list_accounts(self.batch["id"])[0]
         job = self.repo.get_active_job_for_account(account["id"])
         worker = self.repo.get_worker("worker-01")
-        self.assertEqual("AVD_ASSIGNED", account["stage"])
-        self.assertEqual("PROFILE_READY", account["last_safe_stage"])
+        self.assertEqual(AccountStage.RUNNER_ASSIGNED.value, account["stage"])
+        self.assertEqual(AccountStage.PROFILE_READY.value, account["last_safe_stage"])
         self.assertEqual("RECOVERING", job["state"])
         self.assertEqual("RECOVERING", worker["state"])
         self.assertEqual([], self.repo.list_checkpoints(batch_id=self.batch["id"]))
