@@ -28,7 +28,7 @@ fun WorkersScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Workers") },
+                title = { Text("Runners") },
                 navigationIcon = { TextButton(onClick = onBack) { Text("‹ Back") } },
             )
         },
@@ -38,25 +38,31 @@ fun WorkersScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(state.workers, key = { it.id }) { worker ->
+                val label = when (worker.runnerType) {
+                    "LOCAL_DEVICE" -> worker.deviceName ?: "This phone"
+                    else -> worker.avdName ?: worker.id
+                }
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text(worker.avdName)
-                        Text("${worker.state}${if (worker.draining) " • draining" else ""}")
+                        Text(label)
+                        Text("${worker.runnerType} • ${worker.state}${if (worker.draining) " • draining" else ""}")
                         Text("Processed ${worker.processedCount} • Recovery ${worker.recoveryCount}")
                         worker.currentRamMb?.let { Text("RAM $it MB") }
                         worker.currentCpuPercent?.let { Text("CPU ${it.toInt()}%") }
                         worker.lastError?.let { Text("Lỗi: $it") }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                enabled = worker.state !in setOf("WAITING_HUMAN", "STOPPED", "ERROR") && !worker.draining,
-                                onClick = { onDrain(worker.id) },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("DRAIN") }
-                            OutlinedButton(
-                                enabled = worker.state !in setOf("WAITING_HUMAN", "STOPPED") && worker.currentJobId == null,
-                                onClick = { onRestart(worker.id) },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("RESTART") }
+                        if (worker.runnerType == "REMOTE_AVD") {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    enabled = worker.state !in setOf("WAITING_HUMAN", "STOPPED", "ERROR") && !worker.draining,
+                                    onClick = { onDrain(worker.id) },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("DRAIN") }
+                                OutlinedButton(
+                                    enabled = worker.state !in setOf("WAITING_HUMAN", "STOPPED") && worker.currentJobId == null,
+                                    onClick = { onRestart(worker.id) },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("RESTART") }
+                            }
                         }
                     }
                 }
