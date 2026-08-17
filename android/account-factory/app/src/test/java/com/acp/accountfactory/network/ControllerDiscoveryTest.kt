@@ -38,20 +38,13 @@ class ControllerDiscoveryTest {
     }
 
     @Test
-    fun connectionPrefersDeviceTokenAndFallsBackToLegacyFactoryKey() {
-        val device = FactoryConnection(
-            baseUrl = "http://192.168.68.2:5001",
-            factoryKey = "legacy",
-            deviceToken = "device-token",
+    fun parseEnrollmentRequiresNonBlankDeviceToken() {
+        val enrolled = ControllerDiscovery.parseEnrollment(
+            """{"ok":true,"service":"account-factory","api_version":2,"device_token":"abc123"}"""
         )
-        assertEquals("X-ACP-Device-Token", device.authHeader().first)
-        assertEquals("device-token", device.authHeader().second)
-
-        val legacy = FactoryConnection(
-            baseUrl = "http://192.168.68.2:5001",
-            factoryKey = "legacy",
-        )
-        assertEquals("X-ACP-Factory-Key", legacy.authHeader().first)
-        assertEquals("legacy", legacy.authHeader().second)
+        assertEquals("abc123", enrolled?.deviceToken)
+        assertEquals(null, ControllerDiscovery.parseEnrollment(
+            """{"ok":true,"service":"account-factory","api_version":2,"device_token":""}"""
+        ))
     }
 }
