@@ -11,6 +11,7 @@ import com.acp.accountfactory.network.FactoryV2ApiClient
 import com.acp.accountfactory.network.FactoryWorkerDto
 import com.acp.accountfactory.network.StartedOAuthDto
 import com.acp.accountfactory.network.WorkerCountsDto
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -83,7 +84,7 @@ class FactoryViewModelTest {
             oauthMaxAttempts = 2,
         )
         vm.refresh().join()
-        val event = async { vm.events.first() }
+        val event = async(start = CoroutineStart.UNDISPATCHED) { vm.events.first() }
 
         vm.startOAuth("acc-1").join()
 
