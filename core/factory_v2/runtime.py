@@ -1,9 +1,9 @@
-"""Controller runtime that leases accounts and drives safe worker checkpoints.
+"""Controller runtime that leases accounts and drives safe runner checkpoints.
 
 The runtime never submits signup forms, credentials, OTP/CAPTCHA, identity
-checks, or Threads publishing. Worker automation is limited to preparing text,
-opening official apps, observing foreground package state, and waiting for the
-operator at explicit checkpoints.
+checks, or Threads publishing. Runner automation is limited to preparing text,
+opening official apps/URLs, observing foreground package state, and waiting for
+the operator at explicit checkpoints.
 """
 from __future__ import annotations
 
@@ -13,12 +13,16 @@ import threading
 from core.db import now, ulid
 
 from .models import AccountStage
-from .worker_protocol import WorkerCommand
+from .runner_gateway import RunnerGateway
 
 
 _LOG = logging.getLogger(__name__)
 _INSTAGRAM_PACKAGE = "com.instagram.android"
 _THREADS_PACKAGE = "com.instagram.barcelona"
+
+
+def _pending(result: dict | None) -> bool:
+    return isinstance(result, dict) and result.get("status") == "pending"
 
 
 class FactoryControllerRuntime:
@@ -30,6 +34,7 @@ class FactoryControllerRuntime:
         supervisor,
         worker_processes,
         *,
+        runner_gateway=None,
         owned_connection=None,
     ):
         self.repo = repository
@@ -37,26 +42,27 @@ class FactoryControllerRuntime:
         self.scheduler = scheduler
         self.supervisor = supervisor
         self.worker_processes = worker_processes
+        self.runner_gateway = runner_gateway or RunnerGateway(repository, worker_processes)
         self.owned_connection = owned_connection
 
     def _command(self, job, action: str, payload: dict | None = None) -> dict:
-        return self.worker_processes.request(
-            job["worker_id"],
-            WorkerCommand(
-                command_id=ulid(),
-                action=action,
-                account_id=job["account_id"],
-                payload={"job_id": job["id"], **(payload or {})},
-            ),
-        )
+        return self.runner_gateway.send(job, action, payload)
 
     def _open_human_checkpoint(self, job, account, *, package: str, checkpoint_type: str) -> None:
-        self._command(job, "PREPARE_TEXT", {"text": f"@{account['username']}"})
-        self._command(job, "OPEN_PACKAGE", {"package": package})
-        self._command(job, "REPORT_WAITING_HUMAN", {"checkpoint": checkpoint_type})
+        steps = (
+            ("PREPARE_TEXT", {"text": f"@{account['username']}"}),
+            ("OPEN_PACKAGE", {"package": package}),
+            ("REPORT_WAITING_HUMAN", {"checkpoint": checkpoint_type}),
+        )
+        for action, payload in steps:
+            if _pending(self._command(job, action, payload)):
+                return
 
         if checkpoint_type == "IG_POSTCHECK":
-            if account["stage"] != AccountStage.AVD_ASSIGNED.value:
+            if account["stage"] not in {
+                AccountStage.AVD_ASSIGNED.value,
+                AccountStage.RUNNER_ASSIGNED.value,
+            }:
                 raise ValueError(f"cannot prepare Instagram from {account['stage']}")
             self.service.transition_account(account["id"], AccountStage.IG_READY_FOR_HUMAN)
             self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
@@ -110,6 +116,8 @@ class FactoryControllerRuntime:
             raise ValueError(f"unsupported checkpoint type: {checkpoint['type']}")
 
         observation = self._command(job, "OBSERVE_FOREGROUND")
+        if _pending(observation):
+            return
         if observation.get("package") != expected_package:
             current = self.repo.get_account(account["id"])
             if current["stage"] == AccountStage.WAITING_HUMAN.value:
@@ -146,9 +154,9 @@ class FactoryControllerRuntime:
             )
             self.repo.conn.execute(
                 """UPDATE factory_job
-                   SET state='RUNNING', desired_action='PREPARE_THREADS', heartbeat_at=?
+                   SET state='RUNNING', desired_action='PREPARE_THREADS', command_id=?, heartbeat_at=?
                    WHERE id=?""",
-                (now(), job["id"]),
+                (ulid(), now(), job["id"]),
             )
             self.repo.conn.execute(
                 "UPDATE factory_worker SET state='RUNNING', last_progress_at=? WHERE id=?",
@@ -189,11 +197,11 @@ class FactoryControllerRuntime:
             self.repo.conn.execute(
                 """UPDATE factory_worker
                    SET state='RECOVERING', recovery_count=recovery_count+1,
-                       last_error='worker command failed'
+                       last_error='runner command failed'
                    WHERE id=?""",
                 (job["worker_id"],),
             )
-            _LOG.warning("Factory worker command deferred (%s)", type(exc).__name__)
+            _LOG.warning("Factory runner command deferred (%s)", type(exc).__name__)
 
     def tick(self) -> None:
         self.supervisor.tick()
