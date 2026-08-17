@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal Account Factory V2 worker agent using local JSON-lines IPC.
+"""Account Factory V2 AVD worker agent using local JSON-lines IPC.
 
-The worker only exposes safe orchestration primitives. It does not capture
-credentials, submit platform security challenges, solve OTP/CAPTCHA, or alter
-fingerprints/network identity.
+The worker exposes only fail-closed orchestration/UI primitives. It never
+captures or automates passwords, OTP/CAPTCHA, identity/security challenges,
+or Threads publishing.
 """
 from __future__ import annotations
 
@@ -14,15 +14,58 @@ import sys
 from datetime import datetime, timezone
 
 from core.factory_v2.avd import AvdManager
+from core.factory_v2.ui_automation.adb import AdbClient
+from core.factory_v2.ui_automation.driver import SafeUiDriver
+from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
+from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
+from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
+from core.factory_v2.ui_automation.threads.screens import build_threads_detector
 from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, WorkerHeartbeat
+
+
+_INSTAGRAM_PACKAGE = "com.instagram.android"
+_THREADS_PACKAGE = "com.instagram.barcelona"
+_APPROVED_PROFILE_KEYS = ("username", "display_name", "bio")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _safe_text(value, *, max_length: int = 120) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    return text[:max_length] if text else None
+
+
+def _safe_profile(payload: dict) -> dict[str, str]:
+    profile = payload.get("profile")
+    if not isinstance(profile, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for key in _APPROVED_PROFILE_KEYS:
+        value = profile.get(key)
+        if value is None:
+            continue
+        text = str(value)
+        if len(text) > 500 or any(ord(character) < 32 or ord(character) == 127 for character in text):
+            raise ValueError(f"invalid profile field: {key}")
+        clean[key] = text
+    return clean
+
+
 class WorkerAgent:
-    def __init__(self, worker_id: str, avd_name: str, serial: str, *, avd: AvdManager | None = None):
+    def __init__(
+        self,
+        worker_id: str,
+        avd_name: str,
+        serial: str,
+        *,
+        avd: AvdManager | None = None,
+        instagram_flow=None,
+        threads_flow=None,
+    ):
         self.worker_id = worker_id
         self.avd_name = avd_name
         self.serial = serial
@@ -34,17 +77,35 @@ class WorkerAgent:
         self.observed_state = None
         self.last_progress_at = _now()
         self.prepared_text = None
+        self.flow = None
+        self.last_known_screen = None
+        self.last_safe_step = None
+
+        if instagram_flow is None or threads_flow is None:
+            adb = AdbClient(serial, adb_path=self.avd.adb, runner=self.avd.runner)
+            if instagram_flow is None:
+                instagram_flow = InstagramFlow(SafeUiDriver(adb, build_instagram_detector()))
+            if threads_flow is None:
+                threads_flow = ThreadsFlow(SafeUiDriver(adb, build_threads_detector()))
+        self.instagram_flow = instagram_flow
+        self.threads_flow = threads_flow
 
     def heartbeat(self) -> dict:
-        return WorkerHeartbeat(
+        heartbeat = WorkerHeartbeat(
             worker_id=self.worker_id,
             adb_serial=self.serial,
             state=self.state,
             current_account_id=self.current_account_id,
             current_job_id=self.current_job_id,
-            observed_state=self.observed_state,
+            observed_state=self.last_known_screen or self.observed_state,
             last_progress_at=self.last_progress_at,
         ).to_dict()
+        heartbeat.update({
+            "flow": self.flow,
+            "last_known_screen": self.last_known_screen,
+            "last_safe_step": self.last_safe_step,
+        })
+        return heartbeat
 
     def _foreground_package(self) -> str | None:
         result = self.avd.runner.run(
@@ -56,12 +117,67 @@ class WorkerAgent:
         match = re.search(r"mCurrentFocus=.*? ([A-Za-z0-9_.]+)/", result.stdout)
         return match.group(1) if match else None
 
+    def _flow_response(self, flow_name: str, result) -> dict:
+        screen = _safe_text(getattr(result, "screen", None)) or "UNKNOWN"
+        reason = _safe_text(getattr(result, "reason", None))
+        safe_step = _safe_text(getattr(result, "last_safe_step", None))
+        status = str(getattr(result, "status", "needs_confirmation"))
+        if status not in {
+            "running", "waiting_human", "completed",
+            "needs_confirmation", "retry_pending", "error",
+        }:
+            status = "needs_confirmation"
+            reason = "INVALID_FLOW_RESULT"
+
+        self.flow = flow_name
+        self.last_known_screen = screen
+        if safe_step:
+            self.last_safe_step = safe_step
+        self.observed_state = screen
+        if status == "waiting_human":
+            self.state = "WAITING_HUMAN"
+        elif status == "error":
+            self.state = "ERROR"
+        elif status in {"needs_confirmation", "retry_pending"}:
+            self.state = "RECOVERING"
+        else:
+            self.state = "RUNNING"
+        self.last_progress_at = _now()
+        return {
+            "ok": True,
+            "status": status,
+            "result": {
+                "screen": screen,
+                "reason": reason,
+                "last_safe_step": self.last_safe_step,
+            },
+        }
+
+    def _prepare_instagram(self) -> dict:
+        self.instagram_flow.driver.open_package(_INSTAGRAM_PACKAGE)
+        detected = self.instagram_flow.driver.detect_screen()
+        self.flow = "instagram"
+        self.last_known_screen = _safe_text(getattr(detected, "kind", None)) or "UNKNOWN"
+        self.observed_state = self.last_known_screen
+        self.state = "RUNNING"
+        self.last_progress_at = _now()
+        return {
+            "ok": True,
+            "status": "completed",
+            "result": {
+                "screen": self.last_known_screen,
+                "reason": None,
+                "last_safe_step": self.last_safe_step,
+            },
+        }
+
     def execute(self, command: WorkerCommand) -> dict:
         def run_action():
             action = command.action.upper()
             self.current_account_id = command.account_id or self.current_account_id
             if command.payload.get("job_id"):
                 self.current_job_id = str(command.payload["job_id"])
+
             if action == "HEARTBEAT":
                 return {"ok": True, "heartbeat": self.heartbeat()}
             if action == "OPEN_URL":
@@ -89,6 +205,30 @@ class WorkerAgent:
                 self.observed_state = package
                 self.last_progress_at = _now()
                 return {"ok": True, "package": package}
+
+            if action == "PREPARE_INSTAGRAM":
+                return self._prepare_instagram()
+            if action == "AUTOMATE_INSTAGRAM":
+                return self._flow_response(
+                    "instagram",
+                    self.instagram_flow.run(_safe_profile(command.payload)),
+                )
+            if action == "AUTOMATE_THREADS":
+                self.threads_flow.driver.open_package(_THREADS_PACKAGE)
+                return self._flow_response(
+                    "threads",
+                    self.threads_flow.run(_safe_profile(command.payload)),
+                )
+            if action == "OBSERVE_CHECKPOINT":
+                flow_name = str(command.payload.get("flow") or self.flow or "").strip().lower()
+                if flow_name == "instagram":
+                    result = self.instagram_flow.observe_checkpoint()
+                elif flow_name == "threads":
+                    result = self.threads_flow.observe_checkpoint()
+                else:
+                    raise ValueError("unsupported checkpoint flow")
+                return self._flow_response(flow_name, result)
+
             raise ValueError(f"unsupported worker action: {command.action}")
 
         return self.ledger.execute(command.command_id, run_action)
