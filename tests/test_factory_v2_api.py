@@ -5,6 +5,7 @@ import unittest
 from flask import Flask
 
 from core import db
+from core.account_factory import get_session
 from core.db import now, ulid
 from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
@@ -14,13 +15,22 @@ from core.factory_v2.service import FactoryService
 from web.factory_v2 import register_factory_v2_routes
 
 
+class FakeAuthorizationProvider:
+    def authorization_url(self, state, redirect_uri):
+        self.state = state
+        self.redirect_uri = redirect_uri
+        return f"https://threads.example/authorize?state={state}"
+
+
 class FactoryV2ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db_path = db.DB_PATH
         self.old_factory_key = os.environ.get("ACP_FACTORY_API_KEY")
+        self.old_public_base = os.environ.get("ACP_PUBLIC_BASE_URL")
         db.DB_PATH = os.path.join(self.tmp.name, "factory-v2.db")
         os.environ["ACP_FACTORY_API_KEY"] = "test-key"
+        os.environ["ACP_PUBLIC_BASE_URL"] = "https://acp.example"
 
         self.conn = db.connect()
         ensure_schema(self.conn)
@@ -49,8 +59,10 @@ class FactoryV2ApiTests(unittest.TestCase):
             "desired_workers": 1,
         })
 
+        self.oauth_provider = FakeAuthorizationProvider()
         app = Flask(__name__)
         app.testing = True
+        app.config["ACCOUNT_FACTORY_OAUTH_FACTORY"] = lambda: self.oauth_provider
         register_factory_v2_routes(app)
         self.client = app.test_client()
         self.auth = {"X-ACP-Factory-Key": "test-key"}
@@ -62,6 +74,10 @@ class FactoryV2ApiTests(unittest.TestCase):
             os.environ.pop("ACP_FACTORY_API_KEY", None)
         else:
             os.environ["ACP_FACTORY_API_KEY"] = self.old_factory_key
+        if self.old_public_base is None:
+            os.environ.pop("ACP_PUBLIC_BASE_URL", None)
+        else:
+            os.environ["ACP_PUBLIC_BASE_URL"] = self.old_public_base
         self.tmp.cleanup()
 
     def seed_running_job(self):
@@ -90,6 +106,21 @@ class FactoryV2ApiTests(unittest.TestCase):
             "created_at": now(),
         })
         return checkpoint_id
+
+    def seed_threads_created(self, username="maianh.le"):
+        account = self.repo.list_accounts(self.batch["id"])[0]
+        self.conn.execute(
+            "UPDATE factory_account SET username=? WHERE id=?", (username, account["id"])
+        )
+        for stage in (
+            AccountStage.AVD_ASSIGNED,
+            AccountStage.IG_READY_FOR_HUMAN,
+            AccountStage.IG_CREATED,
+            AccountStage.THREADS_READY_FOR_HUMAN,
+            AccountStage.THREADS_CREATED,
+        ):
+            self.service.transition_account(account["id"], stage)
+        return self.repo.get_account(account["id"])
 
     def assert_no_sensitive_keys(self, value):
         forbidden = ("token", "password", "otp", "captcha", "secret", "master_key")
@@ -203,6 +234,48 @@ class FactoryV2ApiTests(unittest.TestCase):
         worker = self.repo.get_worker("worker-01")
         self.assertEqual("RUNNING", worker["state"])
         self.assertIsNotNone(worker["current_job_id"])
+
+    def test_oauth_start_ignores_client_supplied_username(self):
+        account = self.seed_threads_created("maianh.le")
+
+        res = self.client.post(
+            f"/api/factory/v2/accounts/{account['id']}/oauth/start",
+            json={"expected_username": "wrong.user"},
+            headers=self.auth,
+        )
+
+        self.assertEqual(201, res.status_code)
+        body = res.get_json()
+        oauth = get_session(self.conn, body["session_id"])
+        updated = self.repo.get_account(account["id"])
+        self.assertEqual("maianh.le", oauth["expected_username"])
+        self.assertEqual(AccountStage.ACP_CONNECTING.value, updated["stage"])
+        self.assertNotIn("access_token", body)
+
+    def test_oauth_status_syncs_authoritative_active_account(self):
+        account = self.seed_threads_created("maianh.le")
+        started = self.client.post(
+            f"/api/factory/v2/accounts/{account['id']}/oauth/start",
+            headers=self.auth,
+        ).get_json()
+        self.conn.execute(
+            """UPDATE account_factory_oauth_session
+               SET status='ACTIVE', actual_username='maianh.le', threads_user_id='threads-17',
+                   channel_id='channel-17', channel_code='threads_maianh_le'
+               WHERE id=?""",
+            (started["session_id"],),
+        )
+
+        res = self.client.get(
+            f"/api/factory/v2/accounts/{account['id']}/oauth/status",
+            headers=self.auth,
+        )
+
+        self.assertEqual(200, res.status_code)
+        body = res.get_json()
+        self.assertEqual(AccountStage.ACP_ACTIVE.value, body["account"]["stage"])
+        self.assertEqual("threads_maianh_le", body["account"]["channel_code"])
+        self.assert_no_sensitive_keys(body)
 
 
 class FactoryV2LauncherTests(unittest.TestCase):
