@@ -4,17 +4,18 @@ enum class AccountStage { PLANNED, IG_CREATED, THREADS_CREATED, ACP_CONNECTING, 
 
 object Workflow {
     private val allowed = setOf(
-        PLANNED to IG_CREATED,
-        IG_CREATED to THREADS_CREATED,
-        THREADS_CREATED to ACP_CONNECTING,
-        ACP_CONNECTING to ACP_ACTIVE,
-        PLANNED to NEEDS_VERIFICATION,
-        IG_CREATED to NEEDS_VERIFICATION,
-        THREADS_CREATED to NEEDS_VERIFICATION,
-        ACP_CONNECTING to ERROR,
-        NEEDS_VERIFICATION to PLANNED,
-        NEEDS_VERIFICATION to IG_CREATED,
-        ERROR to THREADS_CREATED,
+        AccountStage.PLANNED to AccountStage.IG_CREATED,
+        AccountStage.IG_CREATED to AccountStage.THREADS_CREATED,
+        AccountStage.THREADS_CREATED to AccountStage.ACP_CONNECTING,
+        AccountStage.ACP_CONNECTING to AccountStage.ACP_ACTIVE,
+        AccountStage.PLANNED to AccountStage.NEEDS_VERIFICATION,
+        AccountStage.IG_CREATED to AccountStage.NEEDS_VERIFICATION,
+        AccountStage.THREADS_CREATED to AccountStage.NEEDS_VERIFICATION,
+        AccountStage.ACP_CONNECTING to AccountStage.ERROR,
+        AccountStage.NEEDS_VERIFICATION to AccountStage.PLANNED,
+        AccountStage.NEEDS_VERIFICATION to AccountStage.IG_CREATED,
+        AccountStage.ERROR to AccountStage.THREADS_CREATED,
     )
+
     fun canTransition(from: AccountStage, to: AccountStage) = (from to to) in allowed
 }
