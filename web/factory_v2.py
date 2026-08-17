@@ -47,6 +47,7 @@ _HOST_FIELDS = (
 _ALLOWED_RUNNER_RESULT_KEYS = frozenset({
     "package", "activity", "waiting_human", "error_code", "prepared",
 })
+_ALLOWED_CREATE_ACCOUNT_FIELDS = frozenset({"execution_target", "batch_name"})
 
 _WAITING_STAGES = {
     "WAITING_HUMAN", "NEEDS_VERIFICATION", "NEEDS_CONFIRMATION", "USERNAME_UNAVAILABLE",
@@ -203,6 +204,42 @@ def register_factory_v2_routes(app):
                 stage=(request.args.get("stage") or "").strip().upper() or None,
             )
             return jsonify(ok=True, accounts=[_pick(row, _ACCOUNT_FIELDS) for row in rows])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/accounts")
+    def factory_v2_create_account():
+        _require_factory_key()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify(ok=False, error="Body JSON không hợp lệ"), 400
+        unknown = set(data) - _ALLOWED_CREATE_ACCOUNT_FIELDS
+        if unknown:
+            return jsonify(ok=False, error=f"Field không được phép: {sorted(unknown)}"), 400
+        execution_target = str(data.get("execution_target") or "").strip()
+        if not execution_target:
+            return jsonify(ok=False, error="Thiếu execution_target"), 400
+        batch_name = " ".join(str(data.get("batch_name") or "Phone/AVD Pilot").split())
+        if len(batch_name) > 120:
+            return jsonify(ok=False, error="batch_name quá dài"), 400
+
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                result = service.create_single_account(
+                    execution_target=execution_target,
+                    batch_name=batch_name,
+                )
+            except KeyError:
+                return jsonify(ok=False, error="Runner không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return jsonify(
+                ok=True,
+                batch=_pick(result["batch"], _BATCH_FIELDS),
+                account=_pick(result["account"], _ACCOUNT_FIELDS),
+            ), 201
         finally:
             conn.close()
 
