@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -21,6 +22,7 @@ fun AccountsScreen(
     onBack: () -> Unit,
     onRetry: (String) -> Unit,
     onStop: (String) -> Unit,
+    onConnectOAuth: (String) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -39,7 +41,18 @@ fun AccountsScreen(
                         Text("#${account.sequence} @${account.username}")
                         Text(account.displayName)
                         Text("${account.stage} • safe ${account.lastSafeStage}")
+                        account.channelCode?.let { Text("ACP: $it") }
                         account.lastErrorMessage?.let { Text("Lỗi: $it") }
+
+                        when (account.stage) {
+                            "THREADS_CREATED" -> Button(
+                                onClick = { onConnectOAuth(account.id) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("CONNECT ACP") }
+                            "ACP_CONNECTING" -> Text("Đang chờ Threads OAuth…")
+                            "ACP_ACTIVE" -> Text("✓ ACP ACTIVE")
+                        }
+
                         if (account.stage in setOf("ERROR", "RETRY_PENDING", "NEEDS_CONFIRMATION")) {
                             TextButton(onClick = { onRetry(account.id) }) { Text("RETRY") }
                         }
