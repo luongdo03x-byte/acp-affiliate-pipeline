@@ -15,16 +15,23 @@ import types
 
 _REPO_ROOT = Path(__file__).resolve().parent
 
-# The codebase uses package-relative imports under ``acp`` (for example
-# ``acp.web.server``). Git worktrees/checkouts are not guaranteed to be named
-# ``acp`` though, so expose the current repository root as that package name
-# before importing any application modules. This keeps the launcher portable
-# across paths such as ``worktrees/account-factory-android`` and CI checkouts.
+# Some V2 modules intentionally use top-level imports such as ``core.db`` while
+# the web package uses package-relative imports under ``acp``. Make both import
+# styles resolve from the repository itself, regardless of the checkout or
+# worktree directory name and regardless of the caller's current directory.
+_repo_root_str = str(_REPO_ROOT)
+if _repo_root_str not in sys.path:
+    sys.path.insert(0, _repo_root_str)
+
+# Git worktrees/checkouts are not guaranteed to be named ``acp``, so expose the
+# current repository root as that package name before importing application
+# modules. This keeps the launcher portable across paths such as
+# ``worktrees/account-factory-android`` and CI checkouts.
 if "acp" not in sys.modules:
     acp_package = types.ModuleType("acp")
     acp_package.__file__ = str(_REPO_ROOT / "__init__.py")
     acp_package.__package__ = "acp"
-    acp_package.__path__ = [str(_REPO_ROOT)]
+    acp_package.__path__ = [_repo_root_str]
     sys.modules["acp"] = acp_package
 
 from acp.core.factory_v2.runtime import build_default_runtime  # noqa: E402
