@@ -699,7 +699,7 @@ Expected: không tìm thấy "CONTENT VARIANTS"/"acpUseVariant(" trong response 
 
 - [ ] **Step 3: Sửa route `review()` trong `web/server.py`**
 
-Thêm import ở đầu file: `from acp.core import content_checker, content_platform, content_variant` (kiểm tra tên import hiện có, có thể đã có 1 phần — chỉ thêm phần thiếu).
+Thêm import ở đầu file: `from ..core import content_checker, content_platform, content_variant` (dùng import tương đối `..core`, đúng quy ước 100% các import `core.*` hiện có trong `web/server.py` — file này không dùng `from acp.core import ...` tuyệt đối ở đâu cả; kiểm tra tên import hiện có, có thể đã có 1 phần — chỉ thêm phần thiếu).
 
 Trong hàm `review()`, ngay sau vòng lặp gán `sel["prior_override"]` (trước dòng `recent = [...]`), thêm:
 
@@ -732,7 +732,13 @@ Trong hàm `review()`, ngay sau vòng lặp gán `sel["prior_override"]` (trư�
 
 - [ ] **Step 4: Sửa `web/templates/review.html`**
 
-Thêm khối mới ngay TRƯỚC dòng `<div class="field"><label for="caption-{{ p.id }}">` (dòng chứa textarea caption gốc):
+Thêm khối mới ngay TRƯỚC dòng `<form method="post" action="/duyet/{{ p.id }}/approve">`
+(KHÔNG phải trước dòng textarea `caption-{{ p.id }}` — đặt khối variant BÊN
+NGOÀI form approve. `<form>` HTML không được lồng nhau: nếu đặt bên trong,
+trình duyệt sẽ bỏ qua thẻ `<form>` "Đổi hook" khi parse, nút "Đổi hook" sẽ
+submit nhầm vào form approve bên ngoài thay vì `/duyet/{{p.id}}/doi-hook`.
+Khối variant vẫn nằm trong cùng `<div>` cha, chỉ là sibling đứng trước
+`<form>` thay vì con của nó):
 
 ```html
       {% if p.variants %}
@@ -977,7 +983,7 @@ Expected: các action mới trả 404 (chưa xử lý trong `review_action()`).
 
 - [ ] **Step 3: Mở rộng `review_action()` trong `web/server.py`**
 
-Thêm import ở đầu file: `from acp.core import content_hook, content_angle` (nếu chưa có).
+Thêm import ở đầu file: `from ..core import content_hook, content_angle` (đúng quy ước import tương đối `..core` như toàn bộ import khác trong `web/server.py`; nếu chưa có).
 
 Trong hàm `review_action(post_id, action)`, thêm 3 nhánh `elif` MỚI, đặt SAU nhánh `elif action == "reject":` hiện có, TRƯỚC `else: conn.close(); abort(404)`:
 
@@ -1022,8 +1028,15 @@ Trong hàm `review_action(post_id, action)`, thêm 3 nhánh `elif` MỚI, đặt
                                           json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta,
                                           new_variant.structure, now(), variant_id))
                             res = {"ok": True}
-                    audit(conn, "content_variant_row", variant_id, action, actor="operator", detail=res)
+                    pipeline.audit(conn, "content_variant_row", variant_id, action, actor="operator", detail=res)
 ```
+
+`web/server.py` không import thẳng `audit` từ `core.db` — quy ước sẵn có
+trong file này (dòng gọi `pipeline.audit(conn, "channel", ...)` ở 2 chỗ
+đã có, xử lý bật/tắt kênh) là gọi qua `pipeline.audit(...)` (module
+`pipeline` re-export `audit` từ `core.db`). Dùng đúng `pipeline.audit(...)`
+ở trên, KHÔNG gọi `audit(...)` trần trụi — sẽ vỡ `NameError` vì tên đó
+không tồn tại trong namespace của `web/server.py`.
 
 (Import `content_facts`, `content_variant` — kiểm tra đã có ở đầu `web/server.py` từ Task 4 hay chưa, thêm nếu thiếu.)
 
