@@ -9,8 +9,12 @@ import com.acp.accountfactory.network.FactoryConnection
 import com.acp.accountfactory.network.FactoryV2ApiClient
 import com.acp.accountfactory.network.FactoryWorkerDto
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -23,12 +27,26 @@ data class FactoryUiState(
     val error: String? = null,
 )
 
+sealed interface FactoryUiEvent {
+    data class OpenExternalUrl(val url: String) : FactoryUiEvent
+}
+
 class FactoryViewModel(
     private val api: FactoryV2ApiClient,
     private val connectionProvider: () -> FactoryConnection,
+    private val oauthPollDelayMs: Long = 3_000L,
+    private val oauthMaxAttempts: Int = 120,
 ) : ViewModel() {
+    init {
+        require(oauthPollDelayMs >= 0) { "oauthPollDelayMs must be non-negative" }
+        require(oauthMaxAttempts > 0) { "oauthMaxAttempts must be positive" }
+    }
+
     private val mutableState = MutableStateFlow(FactoryUiState())
     val state: StateFlow<FactoryUiState> = mutableState.asStateFlow()
+
+    private val mutableEvents = MutableSharedFlow<FactoryUiEvent>(extraBufferCapacity = 1)
+    val events: SharedFlow<FactoryUiEvent> = mutableEvents.asSharedFlow()
 
     fun refresh(): Job = viewModelScope.launch {
         loadSnapshot()
@@ -68,6 +86,36 @@ class FactoryViewModel(
 
     fun restartWorker(id: String): Job = command { connection ->
         api.restartWorker(connection, id)
+    }
+
+    fun startOAuth(accountId: String): Job = viewModelScope.launch {
+        mutableState.value = mutableState.value.copy(loading = true, error = null)
+        try {
+            val connection = connectionProvider()
+            val started = api.startOAuth(connection, accountId)
+            loadSnapshot(connection)
+            mutableEvents.emit(FactoryUiEvent.OpenExternalUrl(started.authorizationUrl))
+
+            repeat(oauthMaxAttempts) {
+                if (oauthPollDelayMs > 0) delay(oauthPollDelayMs)
+                val account = api.oauthStatus(connection, accountId)
+                if (account.stage != "ACP_CONNECTING") {
+                    loadSnapshot(connection)
+                    return@launch
+                }
+            }
+
+            loadSnapshot(connection)
+            mutableState.value = mutableState.value.copy(
+                loading = false,
+                error = "Threads OAuth vẫn đang chờ xác nhận. Có thể làm mới lại trạng thái sau.",
+            )
+        } catch (error: Exception) {
+            mutableState.value = mutableState.value.copy(
+                loading = false,
+                error = error.message?.take(300) ?: "Không thể bắt đầu Threads OAuth",
+            )
+        }
     }
 
     private fun command(action: suspend (FactoryConnection) -> Unit): Job = viewModelScope.launch {
