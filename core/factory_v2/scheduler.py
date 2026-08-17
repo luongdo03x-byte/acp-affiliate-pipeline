@@ -41,7 +41,7 @@ def _target_matches(account, worker) -> bool:
     return target == worker["id"]
 
 
-def _resume_action(account) -> tuple[str, AccountStage] | None:
+def _resume_action(account) -> tuple[str, AccountStage | None] | None:
     if account["stage"] == AccountStage.PROFILE_READY.value:
         return "PREPARE_INSTAGRAM", AccountStage.RUNNER_ASSIGNED
     if account["stage"] != AccountStage.RETRY_PENDING.value:
@@ -52,7 +52,12 @@ def _resume_action(account) -> tuple[str, AccountStage] | None:
         return "PREPARE_INSTAGRAM", AccountStage.RUNNER_ASSIGNED
     if safe == AccountStage.IG_CREATED.value:
         return "PREPARE_THREADS", AccountStage.THREADS_READY_FOR_HUMAN
-    # THREADS_CREATED retries belong to ACP activation, not a creation runner.
+    if safe == AccountStage.THREADS_CREATED.value:
+        # OAuth failures are deliberately gated until the operator requests a
+        # retry. FactoryService/API clears OAUTH_FAILED before this becomes
+        # schedulable; no Instagram/Threads work is replayed.
+        if account["last_error_code"] is None:
+            return "START_ACP", None
     return None
 
 
@@ -119,7 +124,8 @@ class Scheduler:
                     leased_at, lease_expires_at, leased_at, 1, leased_at,
                 ),
             )
-            self.service.transition_account(account["id"], target_stage)
+            if target_stage is not None:
+                self.service.transition_account(account["id"], target_stage)
             conn.execute(
                 """UPDATE factory_account
                    SET assigned_worker_id=?, current_job_id=?, updated_at=?
