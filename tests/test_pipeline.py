@@ -350,6 +350,66 @@ def test_select_angle_candidates_always_ends_with_personal_recommendation():
     conn.close()
 
 
+def _mk_dog_bowl_facts():
+    from acp.core import content_facts
+    return content_facts.ProductFacts(
+        name="Bát ăn cho chó đôi inox Hando", price=400000, original_price=590217,
+        category="thu-cung", facts=["Có tem chống hàng giả, bảo hành đổi trả"], unknown=[])
+
+
+def test_template_hooks_always_five_valid():
+    print("\n_template_hooks() luôn trả đúng 5 hook không rỗng, đều pass check_hook_rules()")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    hooks = content_hook._template_hooks(facts)
+    check("đúng 5 phần tử", len(hooks) == 5, hooks)
+    check("không phần tử nào rỗng", all(h.strip() for h in hooks), hooks)
+    problems = [content_hook.check_hook_rules(h, facts) for h in hooks]
+    check("cả 5 template đều pass check_hook_rules()", all(p == [] for p in problems), problems)
+
+
+def test_check_hook_rules_blocks_empty():
+    print("\ncheck_hook_rules() chặn hook rỗng")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    check("hook rỗng bị chặn", len(content_hook.check_hook_rules("", facts)) > 0)
+    check("hook chỉ có khoảng trắng bị chặn", len(content_hook.check_hook_rules("   ", facts)) > 0)
+
+
+def test_check_hook_rules_blocks_generic_opening():
+    print("\ncheck_hook_rules() chặn hook mở đầu chung chung")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    result = content_hook.check_hook_rules("Sản phẩm này rất tốt cho thú cưng.", facts)
+    check("mở đầu 'sản phẩm này' bị chặn", len(result) > 0, result)
+    result2 = content_hook.check_hook_rules("Đây là lựa chọn đáng cân nhắc.", facts)
+    check("mở đầu 'đây là' bị chặn", len(result2) > 0, result2)
+
+
+def test_check_hook_rules_blocks_fabricated_experience_via_fact_safety():
+    print("\ncheck_hook_rules() tái dùng check_fact_safety(), chặn hook bịa trải nghiệm")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    result = content_hook.check_hook_rules("Mình đã dùng 2 tuần rồi, thấy rất ổn.", facts)
+    check("hook bịa trải nghiệm bị chặn", len(result) > 0, result)
+
+
+def test_check_hook_rules_blocks_exact_name_match():
+    print("\ncheck_hook_rules() chặn hook trùng y hệt tên sản phẩm")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    result = content_hook.check_hook_rules(facts.name, facts)
+    check("hook trùng tên sản phẩm bị chặn", len(result) > 0, result)
+
+
+def test_check_hook_rules_clean_hook_passes():
+    print("\ncheck_hook_rules() hook sạch pass")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    result = content_hook.check_hook_rules("Bát cho cún cưng có gì đáng chú ý mà nhiều người mua vậy?", facts)
+    check("hook sạch trả []", result == [], result)
+
+
 def test_build_extract_prompt_fences_untrusted_description():
     print("\n_build_extract_prompt() rào description trong delimiter, chống prompt injection")
     from acp.core import content_facts
@@ -2738,6 +2798,12 @@ if __name__ == "__main__":
     test_select_angle_candidates_personal_recommendation_category()
     test_select_angle_candidates_unknown_category_falls_back()
     test_select_angle_candidates_always_ends_with_personal_recommendation()
+    test_template_hooks_always_five_valid()
+    test_check_hook_rules_blocks_empty()
+    test_check_hook_rules_blocks_generic_opening()
+    test_check_hook_rules_blocks_fabricated_experience_via_fact_safety()
+    test_check_hook_rules_blocks_exact_name_match()
+    test_check_hook_rules_clean_hook_passes()
     test_build_extract_prompt_fences_untrusted_description()
     test_build_product_facts_extractor_raises_exception_falls_back()
     test_check_fact_safety_none_caption_returns_empty()
