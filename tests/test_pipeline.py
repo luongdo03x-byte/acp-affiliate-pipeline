@@ -167,6 +167,76 @@ def test_build_product_facts_stale_cache_recomputes():
     conn.close()
 
 
+def test_build_product_facts_extractor_valid_json():
+    print("\nbuild_product_facts() dùng đúng JSON extractor trả về")
+    from acp.core import content_facts
+    calls = []
+
+    def fake_extractor(prompt):
+        calls.append(prompt)
+        return '{"facts": ["chất liệu cotton"], "unknown": ["độ bền sau 1 năm"]}'
+
+    content_facts.set_extractor(fake_extractor)
+    try:
+        conn = connect()
+        p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+        conn.execute("DELETE FROM product_facts WHERE product_id = ?", (p["id"],))
+        facts = content_facts.build_product_facts(conn, p)
+        check("facts khớp JSON extractor trả về", facts.facts == ["chất liệu cotton"])
+        check("unknown khớp JSON extractor trả về", facts.unknown == ["độ bền sau 1 năm"])
+        check("chỉ gọi extractor đúng 1 lần khi JSON hợp lệ ngay", len(calls) == 1, len(calls))
+        conn.close()
+    finally:
+        content_facts.set_extractor(None)
+
+
+def test_build_product_facts_extractor_retries_then_succeeds():
+    print("\nbuild_product_facts() retry khi extractor trả sai schema rồi đúng")
+    from acp.core import content_facts
+    calls = []
+
+    def flaky_extractor(prompt):
+        calls.append(prompt)
+        if len(calls) < 2:
+            return "không phải JSON"
+        return '{"facts": ["form gọn"], "unknown": []}'
+
+    content_facts.set_extractor(flaky_extractor)
+    try:
+        conn = connect()
+        p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+        conn.execute("DELETE FROM product_facts WHERE product_id = ?", (p["id"],))
+        facts = content_facts.build_product_facts(conn, p)
+        check("dùng được kết quả lần retry thứ 2", facts.facts == ["form gọn"])
+        check("gọi extractor đúng 2 lần (fail 1, thành công lần 2)", len(calls) == 2, len(calls))
+        conn.close()
+    finally:
+        content_facts.set_extractor(None)
+
+
+def test_build_product_facts_extractor_always_fails_falls_back():
+    print("\nbuild_product_facts() fallback an toàn khi extractor luôn sai schema")
+    from acp.core import content_facts
+    calls = []
+
+    def broken_extractor(prompt):
+        calls.append(prompt)
+        return "vẫn không phải JSON"
+
+    content_facts.set_extractor(broken_extractor)
+    try:
+        conn = connect()
+        p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+        conn.execute("DELETE FROM product_facts WHERE product_id = ?", (p["id"],))
+        facts = content_facts.build_product_facts(conn, p)
+        check("facts rỗng khi extractor luôn fail (an toàn tuyệt đối)", facts.facts == [])
+        check("unknown chứa nguyên description khi fallback", facts.unknown == [p["description"]])
+        check("retry giới hạn đúng 3 lần rồi dừng, không vô hạn", len(calls) == 3, len(calls))
+        conn.close()
+    finally:
+        content_facts.set_extractor(None)
+
+
 def test_imaging_compose_skips_watermark_when_handle_none():
     print("\nimaging.compose bỏ watermark handle khi handle=None")
     from PIL import Image
@@ -2501,6 +2571,9 @@ if __name__ == "__main__":
     test_build_product_facts_heuristic_no_extractor()
     test_build_product_facts_cache_hit_skips_recompute()
     test_build_product_facts_stale_cache_recomputes()
+    test_build_product_facts_extractor_valid_json()
+    test_build_product_facts_extractor_retries_then_succeeds()
+    test_build_product_facts_extractor_always_fails_falls_back()
     test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()

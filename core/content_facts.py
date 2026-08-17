@@ -96,5 +96,29 @@ def build_product_facts(conn, product, rng=None) -> ProductFacts:
                          facts=facts, unknown=unknown)
 
 
+def _build_extract_prompt(description: str) -> str:
+    return (
+        "Trích xuất fact từ mô tả sản phẩm dưới đây. Trả về đúng JSON, "
+        "không thêm chữ nào khác:\n"
+        '{"facts": ["câu fact 1", "câu fact 2"], "unknown": ["điều không rõ 1"]}\n\n'
+        "RÀNG BUỘC:\n"
+        "- facts chỉ chứa thông tin có trong mô tả gốc, không suy luận thêm.\n"
+        "- unknown liệt kê những khía cạnh người mua có thể quan tâm nhưng mô tả "
+        "không nói tới (vd độ bền, phù hợp dáng người...).\n"
+        "- Không thêm nhận định, đánh giá, hay câu không có trong dữ liệu.\n\n"
+        f"Mô tả gốc:\n{description}"
+    )
+
+
 def _extract_via_llm(description: str):
-    raise NotImplementedError  # Task 3 điền logic thật
+    prompt = _build_extract_prompt(description)
+    for _ in range(3):
+        raw = _extractor_fn(prompt)
+        try:
+            data = json.loads(raw)
+            facts = [str(x) for x in data.get("facts", [])]
+            unknown = [str(x) for x in data.get("unknown", [])]
+            return facts, unknown
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            continue
+    return [], [description]
