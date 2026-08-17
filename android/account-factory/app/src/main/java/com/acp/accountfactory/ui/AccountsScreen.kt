@@ -22,7 +22,6 @@ fun AccountsScreen(
     onBack: () -> Unit,
     onRetry: (String) -> Unit,
     onStop: (String) -> Unit,
-    onConnectOAuth: (String) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -41,20 +40,22 @@ fun AccountsScreen(
                         Text("#${account.sequence} @${account.username}")
                         Text(account.displayName)
                         Text("${account.stage} • safe ${account.lastSafeStage}")
+                        account.executionTarget?.let { Text("Target: $it") }
                         account.channelCode?.let { Text("ACP: $it") }
                         account.lastErrorMessage?.let { Text("Lỗi: $it") }
 
                         when (primaryAccountAction(account.stage, account.lastErrorCode)) {
-                            AccountAction.CONNECT_OAUTH -> Button(
-                                onClick = { onConnectOAuth(account.id) },
+                            AccountAction.RETRY_ACP -> Button(
+                                onClick = { onRetry(account.id) },
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(if (account.stage == "RETRY_PENDING") "RETRY OAUTH" else "CONNECT ACP") }
+                            ) { Text("RETRY ACP ACTIVATION") }
                             AccountAction.RETRY -> TextButton(onClick = { onRetry(account.id) }) { Text("RETRY") }
                             AccountAction.NONE -> Unit
                         }
 
                         when (account.stage) {
-                            "ACP_CONNECTING" -> Text("Đang chờ Threads OAuth…")
+                            "THREADS_CREATED" -> Text("Đang bắt đầu ACP activation…")
+                            "ACP_CONNECTING" -> Text("Đang chờ xác nhận Threads OAuth chính thức…")
                             "ACP_ACTIVE" -> Text("✓ ACP ACTIVE")
                         }
 
