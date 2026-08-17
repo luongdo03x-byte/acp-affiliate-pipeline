@@ -67,8 +67,11 @@ class FactoryActivationService:
         if account["stage"] == AccountStage.RETRY_PENDING.value:
             if account.get("last_safe_stage") != AccountStage.THREADS_CREATED.value:
                 raise ValueError("OAuth retry requires THREADS_CREATED last safe stage")
-            if account.get("last_error_code") != "OAUTH_FAILED":
-                raise ValueError("account retry is not an OAuth retry")
+            # OAUTH_FAILED means the failure is still awaiting explicit operator
+            # retry. FactoryService.retry_account() clears that code; None is
+            # therefore the schedulable/approved retry state.
+            if account.get("last_error_code") is not None:
+                raise ValueError("account retry has not been approved")
         elif account["stage"] != AccountStage.THREADS_CREATED.value:
             raise ValueError(f"account cannot auto-activate from {account['stage']}")
 
