@@ -1,15 +1,15 @@
-// content_acp.js — chạy TRONG trang ACP (chỉ localhost/127.0.0.1:5000, xem
-// host_permissions trong manifest.json).
-//
-// Chỉ đọc thẻ <meta name="acp-helper-pairing"> mà chính trang /sanpham tự đặt
-// khi người vận hành bấm "Mở Shopee & lấy thông tin" (xem
-// web/templates/products.html). Không đọc gì khác trên trang -- không đọc
-// session cookie, không đọc dữ liệu bài đăng, không đọc mật khẩu.
-//
-// Nội dung thẻ chỉ là {token, product_url} -- một token dùng-một-lần do ACP
-// phát ra, không phải bí mật đăng nhập.
+// content_acp.js — runs only on ACP loopback pages allowed by manifest.json.
+// It relays the one-time helper pairing token that /sanpham writes into a meta
+// element. It never reads cookies, password fields or application data.
+
+function isAllowedAcpOrigin(loc) {
+  if (!loc || loc.protocol !== "http:" || loc.port !== "5000") return false;
+  return loc.hostname === "127.0.0.1" || loc.hostname === "localhost";
+}
 
 function relayPairingToken() {
+  if (!isAllowedAcpOrigin(location)) return;
+
   var meta = document.querySelector('meta[name="acp-helper-pairing"]');
   if (!meta || !meta.content) return;
   var data;
@@ -18,7 +18,8 @@ function relayPairingToken() {
   } catch (e) {
     return;
   }
-  if (data && data.token && data.product_url) {
+  if (data && typeof data.token === "string" && data.token &&
+      typeof data.product_url === "string" && data.product_url) {
     chrome.runtime.sendMessage({
       type: "ACP_PAIRING",
       token: data.token,
