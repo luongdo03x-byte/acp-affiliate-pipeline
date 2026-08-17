@@ -78,7 +78,7 @@ FactoryControllerRuntime
         +-- ThreadsFlow
 ```
 
-Recommended package layout:
+Package layout:
 
 ```text
 core/factory_v2/ui_automation/
@@ -295,7 +295,7 @@ The UI may retain a manual Continue action as fallback, but successful screen de
 
 Extend AVD worker command handling without coupling controller business logic to Instagram/Threads UI details.
 
-Candidate commands:
+Commands added/used for this flow:
 
 ```text
 PREPARE_INSTAGRAM
@@ -354,7 +354,7 @@ Useful sanitized diagnostics may include:
 - selector/screen signature version;
 - stable screen hash derived from sanitized node structure.
 
-Screenshot capture may be available for explicit diagnostics, but computer vision is not part of the first implementation's decision loop.
+Screenshot capture is diagnostic-only, disabled by default, and never part of the first implementation's decision loop.
 
 ## 11. Retry and idempotency
 
@@ -383,7 +383,7 @@ Recognized error observations include:
 - `ACCOUNT_DISABLED`;
 - `UI_CHANGED`.
 
-Suggested policy:
+Policy:
 
 ```text
 NETWORK_ERROR -> limited retry
@@ -395,7 +395,7 @@ UI_CHANGED -> NEEDS_CONFIRMATION
 
 ## 13. Restart and recovery
 
-AVD worker recovery state may track:
+AVD worker recovery state tracks:
 
 ```text
 account_id
@@ -454,7 +454,7 @@ Use static/sanitized UI fixtures to cover:
 - Threads protected-step interruption;
 - post-check success/failure.
 
-Recommended fixtures:
+Fixtures:
 
 ```text
 tests/fixtures/android_ui/
@@ -518,7 +518,7 @@ Additional acceptance conditions:
 
 ## 17. Implementation order
 
-Implementation should proceed in small verified slices:
+Implementation proceeds in small verified slices:
 
 1. ADB/UI hierarchy abstractions and sanitized model;
 2. selectors + detector with fixtures;
