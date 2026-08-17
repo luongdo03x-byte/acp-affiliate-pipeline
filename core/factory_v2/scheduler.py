@@ -148,7 +148,7 @@ class Scheduler:
             heartbeat_live = heartbeat is not None and (now_dt - heartbeat) <= timedelta(seconds=self.live_heartbeat_seconds)
             human_ambiguous = row["state"] == "WAITING_HUMAN" or row["worker_state"] == "WAITING_HUMAN"
             with transaction(conn):
-                if heartbeat_live or human_ambiguous:
+                if heartbeat_live:
                     extended = _iso(now_dt + timedelta(seconds=self.live_heartbeat_seconds))
                     conn.execute(
                         "UPDATE factory_job SET state='RECOVERING', lease_expires_at=? WHERE id=?",
