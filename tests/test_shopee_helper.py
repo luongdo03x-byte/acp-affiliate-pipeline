@@ -107,5 +107,69 @@ class ShopeeHelperValidationTests(unittest.TestCase):
                 sanitize_helper_metadata({"image_url": bad})
 
 
+class ShopeeHelperPairingTests(unittest.TestCase):
+    def setUp(self):
+        from acp.core import helper_pairing
+        helper_pairing.reset()
+
+    def tearDown(self):
+        from acp.core import helper_pairing
+        helper_pairing.reset()
+
+    def test_pairing_accepts_same_product_slug_and_canonical_shapes(self):
+        from acp.core import helper_pairing
+
+        issued = helper_pairing.issue("https://shopee.vn/product/123/456")
+        self.assertEqual(issued["expires_in"], 300)
+        self.assertTrue(helper_pairing.submit(
+            issued["token"],
+            "https://shopee.vn/Tai-nghe-i.123.456?tracking=x",
+            {"name": "Tai nghe", "current_price": 199000},
+        ))
+        self.assertEqual(
+            helper_pairing.poll(issued["token"]),
+            {"status": "ready", "metadata": {
+                "name": "Tai nghe", "current_price": 199000,
+                "original_price": None, "image_url": None, "shop": None,
+            }},
+        )
+
+    def test_product_mismatch_does_not_consume_token(self):
+        from acp.core import helper_pairing
+
+        issued = helper_pairing.issue("https://shopee.vn/product/123/456")
+        self.assertFalse(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/123/999", {"name": "Sai"}))
+        self.assertEqual(helper_pairing.poll(issued["token"]), {"status": "pending"})
+        self.assertTrue(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/123/456", {"name": "Đúng"}))
+
+    def test_valid_token_is_one_time(self):
+        from acp.core import helper_pairing
+
+        issued = helper_pairing.issue("https://shopee.vn/product/1/2")
+        self.assertTrue(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/1/2", {"name": "X"}))
+        self.assertFalse(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/1/2", {"name": "Y"}))
+
+    def test_expired_token_is_removed(self):
+        from acp.core import helper_pairing
+
+        issued = helper_pairing.issue("https://shopee.vn/product/3/4")
+        helper_pairing._tokens[issued["token"]]["created_at"] -= helper_pairing.TTL_SECONDS + 1
+        self.assertIsNone(helper_pairing.poll(issued["token"]))
+
+    def test_invalid_metadata_does_not_consume_token(self):
+        from acp.core import helper_pairing
+
+        issued = helper_pairing.issue("https://shopee.vn/product/7/8")
+        self.assertFalse(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/7/8", {"current_price": True}))
+        self.assertEqual(helper_pairing.poll(issued["token"]), {"status": "pending"})
+        self.assertTrue(helper_pairing.submit(
+            issued["token"], "https://shopee.vn/product/7/8", {"current_price": 1000}))
+
+
 if __name__ == "__main__":
     unittest.main()
