@@ -29,6 +29,8 @@ interface FactoryV2ApiClient {
     suspend fun retryAccount(connection: FactoryConnection, id: String): CommandAcceptedDto
     suspend fun drainWorker(connection: FactoryConnection, id: String): CommandAcceptedDto
     suspend fun restartWorker(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun startOAuth(connection: FactoryConnection, id: String): StartedOAuthDto
+    suspend fun oauthStatus(connection: FactoryConnection, id: String): FactoryAccountDto
 }
 
 class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) : FactoryV2ApiClient {
@@ -123,4 +125,10 @@ class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) : FactoryV
 
     override suspend fun restartWorker(connection: FactoryConnection, id: String): CommandAcceptedDto =
         FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/workers/$id/restart"))
+
+    override suspend fun startOAuth(connection: FactoryConnection, id: String): StartedOAuthDto =
+        FactoryV2Json.parseStartedOAuth(post(connection, "/api/factory/v2/accounts/$id/oauth/start"))
+
+    override suspend fun oauthStatus(connection: FactoryConnection, id: String): FactoryAccountDto =
+        FactoryV2Json.parseAccountResponse(get(connection, "/api/factory/v2/accounts/$id/oauth/status"))
 }
