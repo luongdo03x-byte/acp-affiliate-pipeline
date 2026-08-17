@@ -915,6 +915,77 @@ def test_score_variant_end_to_end():
     check("soft = rules.score khi không có judge", result["soft"] == result["rules"].score, result)
 
 
+def test_check_repetition_empty_recent_returns_empty():
+    print("\ncheck_repetition() trả [] khi recent_variants rỗng")
+    from acp.core import content_scoring
+    v = _mk_test_variant()
+    check("recent rỗng -> []", content_scoring.check_repetition(v, []) == [])
+
+
+def test_check_repetition_same_opening():
+    print("\ncheck_repetition() chặn khi 5 từ đầu hook trùng bài gần đây")
+    from acp.core import content_scoring
+    v = _mk_test_variant(hook="Giá này có gì hay vậy?")
+    recent = [_mk_test_variant(hook="Giá này có gì hay đấy nhỉ?", cta="CTA khác hoàn toàn")]
+    rules = [x["rule"] for x in content_scoring.check_repetition(v, recent)]
+    check("có vi phạm same_opening", "same_opening" in rules, rules)
+
+
+def test_check_repetition_same_hook_formula():
+    print("\ncheck_repetition() chặn khi hook trùng y hệt bài gần đây")
+    from acp.core import content_scoring
+    v = _mk_test_variant(hook="Câu hook độc nhất vô nhị")
+    recent = [_mk_test_variant(hook="Câu hook độc nhất vô nhị", cta="CTA khác hoàn toàn", angle="USE_CASE")]
+    rules = [x["rule"] for x in content_scoring.check_repetition(v, recent)]
+    check("có vi phạm same_hook_formula", "same_hook_formula" in rules, rules)
+
+
+def test_check_repetition_same_angle_too_often():
+    print("\ncheck_repetition() chặn khi >60% trong 5 bài gần nhất cùng angle")
+    from acp.core import content_scoring
+    v = _mk_test_variant(angle="DEAL_PRICE", hook="hook riêng biệt không trùng gì cả", cta="cta riêng biệt")
+    recent_over = [_mk_test_variant(angle="DEAL_PRICE", hook=f"hook cũ số {i}", cta=f"cta cũ số {i}") for i in range(4)] + \
+                  [_mk_test_variant(angle="USE_CASE", hook="hook cũ khác", cta="cta cũ khác")]
+    rules_over = [x["rule"] for x in content_scoring.check_repetition(v, recent_over)]
+    check("4/5 cùng angle -> có vi phạm", "same_angle_too_often" in rules_over, rules_over)
+    recent_under = [_mk_test_variant(angle="DEAL_PRICE", hook=f"hook cũ số {i}", cta=f"cta cũ số {i}") for i in range(2)] + \
+                   [_mk_test_variant(angle="USE_CASE", hook=f"hook use case {i}", cta=f"cta use case {i}") for i in range(3)]
+    rules_under = [x["rule"] for x in content_scoring.check_repetition(v, recent_under)]
+    check("2/5 cùng angle -> không vi phạm", "same_angle_too_often" not in rules_under, rules_under)
+
+
+def test_check_repetition_same_cta():
+    print("\ncheck_repetition() chặn khi CTA trùng y hệt bài gần đây")
+    from acp.core import content_scoring
+    v = _mk_test_variant(cta="Câu CTA độc nhất")
+    recent = [_mk_test_variant(hook="hook khác hoàn toàn", cta="Câu CTA độc nhất", angle="USE_CASE")]
+    rules = [x["rule"] for x in content_scoring.check_repetition(v, recent)]
+    check("có vi phạm same_cta", "same_cta" in rules, rules)
+
+
+def test_check_repetition_high_text_similarity():
+    print("\ncheck_repetition() chặn khi độ tương đồng văn bản >60% (Jaccard, tokenize \\w+)")
+    from acp.core import content_scoring
+    v = _mk_test_variant(hook="Giá này có gì hay vậy?", main_message="Giá hiện tại đáng chú ý",
+                          body=["Đang bán 400.000đ."], cta="Giá hiện tại mình để ở link.")
+    recent = [_mk_test_variant(hook="Giá này có gì hay đấy?", main_message="Giá hiện tại rất đáng chú ý",
+                                body=["Đang bán 400.000đ hôm nay."], cta="Giá hiện tại mình để sẵn ở link kìa.",
+                                angle="USE_CASE")]
+    rules = [x["rule"] for x in content_scoring.check_repetition(v, recent)]
+    check("có vi phạm high_text_similarity", "high_text_similarity" in rules, rules)
+
+
+def test_repetition_penalty_sums_correctly():
+    print("\nrepetition_penalty() cộng đúng tổng penalty khi nhiều rule vi phạm")
+    from acp.core import content_scoring
+    v = _mk_test_variant(hook="hook trùng", cta="cta trùng")
+    recent = [_mk_test_variant(hook="hook trùng", cta="cta trùng", angle="USE_CASE")]
+    penalty = content_scoring.repetition_penalty(v, recent)
+    violations = content_scoring.check_repetition(v, recent)
+    expected = sum(content_scoring._REPETITION_PENALTY[x["rule"]] for x in violations)
+    check("penalty khớp tổng các rule vi phạm", penalty == expected, (penalty, expected, violations))
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3390,6 +3461,13 @@ if __name__ == "__main__":
     test_score_variant_soft_judge_valid()
     test_score_variant_soft_judge_exception_falls_back()
     test_score_variant_end_to_end()
+    test_check_repetition_empty_recent_returns_empty()
+    test_check_repetition_same_opening()
+    test_check_repetition_same_hook_formula()
+    test_check_repetition_same_angle_too_often()
+    test_check_repetition_same_cta()
+    test_check_repetition_high_text_similarity()
+    test_repetition_penalty_sums_correctly()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
