@@ -40,7 +40,7 @@ private class AndroidLocalClipboard(context: Context) : LocalClipboard {
     }
 }
 
-class LocalDeviceActions(
+open class LocalDeviceActions(
     private val platform: LocalPlatform,
     private val clipboard: LocalClipboard,
     private val observationStore: ForegroundObservationStore,
@@ -51,7 +51,7 @@ class LocalDeviceActions(
         observationStore = FactoryAccessibilityService.observationStore,
     )
 
-    fun execute(command: RunnerCommandDto): RunnerCommandResult {
+    open fun execute(command: RunnerCommandDto): RunnerCommandResult {
         val action = command.action.uppercase()
         if (command.payload.keys.any { it.lowercase() in SENSITIVE_KEYS }) {
             return failed("SENSITIVE_PAYLOAD")
