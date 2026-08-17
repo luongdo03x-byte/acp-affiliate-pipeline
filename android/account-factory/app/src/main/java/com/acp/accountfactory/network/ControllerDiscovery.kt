@@ -20,6 +20,15 @@ object ControllerDiscovery {
         DiscoveryDto(service = service, apiVersion = apiVersion)
     }.getOrNull()
 
+    fun parseEnrollment(body: String): EnrollmentDto? = runCatching {
+        val json = JSONObject(body)
+        if (json.optString("service") != "account-factory") return null
+        if (json.optInt("api_version", -1) != 2) return null
+        val token = json.optString("device_token").trim()
+        if (token.isBlank()) return null
+        EnrollmentDto(deviceToken = token)
+    }.getOrNull()
+
     fun private24Candidates(ipv4: String, port: Int): List<String> {
         if (port !in 1..65535) return emptyList()
         val parts = ipv4.split('.')
