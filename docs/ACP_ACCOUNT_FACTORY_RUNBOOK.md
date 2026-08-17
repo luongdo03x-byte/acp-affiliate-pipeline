@@ -1,10 +1,10 @@
-# ACP Account Factory — P0 Runbook
+# ACP Account Factory — Runbook
 
 ## Scope
 
-Account Factory helps an operator track a batch of Instagram/Threads profiles on Android and connect completed Threads profiles to ACP through official Threads OAuth.
+Account Factory helps an operator track Instagram/Threads profiles on Android and connect completed Threads profiles to ACP through official Threads OAuth.
 
-It does **not** automate account signup submission, OTP/CAPTCHA, identity checks, IP/proxy rotation, or credential-based login. The operator completes Instagram/Threads signup and any verification in the official apps.
+It does **not** bypass OTP/CAPTCHA, identity checks or Android security permissions. The operator completes any verification required by Meta in the official apps. Android Accessibility must be enabled manually once because Android does not allow an app to grant itself that permission.
 
 ## Security boundaries
 
@@ -16,26 +16,35 @@ Android never receives or stores:
 - Instagram/Threads passwords
 - email passwords
 
-ACP receives the OAuth authorization code, exchanges it server-side, verifies `id,username`, converts to a long-lived token, encrypts it with the existing `core.crypto` AES-GCM routine, and stores only the encrypted token in `channel.token_encrypted`.
+For zero-config Controller access, Android receives a random **per-device credential** only at enrollment time. The Controller stores only its SHA-256 hash. Android encrypts the raw credential with an AES/GCM key held by Android Keystore.
 
-A username mismatch is terminal for that OAuth attempt. ACP does not update any channel with the mismatched token.
+`ACP_FACTORY_API_KEY` remains a server-side operator/fallback credential and is **not embedded in the APK**.
+
+ACP receives the OAuth authorization code, exchanges it server-side, verifies `id,username`, converts to a long-lived token, encrypts it with the existing `core.crypto` routine, and stores only the encrypted channel token.
 
 ## Required ACP environment
 
-Keep the existing values for `THREADS_APP_ID`, `THREADS_APP_SECRET`, `ACP_MASTER_KEY` and database configuration. Add:
+Keep the existing values for `THREADS_APP_ID`, `THREADS_APP_SECRET`, `ACP_MASTER_KEY`, database configuration and OAuth public URL. For the dedicated Account Factory Controller add:
 
 ```bash
-ACP_FACTORY_API_KEY=<random pairing key>
+ACP_FACTORY_API_KEY=<random operator/fallback key>
 ACP_PUBLIC_BASE_URL=https://your-public-acp-host.example
+
+# Android zero-config LAN discovery
+ACP_HOST=0.0.0.0
+ACP_PORT=5001
+ACP_FACTORY_LAN_AUTO_ENROLL=true
 ```
 
-Generate a new factory pairing key locally without placing it in shell history as an argument:
+`ACP_FACTORY_LAN_AUTO_ENROLL=true` should only be enabled on a private/trusted LAN. Enrollment requests from public IP addresses are rejected, and regular Factory V2 endpoints still require either a valid per-device credential or the legacy Factory Key.
+
+Generate a Factory Key locally without putting it in shell history as an argument:
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Store the generated value in `shared/.env.local` using the repository's normal secret-management workflow. Never commit the plaintext value.
+Store secrets in `shared/.env.local` using the repository's normal secret-management workflow. Never commit the plaintext value.
 
 ## Meta Threads redirect URI
 
@@ -47,9 +56,7 @@ https://your-public-acp-host.example/oauth/account-factory/threads/callback
 
 `ACP_PUBLIC_BASE_URL` must use the same externally reachable HTTPS origin.
 
-## Run ACP with Account Factory routes
-
-The P0 branch intentionally avoids changing the existing publish/dashboard launcher. Start the same ACP Flask app plus the Account Factory routes with:
+## Run Account Factory Controller
 
 ```bash
 cd ~/Downloads/ACP/releases/2.0/acp
@@ -59,16 +66,16 @@ set +a
 ACP_ADAPTER=mock ACP_SOURCE=mock python3 account_factory_server.py
 ```
 
-This launcher reuses `web.server.create_app()` and the existing ACP database. It does not publish a post by itself.
+With the LAN settings above the dedicated service listens on port `5001`. The Android app discovers it on the current private Wi-Fi subnet. Public OAuth callback traffic may still arrive through the approved HTTPS tunnel/reverse proxy using `ACP_PUBLIC_BASE_URL`.
 
-For a public callback, expose the server through the same approved HTTPS tunnel/reverse proxy used by ACP and ensure `ACP_PUBLIC_BASE_URL` matches that public origin.
+The launcher does not publish a social post by itself.
 
 ## Android build
 
 Open `android/account-factory` in Android Studio, or build from the repository root when Android SDK 36 + JDK 17 + Gradle are available:
 
 ```bash
-gradle -p android/account-factory testDebugUnitTest assembleDebug
+gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
 ```
 
 APK output:
@@ -77,75 +84,109 @@ APK output:
 android/account-factory/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-GitHub workflow `.github/workflows/account-factory-ci.yml` performs the same test/build and uploads `acp-account-factory-debug` when GitHub Actions runners are available.
+## First Android setup — zero-config
 
-## First Android setup
+Prerequisites:
 
-Open **Cài đặt** and enter:
+1. Phone and Ubuntu Controller are on the same private Wi-Fi/LAN.
+2. Controller is running with `ACP_HOST=0.0.0.0`, `ACP_PORT=5001`, `ACP_FACTORY_LAN_AUTO_ENROLL=true`.
+3. Install the newly built APK.
 
-- **ACP Base URL:** the value of `ACP_PUBLIC_BASE_URL`
-- **Factory Key:** the same value as `ACP_FACTORY_API_KEY`
-
-The Factory Key authenticates the Android start/status API calls. It is not a Threads token.
-
-## Operator flow
-
-1. Create the default batch of 50 accounts. The app creates 10 local groups of 5.
-2. For each account, copy the prepared username/display name/bio.
-3. Tap **OPEN INSTAGRAM** and complete account creation manually in the official app. Resolve OTP/CAPTCHA/checkpoints manually if Meta requests them.
-4. Return to Account Factory and tap **MARK IG CREATED**.
-5. Tap **OPEN THREADS**, create the Threads profile manually, return, then tap **MARK THREADS CREATED**.
-6. Tap **CONNECT ACP**.
-7. Android calls `POST /oauth/account-factory/start`; ACP creates a one-time state and returns the Threads authorization URL.
-8. Android opens that URL. Authorize the expected Threads profile.
-9. Meta redirects to ACP. ACP exchanges/validates/encrypts the token and activates the channel only if the returned username matches the expected username.
-10. Android polls `GET /oauth/account-factory/session/<id>`. When ACP returns `ACTIVE`, the local account becomes `ACP_ACTIVE` and the operator can continue to the next account.
-
-## API contract
-
-### Start
-
-`POST /oauth/account-factory/start`
-
-Header:
+Normal first launch:
 
 ```text
-X-ACP-Factory-Key: <pairing key>
+Open ACP Account Factory
+  → foreground runner service starts
+  → app detects the phone's private IPv4
+  → scans only that /24 on port 5001
+  → verifies GET /api/factory/discovery
+  → POST /api/factory/enroll
+  → receives a per-device credential
+  → stores it encrypted with Android Keystore
+  → starts LOCAL_DEVICE runner
+  → later launches reconnect automatically
 ```
 
-JSON:
+There is no required Controller URL or Factory Key input on the phone. The Settings dialog remains available only as a manual troubleshooting fallback.
+
+### Accessibility — still manual once
+
+Before a LOCAL_DEVICE action that needs Accessibility, Android may open:
+
+```text
+Settings → Accessibility → Installed apps → ACP Account Factory
+```
+
+Enable the service once. The app cannot legally or technically auto-grant this permission itself.
+
+## Zero-config API contract
+
+### Discovery
+
+`GET /api/factory/discovery`
+
+No authentication header is required. The response contains only non-secret service metadata:
 
 ```json
 {
-  "expected_username": "example.01",
-  "batch_id": "local-batch-id",
-  "account_local_id": "local-account-id"
+  "ok": true,
+  "service": "account-factory",
+  "api_version": 2
 }
 ```
 
-Response includes only `session_id`, `status`, `authorization_url`, `expires_at`. It never includes an access token.
+### Enrollment
 
-### Status
+`POST /api/factory/enroll`
 
-`GET /oauth/account-factory/session/<session_id>` with the same pairing header.
+Allowed only when LAN auto-enroll is enabled and the request source is private/link-local/loopback.
 
-Terminal statuses used by P0 include `ACTIVE`, `ACCOUNT_MISMATCH`, `OAUTH_ERROR`, and `SESSION_EXPIRED`.
+```json
+{
+  "device_id": "local-<stable-uuid>",
+  "device_name": "Samsung SM-..."
+}
+```
 
-### Callback
+The successful response contains a newly issued `device_token`. Re-enrolling the same `device_id` rotates the previous credential.
 
-`GET /oauth/account-factory/threads/callback?code=...&state=...`
+### Authenticated Factory V2 calls
 
-This is a browser/Meta callback and therefore does not use the Factory Key. The one-time OAuth `state` identifies and protects the pending onboarding session.
+New clients can authenticate with:
+
+```text
+X-ACP-Device-Token: <device credential>
+```
+
+The Android app keeps compatibility with its existing networking layer; the Controller auth bridge also recognizes an enrolled credential presented in the existing `X-ACP-Factory-Key` slot. A real `ACP_FACTORY_API_KEY` continues to work unchanged.
+
+## Operator flow
+
+1. Open Account Factory. Controller discovery/enrollment and LOCAL_DEVICE runner startup happen automatically.
+2. Create/select the account work item.
+3. Open Instagram/Threads and complete any signup or verification steps required by the official app.
+4. If Android requests Accessibility, enable ACP Account Factory once in Settings.
+5. Continue the workflow until Threads is created.
+6. Start the official ACP OAuth connection.
+7. Meta redirects to ACP; ACP validates the expected username and activates the channel only on a matching identity.
+8. When ACP reports `ACTIVE`, the account reaches `ACP_ACTIVE`.
 
 ## Verification commands
 
-Backend core behavior:
+Backend zero-config + Factory V2:
+
+```bash
+python3 -m unittest tests.test_factory_v2_auto_enroll -v
+python3 -m unittest tests.test_factory_v2_api -v
+```
+
+Existing Account Factory behavior:
 
 ```bash
 ACP_ADAPTER=mock ACP_SOURCE=mock ACP_ENV=development python3 -m unittest tests.test_account_factory -v
 ```
 
-Android domain/build:
+Android unit/build:
 
 ```bash
 gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
