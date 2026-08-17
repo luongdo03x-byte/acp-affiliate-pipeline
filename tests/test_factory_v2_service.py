@@ -38,6 +38,17 @@ class FactoryV2ServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.transition_account(account["id"], S.ACP_ACTIVE)
 
+    def test_retry_account_is_idempotent_once_retry_is_pending(self):
+        batch = self.service.create_batch("Batch 01", count=1, seed=2)
+        account = self.repo.list_accounts(batch["id"])[0]
+        self.service.transition_account(account["id"], S.ERROR, error_code="NETWORK_TRANSIENT")
+        first = self.service.retry_account(account["id"])
+        second = self.service.retry_account(account["id"])
+
+        self.assertEqual(S.RETRY_PENDING.value, first["stage"])
+        self.assertEqual(S.RETRY_PENDING.value, second["stage"])
+        self.assertEqual(first["id"], second["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
