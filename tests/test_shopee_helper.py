@@ -3,6 +3,7 @@
 Run from the directory containing the ``acp`` package:
     ACP_ADAPTER=mock ACP_SOURCE=mock python -m acp.tests.test_shopee_helper -v
 """
+import json
 import os
 import sys
 import unittest
@@ -10,6 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 VALID_PRODUCT = "https://shopee.vn/product/123/456"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ShopeeHelperValidationTests(unittest.TestCase):
@@ -291,6 +293,42 @@ class ShopeeHelperRouteTests(unittest.TestCase):
             "/api/helper/shopee-product", json=payload).status_code, 200)
         replay = self.client.post("/api/helper/shopee-product", json=payload)
         self.assertEqual(replay.status_code, 410)
+
+
+class ChromeHelperStaticContractTests(unittest.TestCase):
+    def _read(self, relative):
+        with open(os.path.join(REPO_ROOT, relative), encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_background_posts_observed_tab_url_separately_from_pairing_url(self):
+        body = self._read("tools/chrome_helper/background.js")
+        self.assertIn("observed_url: location.href", body)
+        self.assertIn("observed_url: observed.observed_url", body)
+        self.assertIn("product_url: pairing.productUrl", body)
+
+    def test_extension_does_not_read_browser_or_shopee_credentials(self):
+        combined = self._read("tools/chrome_helper/background.js") + self._read(
+            "tools/chrome_helper/content_acp.js")
+        for forbidden in (
+            "document.cookie", "chrome.cookies", "localStorage.getItem",
+            "sessionStorage.getItem", "chrome.webRequest",
+        ):
+            self.assertNotIn(forbidden, combined)
+
+    def test_content_script_validates_local_acp_origin_before_pairing(self):
+        body = self._read("tools/chrome_helper/content_acp.js")
+        self.assertIn("function isAllowedAcpOrigin", body)
+        self.assertIn("isAllowedAcpOrigin(location)", body)
+
+    def test_manifest_keeps_minimal_permissions_and_local_hosts(self):
+        manifest = json.loads(self._read("tools/chrome_helper/manifest.json"))
+        self.assertEqual(manifest["manifest_version"], 3)
+        self.assertEqual(set(manifest["permissions"]), {"activeTab", "scripting"})
+        self.assertEqual(set(manifest["host_permissions"]), {
+            "https://shopee.vn/*",
+            "http://127.0.0.1:5000/*",
+            "http://localhost:5000/*",
+        })
 
 
 if __name__ == "__main__":
