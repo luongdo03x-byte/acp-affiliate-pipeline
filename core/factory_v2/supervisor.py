@@ -75,7 +75,21 @@ class WorkerSupervisor:
             "desired_workers": target,
         })
 
+    def _promote_booted_starting_workers(self) -> None:
+        online = set(self.avd.list_online_devices())
+        workers = self.repo.conn.execute(
+            "SELECT * FROM factory_worker WHERE state='STARTING' ORDER BY id"
+        ).fetchall()
+        for worker in workers:
+            serial = worker["adb_serial"]
+            if serial and serial in online and self.avd.is_boot_completed(serial):
+                self.repo.conn.execute(
+                    "UPDATE factory_worker SET state='READY', last_progress_at=? WHERE id=?",
+                    (now(), worker["id"]),
+                )
+
     def tick(self) -> SupervisorDecision:
+        self._promote_booted_starting_workers()
         sample = self.metrics.sample()
         capacity = classify_capacity(sample)
         workers = self._workers()
@@ -107,12 +121,19 @@ class WorkerSupervisor:
         worker_id = existing["id"] if existing else f"worker:{avd_name}"
         worker_index = configured_avds.index(avd_name)
         port = 5554 + worker_index * 2
+        adb_serial = f"emulator-{port}"
         intent_at = now()
         self.repo.conn.execute(
-            """INSERT INTO factory_worker (id,avd_name,state,started_at,last_error)
-               VALUES (?,?, 'STARTING', ?, NULL)
-               ON CONFLICT(avd_name) DO UPDATE SET state='STARTING', started_at=excluded.started_at, last_error=NULL""",
-            (worker_id, avd_name, intent_at),
+            """INSERT INTO factory_worker
+               (id,avd_name,adb_serial,state,started_at,last_error,draining)
+               VALUES (?,?,?, 'STARTING', ?, NULL, 0)
+               ON CONFLICT(avd_name) DO UPDATE SET
+                   adb_serial=excluded.adb_serial,
+                   state='STARTING',
+                   started_at=excluded.started_at,
+                   last_error=NULL,
+                   draining=0""",
+            (worker_id, avd_name, adb_serial, intent_at),
         )
         try:
             process = self.avd.start(avd_name, port)
