@@ -113,6 +113,60 @@ def test_product_facts_schema():
     conn.close()
 
 
+def test_build_product_facts_heuristic_no_extractor():
+    print("\nbuild_product_facts() dùng heuristic khi chưa đăng ký extractor")
+    from acp.core import content_facts
+    content_facts.set_extractor(None)
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+    facts = content_facts.build_product_facts(conn, p)
+    check("facts là ProductFacts", isinstance(facts, content_facts.ProductFacts))
+    check("facts.facts không rỗng khi description có nội dung", len(facts.facts) > 0, facts.facts)
+    check("facts.unknown rỗng ở nhánh heuristic", facts.unknown == [])
+    check("facts.name khớp product", facts.name == p["name"])
+    check("facts.price khớp product", facts.price == p["current_price"])
+    row = conn.execute("SELECT * FROM product_facts WHERE product_id = ?", (p["id"],)).fetchone()
+    check("đã ghi cache vào product_facts", row is not None)
+    check("prompt_version được ghi", row["prompt_version"] == content_facts.PROMPT_VERSION)
+    conn.close()
+
+
+def test_build_product_facts_cache_hit_skips_recompute():
+    print("\nbuild_product_facts() dùng cache khi source_hash khớp, không ghi lại DB")
+    from acp.core import content_facts
+    content_facts.set_extractor(None)
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+    first = content_facts.build_product_facts(conn, p)
+    # total_changes đếm tổng số dòng bị ghi (INSERT/UPDATE/DELETE) từ lúc mở
+    # connection -- không đổi nghĩa là lần gọi thứ 2 không chạy câu INSERT ON
+    # CONFLICT nào cả. Không dùng extracted_at để so sánh vì now() chỉ có độ
+    # phân giải tới giây -- 2 lần ghi liên tiếp trong cùng 1 giây sẽ ra cùng
+    # giá trị dù thực sự có ghi lại, khiến test không bắt được bug.
+    changes_before = conn.total_changes
+    second = content_facts.build_product_facts(conn, p)
+    changes_after = conn.total_changes
+    check("cache hit trả cùng facts", second.facts == first.facts)
+    check("cache hit không ghi lại DB (total_changes không tăng)",
+          changes_after == changes_before, (changes_before, changes_after))
+    conn.close()
+
+
+def test_build_product_facts_stale_cache_recomputes():
+    print("\nbuild_product_facts() extract lại khi description đổi")
+    from acp.core import content_facts
+    content_facts.set_extractor(None)
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE description != '' LIMIT 1").fetchone()
+    first = content_facts.build_product_facts(conn, p)
+    conn.execute("UPDATE product SET description = ? WHERE id = ?",
+                 ("Mô tả hoàn toàn khác để đổi hash", p["id"]))
+    p2 = conn.execute("SELECT * FROM product WHERE id = ?", (p["id"],)).fetchone()
+    second = content_facts.build_product_facts(conn, p2)
+    check("description đổi làm facts đổi theo", second.facts != first.facts, (first.facts, second.facts))
+    conn.close()
+
+
 def test_imaging_compose_skips_watermark_when_handle_none():
     print("\nimaging.compose bỏ watermark handle khi handle=None")
     from PIL import Image
@@ -2444,6 +2498,9 @@ if __name__ == "__main__":
     test_content_guards()
     test_content_validate_platform_max_len()
     test_product_facts_schema()
+    test_build_product_facts_heuristic_no_extractor()
+    test_build_product_facts_cache_hit_skips_recompute()
+    test_build_product_facts_stale_cache_recomputes()
     test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()
