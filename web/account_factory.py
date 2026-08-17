@@ -7,7 +7,7 @@ import os
 
 from flask import abort, jsonify, request
 
-from ..core.account_factory import (
+from core.account_factory import (
     AccountMismatchError,
     OAuthSessionError,
     ThreadsOAuthClient,
@@ -18,8 +18,8 @@ from ..core.account_factory import (
     get_session_by_state,
     public_session,
 )
-from ..core.db import connect, now
-from ..core.factory_v2.oauth_bridge import sync_account_from_oauth_session
+from core.db import connect, now
+from core.factory_v2.oauth_bridge import sync_account_from_oauth_session
 
 
 FACTORY_KEY_HEADER = "X-ACP-Factory-Key"
