@@ -837,6 +837,84 @@ def test_check_variant_rules_excessive_emoji():
     check("đúng 2 vi phạm excessive_emoji (5 emoji - ngưỡng 3)", len(violations) == 2, violations)
 
 
+def test_score_variant_rules_fact_unsafe_returns_zero():
+    print("\nscore_variant_rules() variant bịa fact -> score=0.0, fact_safety_pass=False")
+    from acp.core import content_checker
+    v = _mk_test_variant(main_message="Mình đã dùng 2 tuần rồi, thấy rất ổn.")
+    result = content_checker.score_variant_rules(v)
+    check("score = 0.0", result.score == 0.0, result)
+    check("fact_safety_pass = False", result.fact_safety_pass is False, result)
+
+
+def test_score_variant_rules_clean_variant_near_one():
+    print("\nscore_variant_rules() variant sạch điểm gần 1.0")
+    from acp.core import content_checker
+    v = _mk_test_variant()
+    result = content_checker.score_variant_rules(v)
+    check("score >= 0.95 với variant sạch", result.score >= 0.95, result)
+
+
+def test_score_variant_rules_penalizes_violations_but_not_negative():
+    print("\nscore_variant_rules() trừ điểm theo vi phạm nhưng không âm")
+    from acp.core import content_checker
+    clean = content_checker.score_variant_rules(_mk_test_variant())
+    dirty = _mk_test_variant(main_message="Sản phẩm này rất đáng mua", cta="Mua ngay! Đừng bỏ lỡ!")
+    dirty_result = content_checker.score_variant_rules(dirty)
+    check("variant nhiều vi phạm điểm thấp hơn variant sạch", dirty_result.score < clean.score, dirty_result)
+    check("score không âm", dirty_result.score >= 0.0, dirty_result)
+
+
+def test_score_variant_soft_no_judge_returns_rule_score():
+    print("\nscore_variant_soft() trả lại rule_score khi chưa đăng ký judge")
+    from acp.core import content_checker
+    content_checker.set_variant_judge(None)
+    v = _mk_test_variant()
+    check("trả đúng rule_score truyền vào", content_checker.score_variant_soft(v, 0.73) == 0.73)
+
+
+def test_score_variant_soft_judge_valid():
+    print("\nscore_variant_soft() dùng đúng công thức đảo dấu salesy_level khi judge hợp lệ")
+    from acp.core import content_checker
+
+    def fake_judge(prompt):
+        return '{"naturalness": 0.8, "salesy_level": 0.2}'
+
+    content_checker.set_variant_judge(fake_judge)
+    try:
+        v = _mk_test_variant()
+        result = content_checker.score_variant_soft(v, 0.5)
+        check("kết quả đúng công thức (0.8 + (1-0.2))/2 = 0.8", result == 0.8, result)
+    finally:
+        content_checker.set_variant_judge(None)
+
+
+def test_score_variant_soft_judge_exception_falls_back():
+    print("\nscore_variant_soft() fallback rule_score khi judge tự ném exception")
+    from acp.core import content_checker
+
+    def crashing_judge(prompt):
+        raise ConnectionError("giả lập lỗi mạng")
+
+    content_checker.set_variant_judge(crashing_judge)
+    try:
+        v = _mk_test_variant()
+        result = content_checker.score_variant_soft(v, 0.42)
+        check("fallback về rule_score khi judge crash", result == 0.42, result)
+    finally:
+        content_checker.set_variant_judge(None)
+
+
+def test_score_variant_end_to_end():
+    print("\nscore_variant() gộp rules + soft thành overall")
+    from acp.core import content_checker
+    content_checker.set_variant_judge(None)
+    v = _mk_test_variant()
+    result = content_checker.score_variant(v)
+    check("overall bằng rules.score khi không có judge (soft = rule_score)",
+          result["overall"] == round((result["rules"].score + result["soft"]) / 2, 4), result)
+    check("soft = rules.score khi không có judge", result["soft"] == result["rules"].score, result)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3305,6 +3383,13 @@ if __name__ == "__main__":
     test_check_variant_rules_long_sentence_and_paragraph()
     test_check_variant_rules_repeated_phrase()
     test_check_variant_rules_excessive_emoji()
+    test_score_variant_rules_fact_unsafe_returns_zero()
+    test_score_variant_rules_clean_variant_near_one()
+    test_score_variant_rules_penalizes_violations_but_not_negative()
+    test_score_variant_soft_no_judge_returns_rule_score()
+    test_score_variant_soft_judge_valid()
+    test_score_variant_soft_judge_exception_falls_back()
+    test_score_variant_end_to_end()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
