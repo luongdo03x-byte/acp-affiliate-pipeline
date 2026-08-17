@@ -5,7 +5,10 @@ import unittest
 from flask import Flask
 
 from core import db
+from core.db import now, ulid
+from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
+from core.factory_v2.scheduler import Scheduler
 from core.factory_v2.schema import ensure_schema
 from core.factory_v2.service import FactoryService
 from web.factory_v2 import register_factory_v2_routes
@@ -19,9 +22,9 @@ class FactoryV2ApiTests(unittest.TestCase):
         db.DB_PATH = os.path.join(self.tmp.name, "factory-v2.db")
         os.environ["ACP_FACTORY_API_KEY"] = "test-key"
 
-        conn = db.connect()
-        ensure_schema(conn)
-        self.repo = FactoryRepository(conn)
+        self.conn = db.connect()
+        ensure_schema(self.conn)
+        self.repo = FactoryRepository(self.conn)
         self.service = FactoryService(self.repo)
         self.batch = self.service.create_batch("Batch 01", count=3, seed=7)
         self.repo.insert_worker({
@@ -45,7 +48,6 @@ class FactoryV2ApiTests(unittest.TestCase):
             "capacity_state": "YELLOW",
             "desired_workers": 1,
         })
-        conn.close()
 
         app = Flask(__name__)
         app.testing = True
@@ -54,12 +56,37 @@ class FactoryV2ApiTests(unittest.TestCase):
         self.auth = {"X-ACP-Factory-Key": "test-key"}
 
     def tearDown(self):
+        self.conn.close()
         db.DB_PATH = self.old_db_path
         if self.old_factory_key is None:
             os.environ.pop("ACP_FACTORY_API_KEY", None)
         else:
             os.environ["ACP_FACTORY_API_KEY"] = self.old_factory_key
         self.tmp.cleanup()
+
+    def seed_waiting_checkpoint(self):
+        scheduler = Scheduler(self.repo, self.service, lease_seconds=120)
+        job = scheduler.assign_next("worker-01")
+        self.service.transition_account(job["account_id"], AccountStage.IG_READY_FOR_HUMAN)
+        self.service.transition_account(job["account_id"], AccountStage.WAITING_HUMAN)
+        self.conn.execute(
+            "UPDATE factory_job SET state='WAITING_HUMAN' WHERE id=?", (job["id"],)
+        )
+        self.conn.execute(
+            "UPDATE factory_worker SET state='WAITING_HUMAN' WHERE id='worker-01'"
+        )
+        checkpoint_id = ulid()
+        self.repo.create_checkpoint({
+            "id": checkpoint_id,
+            "batch_id": self.batch["id"],
+            "account_id": job["account_id"],
+            "worker_id": "worker-01",
+            "type": "IG_POSTCHECK",
+            "status": "OPEN",
+            "message": "Confirm Instagram account state",
+            "created_at": now(),
+        })
+        return checkpoint_id
 
     def test_dashboard_requires_factory_key(self):
         res = self.client.get("/api/factory/v2/dashboard")
@@ -89,6 +116,47 @@ class FactoryV2ApiTests(unittest.TestCase):
         self.assertEqual(1, len(workers.get_json()["workers"]))
         self.assertEqual([], checkpoints.get_json()["checkpoints"])
         self.assertNotIn("adb_serial", workers.get_data(as_text=True))
+
+    def test_continue_does_not_blindly_mark_checkpoint_success(self):
+        checkpoint_id = self.seed_waiting_checkpoint()
+        res = self.client.post(
+            f"/api/factory/v2/checkpoints/{checkpoint_id}/continue",
+            headers=self.auth,
+        )
+        self.assertEqual(202, res.status_code)
+        cp = self.repo.get_checkpoint(checkpoint_id)
+        self.assertEqual("VERIFYING", cp["status"])
+        account = self.repo.get_account(cp["account_id"])
+        self.assertNotEqual("IG_CREATED", account["stage"])
+        self.assertTrue(res.get_json()["command_id"])
+
+    def test_batch_pause_and_resume_are_controller_commands(self):
+        paused = self.client.post(
+            f"/api/factory/v2/batches/{self.batch['id']}/pause", headers=self.auth
+        )
+        self.assertEqual(202, paused.status_code)
+        self.assertEqual("PAUSED", self.repo.get_batch(self.batch["id"])["status"])
+        resumed = self.client.post(
+            f"/api/factory/v2/batches/{self.batch['id']}/resume", headers=self.auth
+        )
+        self.assertEqual(202, resumed.status_code)
+        self.assertEqual("RUNNING", self.repo.get_batch(self.batch["id"])["status"])
+
+    def test_snooze_accepts_only_approved_presets(self):
+        checkpoint_id = self.seed_waiting_checkpoint()
+        invalid = self.client.post(
+            f"/api/factory/v2/checkpoints/{checkpoint_id}/snooze",
+            headers=self.auth,
+            json={"minutes": 15},
+        )
+        self.assertEqual(400, invalid.status_code)
+        valid = self.client.post(
+            f"/api/factory/v2/checkpoints/{checkpoint_id}/snooze",
+            headers=self.auth,
+            json={"minutes": 30},
+        )
+        self.assertEqual(202, valid.status_code)
+        self.assertTrue(self.repo.get_checkpoint(checkpoint_id)["snoozed_until"])
 
 
 if __name__ == "__main__":
