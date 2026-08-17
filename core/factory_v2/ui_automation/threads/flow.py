@@ -7,11 +7,34 @@ from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, JOIN_THREADS
 
 _SUCCESS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"THREADS_PROFILE_SETUP", "THREADS_HOME", "THREADS_POSTCHECK_OK"})
+_THREADS_PROTECTED = (
+    "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
+    "EMAIL_OR_PHONE_VERIFICATION", "SELFIE_OR_IDENTITY_CHECK",
+    "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY", "CONSENT_WITH_SECURITY_IMPACT",
+)
+_THREADS_ERRORS = (
+    "NETWORK_ERROR", "RATE_LIMITED", "ACTION_BLOCKED", "ACCOUNT_DISABLED", "APP_CRASH",
+)
+_AFTER_ONBOARDING = _THREADS_PROTECTED + _THREADS_ERRORS + (
+    "THREADS_PROFILE_SETUP", "THREADS_HOME", "THREADS_POSTCHECK_OK",
+)
+_AFTER_PROFILE = _THREADS_PROTECTED + _THREADS_ERRORS + (
+    "THREADS_HOME", "THREADS_POSTCHECK_OK",
+)
 
 
 class ThreadsFlow:
     def __init__(self, driver):
         self.driver = driver
+
+    @staticmethod
+    def _attempt(action):
+        result = None
+        for _ in range(3):
+            result = action()
+            if result.status in {"completed", "noop"}:
+                return result
+        return result
 
     def _detect_bounded(self):
         detected = self.driver.detect_screen()
@@ -46,20 +69,37 @@ class ThreadsFlow:
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
         if detected.kind == "THREADS_ONBOARDING":
             selector = JOIN_THREADS if self.driver.find(JOIN_THREADS) is not None else CONTINUE
-            action = self.driver.tap(selector)
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    selector,
+                    expected_screens=_AFTER_ONBOARDING,
+                    timeout=8.0,
+                )
+            )
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="THREADS_ONBOARDING")
         if detected.kind == "THREADS_PROFILE_SETUP":
-            approved = ((DISPLAY_NAME_INPUT, str(profile.get("display_name") or "")), (BIO_INPUT, str(profile.get("bio") or "")))
+            approved = (
+                (DISPLAY_NAME_INPUT, str(profile.get("display_name") or "")),
+                (BIO_INPUT, str(profile.get("bio") or "")),
+            )
             for selector, value in approved:
                 if not value or self.driver.find(selector) is None:
                     continue
-                action = self.driver.set_text(selector, value)
+                action = self._attempt(
+                    lambda selector=selector, value=value: self.driver.set_text(selector, value)
+                )
                 if action.status not in {"completed", "noop"}:
                     return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             if self.driver.find(CONTINUE) is not None:
-                action = self.driver.tap(CONTINUE)
+                action = self._attempt(
+                    lambda: self.driver.tap(
+                        CONTINUE,
+                        expected_screens=_AFTER_PROFILE,
+                        timeout=8.0,
+                    )
+                )
                 if action.status != "completed":
                     return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="THREADS_PROFILE_SETUP")
