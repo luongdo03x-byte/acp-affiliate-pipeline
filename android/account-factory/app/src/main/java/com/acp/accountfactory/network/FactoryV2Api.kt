@@ -31,6 +31,41 @@ interface FactoryV2ApiClient {
     suspend fun restartWorker(connection: FactoryConnection, id: String): CommandAcceptedDto
     suspend fun startOAuth(connection: FactoryConnection, id: String): StartedOAuthDto
     suspend fun oauthStatus(connection: FactoryConnection, id: String): FactoryAccountDto
+
+    suspend fun registerLocalRunner(
+        connection: FactoryConnection,
+        deviceId: String,
+        deviceName: String,
+    ): FactoryRunnerDto = error("registerLocalRunner not implemented")
+
+    suspend fun heartbeatRunner(
+        connection: FactoryConnection,
+        workerId: String,
+        currentAccountId: String?,
+        currentJobId: String?,
+    ): FactoryRunnerDto = error("heartbeatRunner not implemented")
+
+    suspend fun nextRunnerCommand(
+        connection: FactoryConnection,
+        workerId: String,
+    ): RunnerCommandDto? = error("nextRunnerCommand not implemented")
+
+    suspend fun submitRunnerCommandResult(
+        connection: FactoryConnection,
+        workerId: String,
+        commandId: String,
+        status: String,
+        result: Map<String, Any?>,
+    ): CommandAcceptedDto = error("submitRunnerCommandResult not implemented")
+
+    suspend fun runners(connection: FactoryConnection): List<FactoryRunnerDto> =
+        error("runners not implemented")
+
+    suspend fun createAccount(
+        connection: FactoryConnection,
+        executionTarget: String,
+        batchName: String = "Phone/AVD Pilot",
+    ): FactoryAccountDto = error("createAccount not implemented")
 }
 
 class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) : FactoryV2ApiClient {
@@ -131,4 +166,79 @@ class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) : FactoryV
 
     override suspend fun oauthStatus(connection: FactoryConnection, id: String): FactoryAccountDto =
         FactoryV2Json.parseAccountResponse(get(connection, "/api/factory/v2/accounts/$id/oauth/status"))
+
+    override suspend fun registerLocalRunner(
+        connection: FactoryConnection,
+        deviceId: String,
+        deviceName: String,
+    ): FactoryRunnerDto {
+        val body = JSONObject()
+            .put("device_id", deviceId)
+            .put("device_name", deviceName)
+            .toString()
+        return FactoryV2Json.parseRunnerResponse(
+            post(connection, "/api/factory/v2/runners/local/register", body)
+        )
+    }
+
+    override suspend fun heartbeatRunner(
+        connection: FactoryConnection,
+        workerId: String,
+        currentAccountId: String?,
+        currentJobId: String?,
+    ): FactoryRunnerDto {
+        val body = JSONObject()
+            .put("current_account_id", currentAccountId ?: JSONObject.NULL)
+            .put("current_job_id", currentJobId ?: JSONObject.NULL)
+            .toString()
+        return FactoryV2Json.parseRunnerResponse(
+            post(connection, "/api/factory/v2/runners/$workerId/heartbeat", body)
+        )
+    }
+
+    override suspend fun nextRunnerCommand(
+        connection: FactoryConnection,
+        workerId: String,
+    ): RunnerCommandDto? = FactoryV2Json.parseRunnerCommandResponse(
+        get(connection, "/api/factory/v2/runners/$workerId/commands/next")
+    )
+
+    override suspend fun submitRunnerCommandResult(
+        connection: FactoryConnection,
+        workerId: String,
+        commandId: String,
+        status: String,
+        result: Map<String, Any?>,
+    ): CommandAcceptedDto {
+        val resultJson = JSONObject()
+        result.forEach { (key, value) -> resultJson.put(key, value ?: JSONObject.NULL) }
+        val body = JSONObject()
+            .put("status", status)
+            .put("result", resultJson)
+            .toString()
+        return FactoryV2Json.parseCommand(
+            post(
+                connection,
+                "/api/factory/v2/runners/$workerId/commands/$commandId/result",
+                body,
+            )
+        )
+    }
+
+    override suspend fun runners(connection: FactoryConnection): List<FactoryRunnerDto> =
+        FactoryV2Json.parseRunners(get(connection, "/api/factory/v2/runners"))
+
+    override suspend fun createAccount(
+        connection: FactoryConnection,
+        executionTarget: String,
+        batchName: String,
+    ): FactoryAccountDto {
+        val body = JSONObject()
+            .put("execution_target", executionTarget)
+            .put("batch_name", batchName)
+            .toString()
+        return FactoryV2Json.parseAccountResponse(
+            post(connection, "/api/factory/v2/accounts", body)
+        )
+    }
 }
