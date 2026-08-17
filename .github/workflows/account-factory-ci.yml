@@ -1,0 +1,46 @@
+name: Account Factory CI
+
+on:
+  push:
+    branches: ["feat/account-factory-android"]
+  pull_request:
+    paths:
+      - "core/account_factory.py"
+      - "web/account_factory.py"
+      - "web/server.py"
+      - "tests/test_account_factory.py"
+      - "android/account-factory/**"
+      - ".github/workflows/account-factory-ci.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Account Factory backend tests
+        env:
+          ACP_ADAPTER: mock
+          ACP_SOURCE: mock
+          ACP_ENV: development
+        run: python -m unittest tests.test_account_factory -v
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Android unit tests and debug APK
+        run: gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
