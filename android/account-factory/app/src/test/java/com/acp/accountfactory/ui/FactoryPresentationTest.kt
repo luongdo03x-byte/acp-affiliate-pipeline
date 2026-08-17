@@ -21,6 +21,7 @@ class FactoryPresentationTest {
         assertTrue(checkpointActionsEnabled("OPEN"))
         assertTrue(checkpointActionsEnabled("SNOOZED"))
         assertFalse(checkpointActionsEnabled("VERIFYING"))
+        assertFalse(checkpointActionsEnabled("WAITING_EXTERNAL"))
         assertFalse(checkpointActionsEnabled("RESOLVED"))
     }
 
@@ -32,9 +33,9 @@ class FactoryPresentationTest {
     }
 
     @Test
-    fun oauthRetryUsesOAuthActionInsteadOfGenericStageRetry() {
-        assertEquals(AccountAction.CONNECT_OAUTH, primaryAccountAction("THREADS_CREATED", null))
-        assertEquals(AccountAction.CONNECT_OAUTH, primaryAccountAction("RETRY_PENDING", "OAUTH_FAILED"))
+    fun threadsCreationAutoActivatesAndOnlyOAuthFailureShowsRetryAction() {
+        assertEquals(AccountAction.NONE, primaryAccountAction("THREADS_CREATED", null))
+        assertEquals(AccountAction.RETRY_ACP, primaryAccountAction("RETRY_PENDING", "OAUTH_FAILED"))
         assertEquals(AccountAction.RETRY, primaryAccountAction("ERROR", "POSTCHECK_FAILED"))
         assertEquals(AccountAction.NONE, primaryAccountAction("ACP_CONNECTING", null))
         assertEquals(AccountAction.NONE, primaryAccountAction("ACP_ACTIVE", null))
