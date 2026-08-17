@@ -57,12 +57,15 @@ class AdbClient:
         result = self._run(["exec-out", "uiautomator", "dump", "/dev/tty"], timeout=25)
         output = str(result.stdout or "")
         start = output.find("<?xml")
-        if start >= 0:
-            return output[start:]
-        start = output.find("<hierarchy")
-        if start >= 0:
-            return output[start:]
-        raise RuntimeError("UI hierarchy XML missing from adb output")
+        if start < 0:
+            start = output.find("<hierarchy")
+        if start < 0:
+            raise RuntimeError("UI hierarchy XML missing from adb output")
+        end = output.find("</hierarchy>", start)
+        if end < 0:
+            raise RuntimeError("UI hierarchy XML is incomplete")
+        end += len("</hierarchy>")
+        return output[start:end]
 
     def tap(self, x: int, y: int) -> None:
         self._run(["shell", "input", "tap", str(int(x)), str(int(y))])
