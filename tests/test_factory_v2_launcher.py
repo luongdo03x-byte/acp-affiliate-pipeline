@@ -23,13 +23,14 @@ class FactoryV2LauncherRuntimeTests(unittest.TestCase):
         self.assertEqual([], calls)
         self.assertNotIn("factory_v2_runtime", app.extensions)
 
-    def test_build_app_can_start_controller_runtime_explicitly(self):
+    def test_build_app_can_start_and_close_controller_runtime_explicitly(self):
         runtime = FakeRuntime()
         app = build_app(start_controller=True, runtime_factory=lambda: runtime)
         thread = app.extensions["factory_v2_controller_thread"]
         thread.join(timeout=1)
 
         self.assertTrue(runtime.ran)
+        self.assertTrue(runtime.closed)
         self.assertIs(runtime, app.extensions["factory_v2_runtime"])
         self.assertFalse(thread.is_alive())
 
