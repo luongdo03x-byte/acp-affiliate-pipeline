@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run ACP dashboard with Account Factory OAuth and V2 controller routes.
+"""Run the dedicated Account Factory API/controller service.
 
 The Flask app itself stays side-effect free for tests. When this file is run as
 a program, the dedicated Account Factory controller runtime is started in a
 daemon thread unless ACP_FACTORY_CONTROLLER=0. The runtime never enables live
-Threads publishing.
+Threads publishing and does not register ACP publishing/dashboard routes.
 """
 import atexit
 import os
@@ -36,12 +36,12 @@ if "acp" not in sys.modules:
 
 from acp.core.factory_v2.runtime import build_default_runtime  # noqa: E402
 from acp.web.account_factory import register_account_factory_routes  # noqa: E402
+from acp.web.factory_app import create_factory_app  # noqa: E402
 from acp.web.factory_v2 import register_factory_v2_routes  # noqa: E402
-from acp.web.server import create_app  # noqa: E402
 
 
 def build_app(*, start_controller=False, runtime_factory=build_default_runtime):
-    app = create_app()
+    app = create_factory_app()
     register_account_factory_routes(app)
     register_factory_v2_routes(app)
     if start_controller:
