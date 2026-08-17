@@ -127,11 +127,13 @@ private fun FactoryApp(
         Screen.DASHBOARD -> DashboardScreen(
             state = state,
             onRefresh = {
-                if (settings.isConfigured()) viewModel.refresh() else showSettings = true
+                if (settings.isConfigured()) viewModel.refresh() else onControllerConfigured()
             },
             onCreateAccount = {
                 if (!settings.isConfigured()) {
-                    showSettings = true
+                    // Retry zero-config bootstrap instead of forcing the user to
+                    // type a Controller URL/key. Settings remains an explicit fallback.
+                    onControllerConfigured()
                 } else {
                     viewModel.refresh()
                     screen = Screen.CREATE_ACCOUNT
