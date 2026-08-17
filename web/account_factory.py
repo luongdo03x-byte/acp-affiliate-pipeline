@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 
 from flask import abort, jsonify, request
@@ -14,12 +15,15 @@ from ..core.account_factory import (
     complete_oauth_session,
     create_oauth_session,
     get_session,
+    get_session_by_state,
     public_session,
 )
 from ..core.db import connect
+from ..core.factory_v2.oauth_bridge import sync_account_from_oauth_session
 
 
 FACTORY_KEY_HEADER = "X-ACP-Factory-Key"
+_LOG = logging.getLogger(__name__)
 
 
 def _factory_key() -> str:
@@ -47,6 +51,15 @@ def _redirect_uri() -> str:
 def _provider(app):
     factory = app.config.get("ACCOUNT_FACTORY_OAUTH_FACTORY")
     return factory() if factory else ThreadsOAuthClient()
+
+
+def _sync_v2_safely(conn, session_id: str | None) -> None:
+    if not session_id:
+        return
+    try:
+        sync_account_from_oauth_session(conn, session_id)
+    except Exception as exc:  # OAuth/channel result must remain durable; status poll can retry V2 sync.
+        _LOG.warning("Factory V2 OAuth reconciliation deferred (%s)", type(exc).__name__)
 
 
 def register_account_factory_routes(app):
@@ -108,6 +121,8 @@ def register_account_factory_routes(app):
         if not state or not code:
             abort(400, "Thiếu code/state OAuth")
         conn = connect()
+        session = get_session_by_state(conn, state)
+        session_id = session["id"] if session else None
         try:
             result = complete_oauth_session(
                 conn,
@@ -117,6 +132,7 @@ def register_account_factory_routes(app):
                 provider=_provider(app),
             )
         except AccountMismatchError:
+            _sync_v2_safely(conn, session_id)
             return (
                 "<h2>Sai tài khoản Threads.</h2>"
                 "<p>Không có token nào được gắn vào kênh. Quay lại app và thử lại đúng account.</p>",
@@ -124,18 +140,22 @@ def register_account_factory_routes(app):
                 {"Content-Type": "text/html; charset=utf-8"},
             )
         except OAuthSessionError:
+            _sync_v2_safely(conn, session_id)
             return (
                 "<h2>Phiên OAuth không hợp lệ hoặc đã hết hạn.</h2>",
                 400,
                 {"Content-Type": "text/html; charset=utf-8"},
             )
         except (ThreadsOAuthError, RuntimeError):
+            _sync_v2_safely(conn, session_id)
             return (
                 "<h2>Không thể hoàn tất Threads OAuth.</h2>"
                 "<p>Quay lại app và thử lại. Token không được hiển thị.</p>",
                 502,
                 {"Content-Type": "text/html; charset=utf-8"},
             )
+        else:
+            _sync_v2_safely(conn, session_id)
         finally:
             conn.close()
         username = result["username"]
