@@ -49,6 +49,20 @@ class FactoryV2ServiceTests(unittest.TestCase):
         self.assertEqual(S.RETRY_PENDING.value, second["stage"])
         self.assertEqual(first["id"], second["id"])
 
+    def test_avd_automation_error_codes_are_accepted(self):
+        batch = self.service.create_batch("AVD errors", count=4, seed=91)
+        accounts = self.repo.list_accounts(batch["id"])
+        codes = ("UI_CHANGED", "RATE_LIMITED", "ACTION_BLOCKED", "ACCOUNT_DISABLED")
+        for account, code in zip(accounts, codes):
+            updated = self.service.transition_account(
+                account["id"],
+                S.ERROR,
+                error_code=code,
+                error_message="sanitized worker result",
+            )
+            self.assertEqual(code, updated["last_error_code"])
+            self.assertEqual("sanitized worker result", updated["last_error_message"])
+
 
 if __name__ == "__main__":
     unittest.main()
