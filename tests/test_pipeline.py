@@ -103,6 +103,16 @@ def test_content_validate_platform_max_len():
           content.PLATFORM_MAX_LEN)
 
 
+def test_product_facts_schema():
+    print("\nBảng product_facts tồn tại đúng cột")
+    conn = connect()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(product_facts)").fetchall()}
+    check("có đủ cột product_facts",
+          cols == {"product_id", "facts_json", "unknown_json", "category",
+                   "source_hash", "prompt_version", "extracted_at"}, cols)
+    conn.close()
+
+
 def test_imaging_compose_skips_watermark_when_handle_none():
     print("\nimaging.compose bỏ watermark handle khi handle=None")
     from PIL import Image
@@ -2433,6 +2443,7 @@ if __name__ == "__main__":
     test_crypto()
     test_content_guards()
     test_content_validate_platform_max_len()
+    test_product_facts_schema()
     test_imaging_compose_skips_watermark_when_handle_none()
     test_scoring()
     test_subid_roundtrip()

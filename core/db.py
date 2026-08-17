@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS product_price_history (
 );
 CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id, observed_at);
 
+CREATE TABLE IF NOT EXISTS product_facts (
+    product_id      TEXT PRIMARY KEY REFERENCES product(id),
+    facts_json      TEXT NOT NULL,
+    unknown_json    TEXT NOT NULL,
+    category        TEXT,
+    source_hash     TEXT NOT NULL,
+    prompt_version  TEXT NOT NULL,
+    extracted_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS channel (
     id                  TEXT PRIMARY KEY,
     code                TEXT UNIQUE NOT NULL,
