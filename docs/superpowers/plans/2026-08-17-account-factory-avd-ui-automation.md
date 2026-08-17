@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn `REMOTE_AVD` into a fail-closed semi-automated runner that navigates known safe Instagram/Threads UI, fills only approved non-sensitive profile fields, pauses for protected human steps, auto-resumes only after a positively detected safe successor screen, and then continues to ACP OAuth.
+**Goal:** Turn `REMOTE_AVD` into a fail-closed semi-automated runner that navigates known safe Instagram/Threads UI, fills only approved non-sensitive profile fields, pauses for protected human steps, auto-resumes only after a positively detected safe successor screen, and then continues through the existing ACP OAuth path.
 
-**Architecture:** Keep `FactoryControllerRuntime` authoritative for business stage and job state. Add a focused ADB/UI automation package used only by the AVD worker process; the worker returns sanitized screen observations/results and never writes authoritative account stages directly. `LOCAL_DEVICE` remains unchanged and continues through the existing runner gateway path.
+**Architecture:** `FactoryControllerRuntime` remains authoritative for account/job/checkpoint state. A new ADB/UI automation package lives behind the isolated AVD worker process; it returns only sanitized observations and results. `LOCAL_DEVICE` keeps its existing command allowlist and phone workflow unchanged.
 
-**Tech Stack:** Python 3, stdlib `xml.etree.ElementTree`, dataclasses/enums, existing `AvdManager`/ADB transport, SQLite-backed Factory V2 controller, `unittest` test suite, official Instagram (`com.instagram.android`) and Threads (`com.instagram.barcelona`) Android apps.
+**Tech Stack:** Python 3, stdlib `xml.etree.ElementTree`, dataclasses, existing `AvdManager`/ADB transport, SQLite Factory V2 controller, `unittest`, official Instagram package `com.instagram.android`, official Threads package `com.instagram.barcelona`.
 
 ## Global Constraints
 
@@ -16,44 +16,42 @@
 - Do not automate selfie, identity, recovery, or security challenges.
 - Do not publish Threads content as part of account creation.
 - Unknown or ambiguous UI must fail closed; never exploratory-tap unknown screens.
-- Controller/DB remains authoritative for `RUNNER_ASSIGNED`, `WAITING_HUMAN`, `IG_CREATED`, `THREADS_CREATED`, `ACP_CONNECTING`, and `ACP_ACTIVE`.
-- AVD UI states are observations only and must not replace AccountStage values.
-- Screenshot capture is diagnostic-only, disabled by default, and never part of the first decision loop.
-- Raw hierarchy XML and sensitive field values must not be persisted to DB or logs.
-- Normal safe UI actions may retry at most two times after the initial attempt.
-- `LOCAL_DEVICE` behavior and lifecycle must remain unchanged.
+- Controller/DB remains authoritative for business stages.
+- AVD UI state is worker observation only; do not add AVD-only `AccountStage` values.
+- Screenshot capture is diagnostic-only, disabled by default, and not part of the first decision loop.
+- Raw hierarchy XML and sensitive values must not be persisted to DB or logs.
+- A normal safe UI action gets at most three total attempts: initial attempt plus two retries.
+- `LOCAL_DEVICE` behavior/lifecycle must remain unchanged.
+- Reuse the existing ACP activation/OAuth implementation; do not create a second OAuth path.
 
 ---
 
 ## File Structure
 
-Create focused modules:
+Create:
 
 ```text
 core/factory_v2/ui_automation/
-    __init__.py          # public UI automation types
-    adb.py               # ADB operations scoped to one serial
-    hierarchy.py         # XML -> sanitized UiSnapshot/UiNode
-    selectors.py         # generic selector matching primitives
-    detector.py          # generic screen result/signature engine
-    driver.py            # SafeUiDriver precondition/action/postcondition API
+    __init__.py
+    adb.py
+    hierarchy.py
+    selectors.py
+    detector.py
+    driver.py
+    flow_result.py
 
     instagram/
         __init__.py
-        screens.py       # Instagram screen kinds + signatures
-        selectors.py     # known Instagram selectors
-        flow.py          # fail-closed Instagram state machine
+        screens.py
+        selectors.py
+        flow.py
 
     threads/
         __init__.py
-        screens.py       # Threads screen kinds + signatures
-        selectors.py     # known Threads selectors
-        flow.py          # fail-closed Threads state machine
-```
+        screens.py
+        selectors.py
+        flow.py
 
-Add tests/fixtures:
-
-```text
 tests/fixtures/android_ui/
     instagram_signup.xml
     instagram_profile.xml
@@ -70,7 +68,7 @@ tests/test_factory_v2_threads_flow.py
 tests/test_factory_v2_avd_worker_agent.py
 ```
 
-Modify existing integration points only where required:
+Modify only as required:
 
 ```text
 workers/account_factory_worker.py
@@ -79,13 +77,14 @@ core/factory_v2/service.py
 core/factory_v2/runner_gateway.py
 tests/test_factory_v2_runtime.py
 tests/test_factory_v2_worker_process.py
+tests/test_factory_v2_checkpoint_retry.py
 docs/ACP_ACCOUNT_FACTORY_RUNBOOK.md
 scripts/verify_account_factory_dual_runner.sh
 ```
 
 ---
 
-### Task 1: Sanitized UI hierarchy model and scoped ADB client
+### Task 1: Sanitized hierarchy model and serial-scoped ADB client
 
 **Files:**
 - Create: `core/factory_v2/ui_automation/__init__.py`
@@ -94,52 +93,50 @@ scripts/verify_account_factory_dual_runner.sh
 - Create: `tests/test_factory_v2_ui_hierarchy.py`
 
 **Interfaces:**
-- Consumes: existing `core.factory_v2.avd.CompletedCommand`-compatible command runner semantics.
-- Produces: `UiBounds`, `UiNode`, `UiSnapshot`, `UiHierarchyReader.parse(xml_text, package, activity)`, and `AdbClient` methods used by Tasks 2–7.
+- Consumes: existing `AvdManager` command-runner semantics.
+- Produces: `UiBounds`, `UiNode`, `UiSnapshot`, `UiHierarchyReader`, `AdbClient`.
 
-- [ ] **Step 1: Write hierarchy parser tests first**
+- [ ] **Step 1: Write failing hierarchy parser tests**
 
 ```python
+import unittest
+
 from core.factory_v2.ui_automation.hierarchy import UiHierarchyReader
 
-XML = '''<hierarchy><node text="Username" resource-id="com.instagram.android:id/username"
- class="android.widget.EditText" clickable="true" enabled="true"
- bounds="[10,20][210,80]" /></hierarchy>'''
 
+class UiHierarchyTests(unittest.TestCase):
+    def test_parse_exposes_sanitized_metadata(self):
+        xml = '''<hierarchy><node text="Username"
+          resource-id="com.instagram.android:id/username"
+          class="android.widget.EditText" clickable="true" enabled="true"
+          bounds="[10,20][210,80]" /></hierarchy>'''
+        snapshot = UiHierarchyReader().parse(
+            xml,
+            package="com.instagram.android",
+            activity=".MainActivity",
+        )
+        node = snapshot.nodes[0]
+        self.assertEqual("Username", node.text)
+        self.assertEqual("com.instagram.android:id/username", node.resource_id)
+        self.assertEqual((110, 50), node.bounds.center)
+        self.assertTrue(node.clickable)
 
-def test_parse_exposes_sanitized_node_metadata():
-    snapshot = UiHierarchyReader().parse(
-        XML,
-        package="com.instagram.android",
-        activity=".MainActivity",
-    )
-    node = snapshot.nodes[0]
-    assert node.text == "Username"
-    assert node.resource_id == "com.instagram.android:id/username"
-    assert node.bounds.center == (110, 50)
-    assert node.clickable is True
-
-
-def test_sensitive_input_value_is_redacted():
-    xml = '''<hierarchy><node text="123456" password="true"
-      class="android.widget.EditText" bounds="[0,0][100,100]" /></hierarchy>'''
-    snapshot = UiHierarchyReader().parse(xml, package="x", activity="y")
-    assert snapshot.nodes[0].text == ""
+    def test_password_node_text_is_redacted(self):
+        xml = '''<hierarchy><node text="secret-value" password="true"
+          class="android.widget.EditText" bounds="[0,0][100,100]" /></hierarchy>'''
+        snapshot = UiHierarchyReader().parse(xml, package="x", activity="y")
+        self.assertEqual("", snapshot.nodes[0].text)
 ```
 
-- [ ] **Step 2: Run the parser tests and verify RED**
-
-Run:
+- [ ] **Step 2: Run RED test**
 
 ```bash
 python3 -m unittest tests.test_factory_v2_ui_hierarchy -v
 ```
 
-Expected: import/module failure because `ui_automation.hierarchy` does not exist yet.
+Expected: import failure because the package does not exist yet.
 
-- [ ] **Step 3: Implement immutable sanitized model and parser**
-
-Use exact public shapes:
+- [ ] **Step 3: Implement immutable UI types**
 
 ```python
 @dataclass(frozen=True)
@@ -172,20 +169,23 @@ class UiSnapshot:
     nodes: tuple[UiNode, ...]
 ```
 
-`UiHierarchyReader.parse()` must parse XML in memory, blank `text`/`content-desc` when `password="true"`, reject malformed bounds by skipping the node, and never write the XML to disk.
+`UiHierarchyReader.parse(xml_text, *, package, activity)` must parse in memory, blank `text` and `content-desc` for `password="true"`, skip malformed bounds, and never write XML to host storage.
 
-- [ ] **Step 4: Add scoped `AdbClient` tests and implementation**
-
-Test exact command scoping:
+- [ ] **Step 4: Write failing ADB scoping tests**
 
 ```python
-def test_adb_client_always_scopes_serial(fake_runner):
-    client = AdbClient("emulator-5554", adb_path="adb", runner=fake_runner)
-    client.tap(120, 480)
-    assert fake_runner.calls[-1][0][:3] == ["adb", "-s", "emulator-5554"]
+class AdbClientTests(unittest.TestCase):
+    def test_tap_is_scoped_to_serial(self):
+        runner = FakeRunner()
+        client = AdbClient("emulator-5554", adb_path="adb", runner=runner)
+        client.tap(120, 480)
+        self.assertEqual(
+            ["adb", "-s", "emulator-5554"],
+            runner.calls[-1][0][:3],
+        )
 ```
 
-Implement:
+- [ ] **Step 5: Implement `AdbClient`**
 
 ```python
 class AdbClient:
@@ -193,15 +193,16 @@ class AdbClient:
     def dump_hierarchy(self) -> str: ...
     def tap(self, x: int, y: int) -> None: ...
     def set_text(self, text: str) -> None: ...
+    def keyevent(self, keycode: int) -> None: ...
     def back(self) -> None: ...
     def home(self) -> None: ...
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None: ...
     def open_package(self, package: str) -> None: ...
 ```
 
-`set_text()` must reject control characters and values over 500 characters. No password/OTP-specific API is added.
+Every command must begin with `[adb_path, "-s", serial, ...]`. `set_text()` rejects control characters and values longer than 500 characters. Do not add password/OTP helper APIs.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [ ] **Step 6: Run GREEN tests and commit**
 
 ```bash
 python3 -m unittest tests.test_factory_v2_ui_hierarchy -v
@@ -213,41 +214,39 @@ Expected: PASS.
 
 ---
 
-### Task 2: Selector matching and fail-closed screen detector
+### Task 2: Selector engine, sanitized fixtures, and safety-first detector
 
 **Files:**
 - Create: `core/factory_v2/ui_automation/selectors.py`
 - Create: `core/factory_v2/ui_automation/detector.py`
-- Create: `core/factory_v2/ui_automation/instagram/__init__.py`
-- Create: `core/factory_v2/ui_automation/instagram/screens.py`
-- Create: `core/factory_v2/ui_automation/instagram/selectors.py`
-- Create: `core/factory_v2/ui_automation/threads/__init__.py`
-- Create: `core/factory_v2/ui_automation/threads/screens.py`
-- Create: `core/factory_v2/ui_automation/threads/selectors.py`
+- Create: platform `__init__.py`, `screens.py`, `selectors.py`
+- Create: six fixture XML files listed above
 - Create: `tests/test_factory_v2_ui_detector.py`
-- Create: six sanitized fixture XML files listed in File Structure.
 
 **Interfaces:**
-- Consumes: `UiSnapshot`, `UiNode` from Task 1.
-- Produces: `Selector`, `ScreenSignature`, `DetectedScreen`, `ScreenDetector.detect(snapshot)` and platform-specific detector builders.
+- Consumes: `UiSnapshot` and `UiNode`.
+- Produces: `Selector`, `ScreenSignature`, `DetectedScreen`, `ScreenDetector`, `build_instagram_detector()`, `build_threads_detector()`.
 
-- [ ] **Step 1: Write selector precedence tests**
+- [ ] **Step 1: Write failing selector precedence test**
 
 ```python
-def test_resource_id_beats_text_alias(snapshot):
-    selector = Selector(
-        resource_ids=("com.instagram.android:id/next_button",),
-        texts=("Next", "Continue", "Tiếp tục", "Tiếp"),
-    )
-    match = selector.find(snapshot)
-    assert match.resource_id == "com.instagram.android:id/next_button"
+class SelectorTests(unittest.TestCase):
+    def test_resource_id_match_has_priority(self):
+        selector = Selector(
+            semantic="continue",
+            resource_ids=("com.instagram.android:id/next_button",),
+            texts=("Next", "Continue", "Tiếp tục", "Tiếp"),
+        )
+        node = selector.find(self.snapshot)
+        self.assertEqual("com.instagram.android:id/next_button", node.resource_id)
 ```
 
-Define exact selector shape:
+Use this exact type:
 
 ```python
 @dataclass(frozen=True)
 class Selector:
+    semantic: str | None = None
     resource_ids: tuple[str, ...] = ()
     content_descs: tuple[str, ...] = ()
     texts: tuple[str, ...] = ()
@@ -257,24 +256,25 @@ class Selector:
     def find(self, snapshot: UiSnapshot) -> UiNode | None: ...
 ```
 
-Precedence must be resource-id -> content-desc -> exact text -> normalized alias -> semantic class/clickable match.
+Precedence: resource-id -> content-desc -> exact text -> normalized known alias -> class/clickable semantic combination.
 
-- [ ] **Step 2: Write detector safety-priority tests**
+- [ ] **Step 2: Write failing detector priority tests**
 
 ```python
-def test_otp_signature_wins_over_normal_continue_button(otp_snapshot):
-    detected = build_instagram_detector().detect(otp_snapshot)
-    assert detected.kind == "OTP_REQUIRED"
-    assert detected.protected is True
+class DetectorTests(unittest.TestCase):
+    def test_otp_wins_over_continue_button(self):
+        detected = build_instagram_detector().detect(self.otp_snapshot)
+        self.assertEqual("OTP_REQUIRED", detected.kind)
+        self.assertTrue(detected.protected)
+        self.assertFalse(detected.automation_allowed)
 
-
-def test_unknown_screen_never_returns_automation_allowed(unknown_snapshot):
-    detected = build_instagram_detector().detect(unknown_snapshot)
-    assert detected.kind == "UNKNOWN"
-    assert detected.automation_allowed is False
+    def test_unknown_never_allows_automation(self):
+        detected = build_instagram_detector().detect(self.unknown_snapshot)
+        self.assertEqual("UNKNOWN", detected.kind)
+        self.assertFalse(detected.automation_allowed)
 ```
 
-Use exact result type:
+- [ ] **Step 3: Implement detector types**
 
 ```python
 @dataclass(frozen=True)
@@ -286,26 +286,25 @@ class DetectedScreen:
 
     @property
     def automation_allowed(self) -> bool:
-        return (not self.protected) and self.kind != "UNKNOWN" and self.confidence >= 0.90
-```
+        return not self.protected and self.kind != "UNKNOWN" and self.confidence >= 0.90
 
-- [ ] **Step 3: Implement `ScreenSignature` and ordered detector**
 
-```python
 @dataclass(frozen=True)
 class ScreenSignature:
     kind: str
     package: str
-    required_any: tuple[Selector, ...]
+    selectors: tuple[Selector, ...]
     minimum_matches: int
     confidence: float
     protected: bool = False
     priority: int = 100
 ```
 
-`ScreenDetector.detect()` evaluates lower `priority` first. Platform builders must place protected screens before error, success, normal, then unknown.
+`ScreenDetector.detect()` evaluates ascending priority and returns `UNKNOWN` if no signature is strong enough.
 
-Instagram protected kinds must include exactly:
+- [ ] **Step 4: Define protected/error/normal signatures**
+
+Protected kinds:
 
 ```text
 PASSWORD_REQUIRED
@@ -318,18 +317,35 @@ ACCOUNT_RECOVERY
 CONSENT_WITH_SECURITY_IMPACT
 ```
 
-Error kinds must include `NETWORK_ERROR`, `RATE_LIMITED`, `ACTION_BLOCKED`, `ACCOUNT_DISABLED`.
-
-- [ ] **Step 4: Add sanitized fixtures and normal-screen signatures**
-
-Fixtures contain only fake values such as `sample_user`, never real credentials/codes. Add signatures sufficient for the pilot:
+Error kinds:
 
 ```text
-Instagram: IG_SIGNUP_ENTRY, IG_PROFILE_SETUP, IG_HOME, IG_POSTCHECK_OK
-Threads: THREADS_ONBOARDING, THREADS_PROFILE_SETUP, THREADS_HOME, THREADS_POSTCHECK_OK
+NETWORK_ERROR
+RATE_LIMITED
+ACTION_BLOCKED
+ACCOUNT_DISABLED
 ```
 
-- [ ] **Step 5: Run detector tests and commit**
+Normal pilot kinds:
+
+```text
+IG_SIGNUP_ENTRY
+IG_PROFILE_SETUP
+IG_HOME
+IG_POSTCHECK_OK
+THREADS_ONBOARDING
+THREADS_PROFILE_SETUP
+THREADS_HOME
+THREADS_POSTCHECK_OK
+```
+
+Protected signatures get higher priority than error, success, and normal signatures. Credible protected evidence must stop even below the normal `0.90` automation threshold.
+
+- [ ] **Step 5: Add sanitized fixtures**
+
+Fixtures must use fake data only (`sample_user`, `Sample User`) and contain no real code/password/token values.
+
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
 python3 -m unittest tests.test_factory_v2_ui_detector -v
@@ -337,11 +353,11 @@ git add core/factory_v2/ui_automation tests/fixtures/android_ui tests/test_facto
 git commit -m "feat: add fail-closed AVD screen detector"
 ```
 
-Expected: PASS including protected-screen priority and unknown-screen fail closed behavior.
+Expected: PASS.
 
 ---
 
-### Task 3: Safe UI driver with precondition/postcondition verification
+### Task 3: Safe UI driver with explicit mutation guards
 
 **Files:**
 - Create: `core/factory_v2/ui_automation/driver.py`
@@ -349,32 +365,24 @@ Expected: PASS including protected-screen priority and unknown-screen fail close
 
 **Interfaces:**
 - Consumes: `AdbClient`, `UiHierarchyReader`, `Selector`, `ScreenDetector`.
-- Produces: `ActionResult` and `SafeUiDriver` used by Instagram/Threads flows.
+- Produces: `ActionResult`, `SafeUiDriver`.
 
-- [ ] **Step 1: Write idempotent text-setting and tap verification tests**
+- [ ] **Step 1: Write failing no-op/not-found tests**
 
 ```python
-def test_set_text_is_noop_when_field_already_matches(driver):
-    result = driver.set_text(USERNAME_INPUT, "sample_user")
-    assert result.status == "noop"
-    assert driver.adb.input_calls == []
+class SafeUiDriverTests(unittest.TestCase):
+    def test_set_text_is_noop_when_value_already_matches(self):
+        result = self.driver.set_text(USERNAME_INPUT, "sample_user")
+        self.assertEqual("noop", result.status)
+        self.assertEqual([], self.adb.input_calls)
 
-
-def test_tap_requires_known_node(driver):
-    result = driver.tap(MISSING_SELECTOR)
-    assert result.status == "not_found"
-    assert driver.adb.tap_calls == []
+    def test_missing_selector_never_taps(self):
+        result = self.driver.tap(MISSING_SELECTOR)
+        self.assertEqual("not_found", result.status)
+        self.assertEqual([], self.adb.tap_calls)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
-
-```bash
-python3 -m unittest tests.test_factory_v2_ui_driver -v
-```
-
-Expected: module/class missing.
-
-- [ ] **Step 3: Implement exact driver API**
+- [ ] **Step 2: Implement exact API**
 
 ```python
 @dataclass(frozen=True)
@@ -388,18 +396,30 @@ class SafeUiDriver:
     def snapshot(self) -> UiSnapshot: ...
     def detect_screen(self) -> DetectedScreen: ...
     def find(self, selector: Selector) -> UiNode | None: ...
-    def tap(self, selector: Selector, *, expected_screens: tuple[str, ...] = (), timeout: float = 8.0) -> ActionResult: ...
+    def tap(
+        self,
+        selector: Selector,
+        *,
+        expected_screens: tuple[str, ...] = (),
+        timeout: float = 8.0,
+    ) -> ActionResult: ...
     def set_text(self, selector: Selector, value: str) -> ActionResult: ...
     def wait_for(self, screens: tuple[str, ...], timeout: float) -> DetectedScreen: ...
 ```
 
-`tap()` must locate a known node, tap its center, then positively verify one of `expected_screens` if supplied. Retry policy belongs to flow code, not inside unbounded driver loops.
+`tap()` only taps the center of a positively matched node. When `expected_screens` is supplied, success requires a positively detected expected screen.
 
-`set_text()` must only operate on a node matched by an explicit selector and must clear the selected non-sensitive field before input to avoid `abcabc` replay behavior.
+- [ ] **Step 3: Add protected-field denylist test and implementation**
 
-- [ ] **Step 4: Add a protected-field denylist guard**
+```python
+class ProtectedFieldTests(unittest.TestCase):
+    def test_password_selector_is_rejected(self):
+        selector = Selector(semantic="password", texts=("Password",))
+        with self.assertRaisesRegex(ValueError, "protected field automation is disabled"):
+            self.driver.set_text(selector, "anything")
+```
 
-Before any `set_text`, reject selectors whose semantic tag is one of:
+Deny exact semantics:
 
 ```text
 password
@@ -408,9 +428,11 @@ verification_code
 recovery_code
 ```
 
-Represent this with `Selector.semantic: str | None` and raise `ValueError("protected field automation is disabled")`.
+- [ ] **Step 4: Make text replay idempotent**
 
-- [ ] **Step 5: Run focused tests and commit**
+For approved fields, focus the known element, clear existing content with key events/select-all behavior, input the desired value once, take a fresh snapshot, and return `completed` only if the value/postcondition can be verified. If already equal, return `noop` without ADB mutation.
+
+- [ ] **Step 5: Run tests and commit**
 
 ```bash
 python3 -m unittest tests.test_factory_v2_ui_driver -v
@@ -422,50 +444,19 @@ Expected: PASS.
 
 ---
 
-### Task 4: Instagram fail-closed automation flow
+### Task 4: Shared flow result plus Instagram fail-closed state machine
 
 **Files:**
+- Create: `core/factory_v2/ui_automation/flow_result.py`
 - Create: `core/factory_v2/ui_automation/instagram/flow.py`
-- Modify: `core/factory_v2/ui_automation/instagram/selectors.py`
-- Modify: `core/factory_v2/ui_automation/instagram/screens.py`
+- Modify: Instagram selectors/screens
 - Create: `tests/test_factory_v2_instagram_flow.py`
 
 **Interfaces:**
-- Consumes: `SafeUiDriver`, approved profile payload `{username, display_name, bio}`.
-- Produces: `FlowResult(status, screen, reason, last_safe_step)` via `InstagramFlow.run(profile)` and `InstagramFlow.observe_checkpoint()`.
+- Consumes: `SafeUiDriver`, profile `{username, display_name, bio}`.
+- Produces: shared `FlowResult` and `InstagramFlow.run(profile)` / `observe_checkpoint()`.
 
-- [ ] **Step 1: Write protected-step interruption test**
-
-```python
-def test_instagram_stops_without_mutation_on_otp(fake_driver):
-    fake_driver.detected = DetectedScreen(
-        kind="OTP_REQUIRED", confidence=0.82,
-        evidence=("verification code",), protected=True,
-    )
-    result = InstagramFlow(fake_driver).run({
-        "username": "sample_user",
-        "display_name": "Sample User",
-        "bio": "Sample bio",
-    })
-    assert result.status == "waiting_human"
-    assert result.screen == "OTP_REQUIRED"
-    assert fake_driver.mutations == []
-```
-
-- [ ] **Step 2: Write known safe profile preparation test**
-
-```python
-def test_instagram_fills_only_approved_profile_fields(fake_driver):
-    result = InstagramFlow(fake_driver).run(PROFILE)
-    assert result.status in {"running", "waiting_human", "completed"}
-    assert fake_driver.set_values == [
-        ("username", "sample_user"),
-        ("display_name", "Sample User"),
-        ("bio", "Sample bio"),
-    ]
-```
-
-- [ ] **Step 3: Implement exact result/state shape**
+- [ ] **Step 1: Define shared result contract**
 
 ```python
 @dataclass(frozen=True)
@@ -476,28 +467,69 @@ class FlowResult:
     last_safe_step: str | None = None
 ```
 
-`InstagramFlow.run()` may automate only `IG_SIGNUP_ENTRY` and `IG_PROFILE_SETUP` transitions defined in selectors/signatures. It must not submit password, OTP, CAPTCHA, identity/security, recovery, or unknown screens.
-
-For a normal action:
+- [ ] **Step 2: Write protected-step test**
 
 ```python
-for attempt in range(3):  # initial + 2 retries
-    result = driver.tap(selector, expected_screens=expected)
-    if result.status == "completed":
+class InstagramFlowTests(unittest.TestCase):
+    def test_otp_stops_before_any_mutation(self):
+        self.driver.detected = DetectedScreen(
+            kind="OTP_REQUIRED",
+            confidence=0.82,
+            evidence=("verification-code-marker",),
+            protected=True,
+        )
+        result = InstagramFlow(self.driver).run(self.profile)
+        self.assertEqual("waiting_human", result.status)
+        self.assertEqual("OTP_REQUIRED", result.screen)
+        self.assertEqual([], self.driver.mutations)
+```
+
+- [ ] **Step 3: Write approved-profile-field test**
+
+```python
+    def test_profile_setup_only_sets_approved_fields(self):
+        InstagramFlow(self.driver).run(self.profile)
+        self.assertEqual(
+            [
+                ("username", "sample_user"),
+                ("display_name", "Sample User"),
+                ("bio", "Sample bio"),
+            ],
+            self.driver.set_values,
+        )
+```
+
+- [ ] **Step 4: Implement bounded known-screen navigation**
+
+Allowed safe pilot mutations are only those attached to explicit selectors for `IG_SIGNUP_ENTRY` and `IG_PROFILE_SETUP`. Every transition follows detect -> precondition -> mutation -> positive postcondition. Use:
+
+```python
+for attempt in range(3):
+    action = driver.tap(selector, expected_screens=expected)
+    if action.status in {"completed", "noop"}:
         break
 else:
     return FlowResult("needs_confirmation", current.kind, "UI_CHANGED", last_safe_step)
 ```
 
-- [ ] **Step 4: Implement observation-only auto-resume rule**
+No password/OTP/CAPTCHA/security selector may be passed to `set_text()`.
 
-`observe_checkpoint()` returns `completed` only when the protected screen has disappeared **and** one known valid successor (`IG_PROFILE_SETUP`, `IG_HOME`, `IG_POSTCHECK_OK`) is positively detected. A plain absence of OTP/challenge returns `waiting_human` or `needs_confirmation`, never success.
+- [ ] **Step 5: Implement observation-only auto-resume**
 
-- [ ] **Step 5: Run tests and commit**
+`observe_checkpoint()` performs zero mutation. It returns `completed` only when both conditions hold:
+
+```text
+previous protected screen is absent
+AND a known valid successor is positively detected
+```
+
+Instagram valid successors for pilot: `IG_PROFILE_SETUP`, `IG_HOME`, `IG_POSTCHECK_OK`. Absence of the challenge alone never means success.
+
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
 python3 -m unittest tests.test_factory_v2_instagram_flow -v
-git add core/factory_v2/ui_automation/instagram tests/test_factory_v2_instagram_flow.py
+git add core/factory_v2/ui_automation/flow_result.py core/factory_v2/ui_automation/instagram tests/test_factory_v2_instagram_flow.py
 git commit -m "feat: automate safe Instagram AVD flow"
 ```
 
@@ -505,43 +537,53 @@ Expected: PASS.
 
 ---
 
-### Task 5: Threads fail-closed automation flow
+### Task 5: Threads fail-closed state machine
 
 **Files:**
 - Create: `core/factory_v2/ui_automation/threads/flow.py`
-- Modify: `core/factory_v2/ui_automation/threads/selectors.py`
-- Modify: `core/factory_v2/ui_automation/threads/screens.py`
+- Modify: Threads selectors/screens
 - Create: `tests/test_factory_v2_threads_flow.py`
 
 **Interfaces:**
-- Consumes: `SafeUiDriver`, approved profile payload.
-- Produces: same `FlowResult` contract as Instagram; no publishing action.
+- Consumes: shared `FlowResult`, `SafeUiDriver`, approved profile.
+- Produces: `ThreadsFlow.run(profile)` / `observe_checkpoint()` using the same status contract as Instagram.
 
-- [ ] **Step 1: Write Threads onboarding and protected-screen tests**
+- [ ] **Step 1: Write no-publishing and protected-screen tests**
 
 ```python
-def test_threads_known_onboarding_can_continue(fake_driver):
-    result = ThreadsFlow(fake_driver).run(PROFILE)
-    assert result.status != "error"
-    assert "publish" not in fake_driver.actions
+class ThreadsFlowTests(unittest.TestCase):
+    def test_normal_flow_never_contains_publish_action(self):
+        ThreadsFlow(self.driver).run(self.profile)
+        self.assertNotIn("publish", self.driver.actions)
 
-
-def test_threads_security_challenge_stops_immediately(fake_driver):
-    fake_driver.detected = DetectedScreen(
-        "SECURITY_CHALLENGE", 0.80, ("security check",), protected=True
-    )
-    result = ThreadsFlow(fake_driver).run(PROFILE)
-    assert result.status == "waiting_human"
-    assert fake_driver.mutations == []
+    def test_security_challenge_stops_without_mutation(self):
+        self.driver.detected = DetectedScreen(
+            kind="SECURITY_CHALLENGE",
+            confidence=0.80,
+            evidence=("security-check-marker",),
+            protected=True,
+        )
+        result = ThreadsFlow(self.driver).run(self.profile)
+        self.assertEqual("waiting_human", result.status)
+        self.assertEqual([], self.driver.mutations)
 ```
 
-- [ ] **Step 2: Implement Threads flow using only known selectors**
+- [ ] **Step 2: Implement only known onboarding/profile transitions**
 
-Allowed pilot transitions are limited to `THREADS_ONBOARDING` -> `THREADS_PROFILE_SETUP` -> `THREADS_POSTCHECK_OK/THREADS_HOME`. Do not add any selector/action for creating or publishing a post.
+Safe pilot screens:
 
-- [ ] **Step 3: Implement observation-only auto-resume**
+```text
+THREADS_ONBOARDING
+THREADS_PROFILE_SETUP
+THREADS_HOME
+THREADS_POSTCHECK_OK
+```
 
-Successor requirement mirrors Instagram: protected screen gone + known valid Threads successor present.
+There must be no selector or flow branch for composing/publishing content.
+
+- [ ] **Step 3: Implement observation-only resume**
+
+Valid successor detection is required after a human checkpoint; challenge disappearance alone does not resume.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -555,7 +597,7 @@ Expected: PASS.
 
 ---
 
-### Task 6: Integrate automation into the isolated AVD worker agent
+### Task 6: Integrate safe flows into the isolated AVD worker
 
 **Files:**
 - Modify: `workers/account_factory_worker.py`
@@ -563,37 +605,29 @@ Expected: PASS.
 - Modify: `tests/test_factory_v2_worker_process.py`
 
 **Interfaces:**
-- Consumes: `AdbClient`, platform detector/flows, existing `WorkerCommand`/`CommandLedger`.
-- Produces worker actions `PREPARE_INSTAGRAM`, `AUTOMATE_INSTAGRAM`, `OBSERVE_CHECKPOINT`, `AUTOMATE_THREADS`, existing `OPEN_URL`.
+- Consumes: `WorkerCommand`, `CommandLedger`, platform flows.
+- Produces AVD worker commands: `PREPARE_INSTAGRAM`, `AUTOMATE_INSTAGRAM`, `OBSERVE_CHECKPOINT`, `AUTOMATE_THREADS`; keeps existing `OPEN_URL`.
 
-- [ ] **Step 1: Write worker command tests**
+- [ ] **Step 1: Write worker result-sanitization test**
 
 ```python
-def test_automate_instagram_returns_sanitized_waiting_human(agent):
-    response = agent.execute(WorkerCommand(
-        command_id="cmd-1",
-        action="AUTOMATE_INSTAGRAM",
-        account_id="acc-1",
-        payload={
-            "job_id": "job-1",
-            "profile": {
-                "username": "sample_user",
-                "display_name": "Sample User",
-                "bio": "Sample bio",
-            },
-        },
-    ))
-    assert response["ok"] is True
-    assert response["status"] == "waiting_human"
-    assert response["result"]["screen"] == "OTP_REQUIRED"
-    assert "otp" not in str(response).lower()
+class AvdWorkerAgentTests(unittest.TestCase):
+    def test_waiting_human_result_contains_no_sensitive_payload(self):
+        response = self.agent.execute(WorkerCommand(
+            command_id="cmd-1",
+            action="AUTOMATE_INSTAGRAM",
+            account_id="acc-1",
+            payload={"job_id": "job-1", "profile": self.profile},
+        ))
+        self.assertTrue(response["ok"])
+        self.assertEqual("waiting_human", response["status"])
+        result = response["result"]
+        self.assertEqual("OTP_REQUIRED", result["screen"])
+        for forbidden in ("password", "code", "raw_xml", "token"):
+            self.assertNotIn(forbidden, result)
 ```
 
-The final assertion should check values/keys, not reject the literal screen name; specifically assert there is no `code`, `password`, `raw_xml`, or credential value in the result payload.
-
-- [ ] **Step 2: Refactor `WorkerAgent` constructor for dependency injection**
-
-Use:
+- [ ] **Step 2: Refactor constructor for dependency injection**
 
 ```python
 class WorkerAgent:
@@ -610,33 +644,49 @@ class WorkerAgent:
         ...
 ```
 
-Default flows are built from `AdbClient(serial, adb_path=self.avd.adb, runner=self.avd.runner)`.
+Default flow construction uses one serial-scoped `AdbClient` backed by the existing `AvdManager` runner.
 
-- [ ] **Step 3: Add exact action dispatch**
-
-```text
-PREPARE_INSTAGRAM -> launch official Instagram and detect entry state
-AUTOMATE_INSTAGRAM -> run InstagramFlow with approved profile payload
-OBSERVE_CHECKPOINT -> run observation-only method for payload.flow == instagram|threads
-AUTOMATE_THREADS -> launch/run ThreadsFlow
-OPEN_URL -> keep existing safe HTTPS behavior
-```
-
-Worker heartbeat observation fields track only:
+- [ ] **Step 3: Add exact dispatch behavior**
 
 ```text
-flow
-last_known_screen
-last_safe_step
+PREPARE_INSTAGRAM -> open official Instagram, detect current screen, no blind navigation
+AUTOMATE_INSTAGRAM -> run InstagramFlow with only username/display_name/bio
+OBSERVE_CHECKPOINT -> call observation-only method for payload.flow instagram|threads
+AUTOMATE_THREADS -> open official Threads, then run ThreadsFlow
+OPEN_URL -> preserve existing HTTPS-only behavior
 ```
 
-Do not include raw XML or profile field values in heartbeat.
+Worker response shape:
 
-- [ ] **Step 4: Preserve at-most-once command behavior**
+```python
+{
+    "ok": True,
+    "status": flow_result.status,
+    "result": {
+        "screen": flow_result.screen,
+        "reason": flow_result.reason,
+        "last_safe_step": flow_result.last_safe_step,
+    },
+}
+```
 
-Add a test that executing the same `command_id` twice returns the ledger-cached result and does not duplicate driver mutation calls.
+- [ ] **Step 4: Keep only sanitized recovery metadata**
 
-- [ ] **Step 5: Run worker tests and commit**
+Worker memory may track:
+
+```python
+self.flow: str | None
+self.last_known_screen: str | None
+self.last_safe_step: str | None
+```
+
+Heartbeat must not contain raw hierarchy/profile values.
+
+- [ ] **Step 5: Verify duplicate command idempotency**
+
+Execute the same `command_id` twice and assert `CommandLedger` returns the cached result without a second driver mutation.
+
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
 python3 -m unittest \
@@ -646,36 +696,43 @@ git add workers/account_factory_worker.py tests/test_factory_v2_avd_worker_agent
 git commit -m "feat: connect AVD worker to safe UI automation"
 ```
 
-Expected: PASS and existing safe worker environment test remains green.
+Expected: PASS, including existing safe-env assertions.
 
 ---
 
-### Task 7: Controller integration, checkpoints, auto-resume, and failure mapping
+### Task 7: Controller routing, legal stage transitions, and automatic checkpoint observation
 
 **Files:**
 - Modify: `core/factory_v2/runtime.py`
 - Modify: `core/factory_v2/service.py`
 - Modify: `core/factory_v2/runner_gateway.py`
 - Modify: `tests/test_factory_v2_runtime.py`
+- Modify: `tests/test_factory_v2_checkpoint_retry.py`
 
 **Interfaces:**
-- Consumes: sanitized AVD worker result `{status, result:{screen, reason, last_safe_step?}}`.
-- Produces authoritative AccountStage/job/checkpoint transitions while leaving `LOCAL_DEVICE` commands unchanged.
+- Consumes: sanitized AVD `FlowResult` response.
+- Produces: legal authoritative stages/checkpoints/jobs while preserving `LOCAL_DEVICE` behavior.
 
-- [ ] **Step 1: Extend runtime tests for REMOTE_AVD automatic path**
+- [ ] **Step 1: Write remote-vs-local routing regression tests**
 
-Add a fake worker process returning staged responses and assert the first remote AVD job uses:
+For `REMOTE_AVD`, first job flow must use AVD automation commands rather than the phone-only sequence. For `LOCAL_DEVICE`, keep the existing sequence:
 
 ```text
-PREPARE_INSTAGRAM
-AUTOMATE_INSTAGRAM
+PREPARE_TEXT -> OPEN_PACKAGE -> REPORT_WAITING_HUMAN
 ```
 
-instead of the existing phone-style `PREPARE_TEXT -> OPEN_PACKAGE -> REPORT_WAITING_HUMAN` sequence.
+- [ ] **Step 2: Keep gateway isolation explicit**
 
-Keep a separate regression test asserting a `LOCAL_DEVICE` job still uses the existing phone command sequence.
+`RunnerGateway.send()` already forwards worker-process commands for `REMOTE_AVD` and restricts `LOCAL_DEVICE` with `_LOCAL_ACTIONS`. Add tests proving:
 
-- [ ] **Step 2: Add error codes required by the approved spec**
+```text
+REMOTE_AVD + AUTOMATE_INSTAGRAM -> forwarded
+LOCAL_DEVICE + AUTOMATE_INSTAGRAM -> ValueError
+```
+
+Do not add AVD automation actions to `_LOCAL_ACTIONS`.
+
+- [ ] **Step 3: Add approved error codes**
 
 Extend `_ALLOWED_ERROR_CODES` in `service.py` with:
 
@@ -686,104 +743,151 @@ ACTION_BLOCKED
 ACCOUNT_DISABLED
 ```
 
-Map worker results:
+- [ ] **Step 4: Implement legal Instagram stage transitions**
+
+Because current state machine does not allow `RUNNER_ASSIGNED -> IG_CREATED` directly, use existing legal intermediate states:
 
 ```text
-waiting_human -> WAITING_HUMAN + OPEN checkpoint
-needs_confirmation/UI_CHANGED -> NEEDS_CONFIRMATION
-retry_pending/RATE_LIMITED/ACTION_BLOCKED -> RETRY_PENDING
-error/ACCOUNT_DISABLED -> ERROR
-completed Instagram -> IG_CREATED
-completed Threads -> THREADS_CREATED then START_ACP
+RUNNER_ASSIGNED
+  -> IG_READY_FOR_HUMAN
+  -> WAITING_HUMAN        when a protected step appears
 ```
 
-Use existing legal state-machine transitions only; do not add AVD-only AccountStage values.
+When an AVD flow positively completes without needing a human checkpoint:
 
-- [ ] **Step 3: Add remote-A VD command helpers without changing local gateway allowlist**
+```text
+RUNNER_ASSIGNED
+  -> IG_READY_FOR_HUMAN
+  -> IG_CREATED
+```
 
-`RunnerGateway.send()` already forwards arbitrary actions for `REMOTE_AVD` and restricts `LOCAL_DEVICE` to `_LOCAL_ACTIONS`. Add a regression test proving `AUTOMATE_INSTAGRAM` is accepted for `REMOTE_AVD` but rejected for `LOCAL_DEVICE`; no broadening of `_LOCAL_ACTIONS`.
+When resuming from human checkpoint:
 
-- [ ] **Step 4: Implement automatic human checkpoint observation**
+```text
+WAITING_HUMAN -> IG_CREATED
+```
 
-When a remote AVD account is in `WAITING_HUMAN`, runtime issues:
+No new AccountStage is introduced.
+
+- [ ] **Step 5: Implement legal Threads transitions**
+
+Similarly:
+
+```text
+IG_CREATED
+  -> THREADS_READY_FOR_HUMAN
+  -> WAITING_HUMAN        when protected step appears
+```
+
+or automatic completion:
+
+```text
+IG_CREATED
+  -> THREADS_READY_FOR_HUMAN
+  -> THREADS_CREATED
+```
+
+Human-resume path remains:
+
+```text
+WAITING_HUMAN -> THREADS_CREATED
+```
+
+- [ ] **Step 6: Map worker statuses exactly**
+
+```text
+waiting_human -> open/update checkpoint and WAITING_HUMAN
+needs_confirmation + UI_CHANGED -> NEEDS_CONFIRMATION
+retry_pending + RATE_LIMITED/ACTION_BLOCKED -> RETRY_PENDING
+error + ACCOUNT_DISABLED -> ERROR
+completed Instagram -> IG_CREATED, job desired_action=PREPARE_THREADS/AUTOMATE_THREADS
+completed Threads -> THREADS_CREATED, then reuse START_ACP
+```
+
+- [ ] **Step 7: Add observation-only automatic resume**
+
+For remote AVD jobs in `WAITING_HUMAN`, runtime sends:
 
 ```python
 self._command(job, "OBSERVE_CHECKPOINT", {"flow": "instagram"})
 ```
 
-or `threads` according to checkpoint type. If result is still `waiting_human`, only heartbeat/lease is refreshed. If positively `completed`, resolve the checkpoint and advance. Manual `VERIFY_CHECKPOINT` remains supported as fallback.
+or `threads` according to checkpoint type. `waiting_human` only refreshes lease/heartbeat. A positive `completed` resolves the checkpoint and legally advances the account. Manual `VERIFY_CHECKPOINT` remains as fallback.
 
-- [ ] **Step 5: Ensure Threads completion starts ACP OAuth on the same job**
+- [ ] **Step 8: Preserve existing OAuth path**
 
-Reuse existing `_start_activation()` and `OPEN_URL` behavior; do not duplicate OAuth logic. Add assertion that `THREADS_CREATED` causes desired action `START_ACP`/activation and not a new account lease.
+After `THREADS_CREATED`, call existing `_start_activation()` and `OPEN_URL`; do not duplicate OAuth implementation. Test that the same job proceeds to `START_ACP`/activation.
 
-- [ ] **Step 6: Run controller integration tests and commit**
+- [ ] **Step 9: Run controller tests and commit**
 
 ```bash
 python3 -m unittest \
   tests.test_factory_v2_runtime \
   tests.test_factory_v2_checkpoint_retry \
   tests.test_factory_v2_dual_scheduler -v
-git add core/factory_v2/runtime.py core/factory_v2/service.py core/factory_v2/runner_gateway.py tests/test_factory_v2_runtime.py
+git add core/factory_v2/runtime.py core/factory_v2/service.py core/factory_v2/runner_gateway.py tests/test_factory_v2_runtime.py tests/test_factory_v2_checkpoint_retry.py
 git commit -m "feat: drive remote AVD automation from controller"
 ```
 
-Expected: PASS, with `LOCAL_DEVICE` regression green.
+Expected: PASS and phone regression unchanged.
 
 ---
 
-### Task 8: Restart reconciliation, bounded retries, and idempotency regression
+### Task 8: Restart reconciliation, lost-ACK safety, and bounded retries
 
 **Files:**
 - Modify: `workers/account_factory_worker.py`
-- Modify: `core/factory_v2/runtime.py`
+- Modify: platform flows as needed
 - Modify: `tests/test_factory_v2_avd_worker_agent.py`
+- Modify: `tests/test_factory_v2_ui_driver.py`
 - Modify: `tests/test_factory_v2_runtime.py`
 
 **Interfaces:**
-- Consumes: current UI snapshot + authoritative account/job stage.
-- Produces safe recovery decisions without blindly replaying mutating actions.
+- Consumes: current UI snapshot plus authoritative DB stage.
+- Produces: no-op/recovery decisions instead of blind replay.
 
 - [ ] **Step 1: Write restart reconciliation test**
 
 Scenario:
 
 ```text
-DB stage = RUNNER_ASSIGNED
-current AVD UI = IG_PROFILE_SETUP with username already present
+DB/account job says Instagram automation is active
 worker process restarted
+current AVD UI is IG_PROFILE_SETUP
+username already equals sample_user
 ```
 
-Expected: worker detects actual screen, treats already-applied field value as no-op, and resumes from the current screen rather than replaying signup entry navigation.
+Expected: detector reconciles current UI, username set becomes `noop`, and signup-entry navigation is not replayed.
 
-- [ ] **Step 2: Write lost-ACK duplicate command test**
+- [ ] **Step 2: Write lost-ACK test**
 
-Simulate the UI already being on a valid successor when the controller retries. Expected: postcondition detection returns completion/no-op without a second mutating tap.
+If a command response was lost but UI is already on the expected successor, retry must return completion/no-op without a second mutation.
 
-- [ ] **Step 3: Implement recovery observation state**
+- [ ] **Step 3: Enforce bounded retry**
 
-Keep only in-memory worker metadata:
+Add a fake driver that always returns `postcondition_failed`. Assert exactly three total mutation attempts and final:
 
 ```python
-self.flow: str | None
-self.last_known_screen: str | None
-self.last_safe_step: str | None
+FlowResult(
+    status="needs_confirmation",
+    screen=current.kind,
+    reason="UI_CHANGED",
+    last_safe_step=last_safe_step,
+)
 ```
 
-On each `AUTOMATE_*` invocation, detect current UI before taking any mutation. Never infer failure solely from a missing prior ACK.
+- [ ] **Step 4: Disable rapid retries for rate/block errors**
 
-- [ ] **Step 4: Verify bounded retry policy**
-
-Add tests that a safe tap can occur at most 3 attempts total and then returns `needs_confirmation` with `UI_CHANGED`. `RATE_LIMITED`/`ACTION_BLOCKED` must not rapid-retry.
+`RATE_LIMITED` and `ACTION_BLOCKED` return `retry_pending` immediately; the flow must not tap/reopen in a tight loop.
 
 - [ ] **Step 5: Run recovery tests and commit**
 
 ```bash
 python3 -m unittest \
   tests.test_factory_v2_avd_worker_agent \
-  tests.test_factory_v2_runtime \
-  tests.test_factory_v2_ui_driver -v
-git add workers/account_factory_worker.py core/factory_v2/runtime.py tests/test_factory_v2_avd_worker_agent.py tests/test_factory_v2_runtime.py
+  tests.test_factory_v2_ui_driver \
+  tests.test_factory_v2_runtime -v
+git add workers/account_factory_worker.py core/factory_v2/ui_automation tests/test_factory_v2_avd_worker_agent.py tests/test_factory_v2_ui_driver.py tests/test_factory_v2_runtime.py
 git commit -m "fix: make AVD automation restart-safe and idempotent"
 ```
 
@@ -798,20 +902,20 @@ Expected: PASS.
 - Modify: `scripts/verify_account_factory_dual_runner.sh`
 
 **Interfaces:**
-- Consumes: complete implementation from Tasks 1–8.
-- Produces: repeatable regression command and documented pilot procedure.
+- Consumes: implementation from Tasks 1–8.
+- Produces: repeatable regression gate and pilot procedure.
 
-- [ ] **Step 1: Add Python tests to verification script**
+- [ ] **Step 1: Update verification script to include new Python tests**
 
-Ensure the script runs the repository's existing Python suite plus the new focused tests. Do not remove Android verification already present.
+Keep all existing Python and Android gates; add no secret-printing commands.
 
-- [ ] **Step 2: Run the full Python suite**
+- [ ] **Step 2: Run full Python suite**
 
 ```bash
 python3 -m unittest discover -s tests -p 'test*.py' -v
 ```
 
-Expected: all tests PASS with no new credential/raw-XML output.
+Expected: all tests PASS.
 
 - [ ] **Step 3: Run Android unit tests and APK build with JDK 17**
 
@@ -823,20 +927,20 @@ JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
   --no-daemon --max-workers=2 --console=plain
 ```
 
-Expected: `BUILD SUCCESSFUL`.
+Expected: `BUILD SUCCESSFUL`. Do not claim this gate is green until fresh output is observed.
 
-- [ ] **Step 4: Run the repository verification script**
+- [ ] **Step 4: Run repository verification script**
 
 ```bash
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
 bash scripts/verify_account_factory_dual_runner.sh
 ```
 
-Expected: Python and Android gates PASS. Do not claim green until this fresh output is observed.
+Expected: Python and Android gates PASS.
 
-- [ ] **Step 5: Update runbook with AVD pilot commands**
+- [ ] **Step 5: Document real AVD pilot setup**
 
-Document:
+Runbook must include:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
@@ -845,28 +949,28 @@ export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 adb devices
 ```
 
-Then confirm `acp-worker-01` exists, official Instagram/Threads packages are installed, Controller is started with the existing Factory key, and create a single account targeting `AUTO_AVD`/the selected remote worker via the existing UI/API.
+Verify `acp-worker-01`, official Instagram/Threads packages, controller configuration, then create one account targeted to `AUTO_AVD` or the selected `REMOTE_AVD` worker through the existing product surface.
 
-- [ ] **Step 6: Real pilot acceptance checklist**
+- [ ] **Step 6: Execute pilot acceptance checklist**
 
-Observe, without automating protected steps:
+Observe:
 
 ```text
 REMOTE_AVD assigned
 Instagram auto-launches
 known safe navigation/profile preparation runs
-protected step -> WAITING_HUMAN with zero further mutation
-operator completes protected step manually
-auto-resume requires known safe successor
+protected screen -> WAITING_HUMAN and zero further mutation
+operator handles protected step manually
+worker auto-resumes only after a known safe successor
 IG_CREATED
 Threads auto-launches
 known safe Threads flow runs
 THREADS_CREATED
-ACP OAuth opens
+existing ACP OAuth opens
 ACP_ACTIVE after official OAuth completes
 ```
 
-Additionally verify an unknown screen produces `NEEDS_CONFIRMATION`, not blind tapping.
+Force or simulate one unknown fixture/UI state and confirm `NEEDS_CONFIRMATION`, not blind tapping.
 
 - [ ] **Step 7: Commit verification/runbook changes**
 
@@ -879,14 +983,14 @@ git commit -m "docs: add AVD automation pilot verification"
 
 ## Final Review Gate
 
-Before declaring this phase complete, inspect:
+Run:
 
 ```bash
 git status --short
 git log --oneline --decorate -12
 ```
 
-Then verify these invariants from tests and the real pilot:
+The phase is complete only if tests/pilot demonstrate all of these:
 
 ```text
 no password automation
@@ -897,8 +1001,8 @@ unknown UI never mutates
 protected UI stops immediately
 human auto-resume requires a positively known successor
 controller remains business-stage authority
-LOCAL_DEVICE behavior is unchanged
-REMOTE_AVD retries are bounded/idempotent
-ACP OAuth reuses existing activation path
+LOCAL_DEVICE behavior remains unchanged
+REMOTE_AVD retries are bounded and replay-safe
+ACP OAuth uses the existing activation path
 no merge to main
 ```
