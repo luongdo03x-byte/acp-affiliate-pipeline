@@ -237,9 +237,26 @@ có). Ngay sau `_save_channel_selection(conn, post_id, channel_ids)`, thêm:
 `post_id` đã tồn tại trong DB tại điểm này (INSERT đã chạy ngay phía
 trên) — `persist_run()`'s FK hợp lệ.
 
-**`_create_post_from_manual_affiliate_product()`** (hàm chị em, dùng
-chung phần lớn logic — xem `core/pipeline.py` hiện có) áp dụng đúng thay
-đổi tương tự, cùng cấu trúc.
+**`create_post_from_manual_affiliate_product()`** (đã kiểm tra
+`core/pipeline.py` hiện có): hàm này chỉ là **wrapper mỏng gọi thẳng**
+`_create_post_from_raw_product(..., prebuilt_affiliate_link=affiliate_url)`
+— không có logic tạo `post` riêng, nên **tự động thừa hưởng** thay đổi
+trên mà không cần sửa gì thêm. `create_post_for_product()` cũng vậy (gọi
+thẳng `_create_post_from_raw_product()`).
+
+**Ngoài phạm vi E6 P0 — `generate_content()` (job handler
+`@handler("GENERATE_CONTENT")`)**: đây là điểm tạo `post` **thứ 3**, dùng
+cho luồng `plan_content()` (chọn ứng viên tự động qua `job_queue`, khác
+hẳn luồng thủ công `/sanpham`) — hàm này viết `INSERT INTO post` **riêng**
+(không gọi `_create_post_from_raw_product()`), trùng lặp phần lớn logic
+nhưng không dùng chung code. Nối Content Engine v2 vào đây cần lặp lại
+gần như nguyên xi thay đổi ở §6 cho 1 điểm code hoàn toàn tách biệt — chi
+phí không tương xứng với 1 sub-project đã đủ lớn. **P0 giữ nguyên
+`generate_content()` dùng `content.generate()` (v1) vô điều kiện**, kể cả
+khi flag bật — bài sinh qua đường `plan_content()` tự động sẽ không có
+Content Engine v2 cho tới khi có 1 task P1 riêng hợp nhất 2 điểm tạo bài
+này lại (bản thân sự trùng lặp này đã tồn tại từ trước E6, không phải nợ
+kỹ thuật E6 tạo ra).
 
 ## 7. `/duyet` — hiển thị variant (`web/templates/review.html`)
 
