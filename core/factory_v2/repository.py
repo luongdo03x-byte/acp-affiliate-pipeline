@@ -35,6 +35,14 @@ class FactoryRepository:
             "SELECT * FROM factory_batch WHERE id=?", (batch_id,)
         ).fetchone())
 
+    def latest_batch(self) -> dict | None:
+        return _dict(self.conn.execute(
+            """SELECT * FROM factory_batch
+               WHERE status IN ('READY','RUNNING','PAUSED')
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1"""
+        ).fetchone())
+
     def insert_accounts(self, rows: Iterable[Mapping[str, Any]]) -> None:
         rows = list(rows)
         if not rows:
@@ -55,6 +63,21 @@ class FactoryRepository:
     def list_accounts(self, batch_id: str) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM factory_account WHERE batch_id=? ORDER BY sequence", (batch_id,)
+        ).fetchall()]
+
+    def query_accounts(self, *, batch_id: str | None = None, stage: str | None = None) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if batch_id:
+            clauses.append("batch_id=?")
+            params.append(batch_id)
+        if stage:
+            clauses.append("stage=?")
+            params.append(stage)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return [dict(r) for r in self.conn.execute(
+            f"SELECT * FROM factory_account {where} ORDER BY batch_id, sequence",
+            tuple(params),
         ).fetchall()]
 
     def update_account_stage(
@@ -86,6 +109,11 @@ class FactoryRepository:
         return _dict(self.conn.execute(
             "SELECT * FROM factory_worker WHERE id=?", (worker_id,)
         ).fetchone())
+
+    def list_workers(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM factory_worker ORDER BY id"
+        ).fetchall()]
 
     def upsert_worker_heartbeat(self, worker_id: str, **values) -> dict:
         if not values:
@@ -122,9 +150,32 @@ class FactoryRepository:
 
     def create_checkpoint(self, row: Mapping[str, Any]) -> dict:
         _insert(self.conn, "factory_checkpoint", row)
+        return self.get_checkpoint(row["id"])
+
+    def get_checkpoint(self, checkpoint_id: str) -> dict | None:
         return _dict(self.conn.execute(
-            "SELECT * FROM factory_checkpoint WHERE id=?", (row["id"],)
+            "SELECT * FROM factory_checkpoint WHERE id=?", (checkpoint_id,)
         ).fetchone())
+
+    def list_checkpoints(
+        self,
+        *,
+        batch_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if batch_id:
+            clauses.append("batch_id=?")
+            params.append(batch_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return [dict(r) for r in self.conn.execute(
+            f"SELECT * FROM factory_checkpoint {where} ORDER BY created_at, id",
+            tuple(params),
+        ).fetchall()]
 
     def resolve_checkpoint(
         self,
@@ -140,13 +191,16 @@ class FactoryRepository:
                WHERE id=?""",
             (resolved_at, resolution, resolved_by_device_id, checkpoint_id),
         )
-        return _dict(self.conn.execute(
-            "SELECT * FROM factory_checkpoint WHERE id=?", (checkpoint_id,)
-        ).fetchone())
+        return self.get_checkpoint(checkpoint_id)
 
     def insert_resource_sample(self, row: Mapping[str, Any]) -> dict:
         _insert(self.conn, "factory_resource_sample", row)
         sample_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         return _dict(self.conn.execute(
             "SELECT * FROM factory_resource_sample WHERE id=?", (sample_id,)
+        ).fetchone())
+
+    def latest_resource_sample(self) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_resource_sample ORDER BY timestamp DESC, id DESC LIMIT 1"
         ).fetchone())
