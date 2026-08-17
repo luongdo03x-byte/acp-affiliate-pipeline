@@ -205,6 +205,11 @@ class FactoryService:
         return self.repo.get_checkpoint(checkpoint_id)
 
     def retry_account(self, account_id: str) -> dict:
+        account = self.repo.get_account(account_id)
+        if account is None:
+            raise KeyError(account_id)
+        if account["stage"] == AccountStage.RETRY_PENDING.value:
+            return account
         return self.transition_account(account_id, AccountStage.RETRY_PENDING)
 
     def stop_account(self, account_id: str) -> dict:
