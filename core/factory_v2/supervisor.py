@@ -96,10 +96,12 @@ class WorkerSupervisor:
         online = set(self.avd.list_online_devices())
         workers = self.repo.conn.execute(
             """SELECT * FROM factory_worker
-               WHERE state IN ('READY','RUNNING','WAITING_HUMAN')
+               WHERE state IN ('READY','RUNNING','WAITING_HUMAN','RECOVERING')
                ORDER BY id"""
         ).fetchall()
         for worker in workers:
+            if worker["state"] == "RECOVERING" and worker["last_error"] == "manual restart requested":
+                continue
             serial = worker["adb_serial"]
             if not serial or serial not in online or not self.avd.is_boot_completed(serial):
                 continue
@@ -111,11 +113,18 @@ class WorkerSupervisor:
                 if heartbeat.get("worker_id") != worker_id or heartbeat.get("adb_serial") != serial:
                     raise RuntimeError("worker heartbeat identity mismatch")
                 progress = heartbeat.get("last_progress_at") or now()
+                recovered_state = worker["state"]
+                if (
+                    worker["state"] == "RECOVERING"
+                    and not worker["current_job_id"]
+                    and not worker["current_account_id"]
+                ):
+                    recovered_state = "READY"
                 self.repo.conn.execute(
                     """UPDATE factory_worker
-                       SET last_heartbeat_at=?, last_progress_at=?, last_error=NULL
+                       SET state=?, last_heartbeat_at=?, last_progress_at=?, last_error=NULL
                        WHERE id=?""",
-                    (now(), progress, worker_id),
+                    (recovered_state, now(), progress, worker_id),
                 )
             except Exception:
                 self.reconcile_missing_heartbeat(worker_id)
