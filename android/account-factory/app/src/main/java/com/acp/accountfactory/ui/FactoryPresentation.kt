@@ -3,7 +3,7 @@ package com.acp.accountfactory.ui
 import java.time.Duration
 import java.time.Instant
 
-enum class AccountAction { NONE, RETRY, CONNECT_OAUTH }
+enum class AccountAction { NONE, RETRY, RETRY_ACP }
 
 fun capacityLabel(state: String?): String = when (state?.uppercase()) {
     "GREEN" -> "Ổn định"
@@ -17,8 +17,7 @@ fun checkpointActionsEnabled(status: String): Boolean =
     status.uppercase() in setOf("OPEN", "SNOOZED")
 
 fun primaryAccountAction(stage: String, errorCode: String?): AccountAction = when {
-    stage == "THREADS_CREATED" -> AccountAction.CONNECT_OAUTH
-    stage == "RETRY_PENDING" && errorCode == "OAUTH_FAILED" -> AccountAction.CONNECT_OAUTH
+    stage == "RETRY_PENDING" && errorCode == "OAUTH_FAILED" -> AccountAction.RETRY_ACP
     stage in setOf("ERROR", "RETRY_PENDING", "NEEDS_CONFIRMATION") -> AccountAction.RETRY
     else -> AccountAction.NONE
 }
