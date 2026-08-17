@@ -1,7 +1,7 @@
 """Shopee product cache and confirmed-product primitives.
 
-This module owns only Shopee-specific product intelligence.  It does not crawl,
-create posts, create affiliate links, or publish.  Cache rows are keyed by the
+This module owns only Shopee-specific product intelligence. It does not crawl,
+create posts, create affiliate links, or publish. Cache rows are keyed by the
 canonical Shopee `(shop_id, item_id)` identity and always carry an observation
 source/timestamp so callers can distinguish cached data from realtime data.
 """
@@ -159,3 +159,119 @@ def get_metadata_cache(conn, product_url: str, *, max_age_seconds: int = CACHE_T
         return None
     current = now_dt or datetime.now(timezone.utc)
     return _cached_from_row(row, now_dt=current, max_age_seconds=max_age_seconds)
+
+
+def _metadata_from_raw(raw) -> ProductMetadata:
+    return ProductMetadata(
+        name=getattr(raw, "name", None),
+        current_price=getattr(raw, "current_price", None),
+        original_price=getattr(raw, "original_price", None),
+        image_url=getattr(raw, "image_url_original", None),
+        shop=getattr(raw, "merchant", None),
+    )
+
+
+def _validate_confirmed_raw(source, raw, metadata_source: str) -> ShopeeIdentity:
+    if metadata_source not in CACHE_SOURCES:
+        raise ShopeeProductError("Nguồn metadata Shopee không hợp lệ.")
+    if getattr(source, "name", None) != "manual_shopee":
+        raise ShopeeProductError("Confirmed Shopee upsert chỉ dùng cho manual_shopee.")
+    identity = identity_from_url(getattr(raw, "product_url", ""))
+    if str(getattr(raw, "external_product_id", "")) != identity.item_id:
+        raise ShopeeProductError("Mã sản phẩm không khớp canonical Shopee URL.")
+    if (not str(getattr(raw, "name", "") or "").strip() or
+            int(getattr(raw, "current_price", 0) or 0) <= 0 or
+            not str(getattr(raw, "image_url_original", "") or "").strip()):
+        raise ShopeeProductError("Thiếu tên, giá hoặc ảnh sản phẩm đã xác nhận.")
+    return identity
+
+
+def record_price_observation(conn, product_id: str, price: int, *, source: str,
+                             observed_at: str | None = None) -> bool:
+    """Normalize the latest Shopee price observation and return True on change.
+
+    `pipeline.upsert_one()` historically inserts one history row on every call.
+    For confirmed Shopee products we preserve that generic function, then collapse
+    the just-inserted row when the previous observation has the same price. This
+    keeps feed-provider sampling untouched while Phase 3 records Shopee history
+    only on insertion/price change and annotates the surviving row with source.
+    """
+    if source not in CACHE_SOURCES:
+        raise ShopeeProductError("Nguồn giá Shopee không hợp lệ.")
+    try:
+        amount = int(price)
+    except (TypeError, ValueError) as exc:
+        raise ShopeeProductError("Giá Shopee không hợp lệ.") from exc
+    if amount <= 0:
+        raise ShopeeProductError("Giá Shopee phải lớn hơn 0.")
+    observed = observed_at or now()
+    _parse_observed_at(observed)
+
+    rows = conn.execute("""SELECT id, price, source, observed_at
+                           FROM product_price_history
+                           WHERE product_id=? ORDER BY id DESC LIMIT 2""",
+                        (product_id,)).fetchall()
+    if not rows:
+        conn.execute("""INSERT INTO product_price_history (product_id, price, observed_at, source)
+                        VALUES (?,?,?,?)""", (product_id, amount, observed, source))
+        return True
+
+    latest = rows[0]
+    if latest["price"] != amount:
+        conn.execute("""INSERT INTO product_price_history (product_id, price, observed_at, source)
+                        VALUES (?,?,?,?)""", (product_id, amount, observed, source))
+        return True
+
+    if len(rows) > 1 and rows[1]["price"] == amount:
+        # The generic upsert just added a duplicate unchanged-price row.
+        conn.execute("DELETE FROM product_price_history WHERE id=?", (latest["id"],))
+        if rows[1]["source"] is None:
+            conn.execute("UPDATE product_price_history SET source=? WHERE id=?",
+                         (source, rows[1]["id"]))
+        return False
+
+    conn.execute("UPDATE product_price_history SET source=?, observed_at=? WHERE id=?",
+                 (source, observed, latest["id"]))
+    return True
+
+
+def upsert_confirmed_product(conn, source, raw, *, metadata_source: str,
+                             observed_at: str | None = None) -> str:
+    """Reuse the existing canonical Product upsert, then add Shopee semantics."""
+    identity = _validate_confirmed_raw(source, raw, metadata_source)
+    # Deferred import avoids a module cycle: pipeline imports other core modules
+    # and remains the owner of the existing generic Product upsert implementation.
+    from . import pipeline
+
+    product_id = pipeline.upsert_one(conn, source, raw)
+    record_price_observation(
+        conn, product_id, raw.current_price, source=metadata_source, observed_at=observed_at)
+    put_metadata_cache(
+        conn, identity.canonical_url, _metadata_from_raw(raw), metadata_source,
+        product_id=product_id, observed_at=observed_at)
+    return product_id
+
+
+def finalize_confirmed_product(conn, product_url: str, *, metadata: ProductMetadata,
+                               metadata_source: str, observed_at: str | None = None) -> str | None:
+    """Attach Phase 3 semantics after the legacy manual-post pipeline has upserted.
+
+    Returns the canonical Product id, or None if the post pipeline did not create
+    a matching manual_shopee Product. No Product is created here.
+    """
+    identity = identity_from_url(product_url)
+    if metadata_source not in CACHE_SOURCES:
+        raise ShopeeProductError("Nguồn metadata Shopee không hợp lệ.")
+    row = conn.execute("""SELECT id, current_price FROM product
+                          WHERE source='manual_shopee' AND merchant='shopee.vn'
+                            AND external_product_id=?""", (identity.item_id,)).fetchone()
+    if not row:
+        return None
+    if metadata.current_price:
+        record_price_observation(
+            conn, row["id"], metadata.current_price,
+            source=metadata_source, observed_at=observed_at)
+    put_metadata_cache(
+        conn, identity.canonical_url, metadata, metadata_source,
+        product_id=row["id"], observed_at=observed_at)
+    return row["id"]
