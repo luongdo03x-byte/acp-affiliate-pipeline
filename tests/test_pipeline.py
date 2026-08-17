@@ -1061,6 +1061,51 @@ def test_score_variant_hybrid_judge_raises_exception_falls_back():
         content_scoring.set_hybrid_judge(None)
 
 
+def test_select_best_variant_picks_highest_score():
+    print("\nselect_best_variant() chọn đúng variant final_score cao nhất")
+    from acp.core import content_scoring
+    v1 = _mk_test_variant(angle="DEAL_PRICE", hook="hook A độc lập", cta="cta A độc lập",
+                           main_message="Sản phẩm này rất đáng mua")
+    v2 = _mk_test_variant(angle="USE_CASE", hook="hook B độc lập hoàn toàn khác", cta="cta B độc lập")
+    v3 = _mk_test_variant(angle="PERSONAL_RECOMMENDATION", hook="hook C độc lập cũng khác nốt", cta="cta C độc lập")
+    result = content_scoring.select_best_variant([v1, v2, v3])
+    check("all_rejected là False", result["all_rejected"] is False, result)
+    check("best không phải v1 (v1 bị trừ điểm generic_opening)", result["best"] != v1, result)
+    check("có đủ 3 candidate", len(result["candidates"]) == 3, result)
+
+
+def test_select_best_variant_excludes_fact_unsafe():
+    print("\nselect_best_variant() loại variant fact-unsafe khỏi candidate")
+    from acp.core import content_scoring
+    v_unsafe = _mk_test_variant(main_message="Mình đã dùng 2 tuần rồi, thấy rất ổn.")
+    v_safe = _mk_test_variant(angle="USE_CASE", hook="hook an toàn khác hẳn", cta="cta an toàn khác hẳn")
+    result = content_scoring.select_best_variant([v_unsafe, v_safe])
+    check("best là variant an toàn", result["best"] == v_safe, result)
+    check("chỉ 1 candidate (loại unsafe)", len(result["candidates"]) == 1, result)
+
+
+def test_select_best_variant_all_rejected_when_all_fact_unsafe():
+    print("\nselect_best_variant() all_rejected=True khi tất cả fact-unsafe")
+    from acp.core import content_scoring
+    v1 = _mk_test_variant(main_message="Mình đã dùng 2 tuần rồi.")
+    v2 = _mk_test_variant(angle="USE_CASE", main_message="Mình đã thử rồi, thấy hiệu quả.")
+    result = content_scoring.select_best_variant([v1, v2])
+    check("all_rejected là True", result["all_rejected"] is True, result)
+    check("best là None", result["best"] is None, result)
+
+
+def test_select_best_variant_repetition_penalty_affects_choice():
+    print("\nselect_best_variant() trừ penalty khi variant trùng bài gần đây, có thể đổi kết quả BEST")
+    from acp.core import content_scoring
+    v_repeat = _mk_test_variant(angle="DEAL_PRICE", hook="hook lặp lại y hệt", cta="cta lặp lại y hệt")
+    v_fresh = _mk_test_variant(angle="USE_CASE", hook="Món này có công dụng khác biệt hoàn toàn",
+                                main_message="Dùng rất tiện trong nhiều tình huống",
+                                body=["Thiết kế gọn nhẹ dễ mang theo"], cta="Bạn nghĩ sao về sản phẩm này")
+    recent = [_mk_test_variant(hook="hook lặp lại y hệt", cta="cta lặp lại y hệt", angle="PERSONAL_RECOMMENDATION")]
+    result = content_scoring.select_best_variant([v_repeat, v_fresh], recent_variants=recent)
+    check("best là variant không trùng bài gần đây", result["best"] == v_fresh, result)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3548,6 +3593,10 @@ if __name__ == "__main__":
     test_build_hybrid_judge_prompt_fences_variant_text()
     test_score_variant_hybrid_judge_valid_json()
     test_score_variant_hybrid_judge_raises_exception_falls_back()
+    test_select_best_variant_picks_highest_score()
+    test_select_best_variant_excludes_fact_unsafe()
+    test_select_best_variant_all_rejected_when_all_fact_unsafe()
+    test_select_best_variant_repetition_penalty_affects_choice()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()

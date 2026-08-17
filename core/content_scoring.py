@@ -158,3 +158,30 @@ def _score_hybrid_judge(variant, rule_score: float) -> dict:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
     return default
+
+
+def select_best_variant(variants: list, recent_variants: list = None) -> dict:
+    """API cuối cùng E5/E6 sẽ gọi. PTYC mục 32: reject fact unsafe (đã
+    trong score_variant_hybrid()) -> rule penalty + AI judge (hybrid_score)
+    -> anti-repetition -> final_score -> chọn cao nhất.
+
+    Nếu tất cả variant fail fact safety -> all_rejected=True, best=None,
+    không tự chọn (không retry vô hạn, để E6/người vận hành ở /duyet tự
+    quyết định regenerate hay dùng tạm).
+    """
+    recent_variants = recent_variants or []
+    candidates = []
+    for v in variants:
+        h = score_variant_hybrid(v)
+        if not h["rules"].fact_safety_pass:
+            continue
+        penalty = repetition_penalty(v, recent_variants)
+        final_score = max(0.0, round(h["hybrid_score"] - penalty, 4))
+        candidates.append({"variant": v, "hybrid": h, "repetition_penalty": penalty, "final_score": final_score})
+
+    if not candidates:
+        return {"best": None, "all_rejected": True, "candidates": []}
+
+    best = max(candidates, key=lambda c: c["final_score"])
+    return {"best": best["variant"], "all_rejected": False,
+            "final_score": best["final_score"], "candidates": candidates}
