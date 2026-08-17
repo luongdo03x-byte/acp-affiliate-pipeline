@@ -2,6 +2,7 @@ import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.schema import ensure_schema
 from core.factory_v2.scheduler import Scheduler
@@ -49,6 +50,36 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         active = self.repo.get_active_job_for_account(assigned["account_id"])
         self.assertEqual("RECOVERING", active["state"])
         self.assertEqual("RECOVERING", self.repo.get_worker("worker-01")["state"])
+
+    def test_expired_human_checkpoint_with_dead_worker_requires_confirmation(self):
+        assigned = self.scheduler.assign_next("worker-01")
+        self.service.transition_account(assigned["account_id"], AccountStage.IG_READY_FOR_HUMAN)
+        self.service.transition_account(assigned["account_id"], AccountStage.WAITING_HUMAN)
+        now = datetime.now(timezone.utc)
+        stale = now - timedelta(minutes=5)
+        self.conn.execute(
+            "UPDATE factory_job SET state='WAITING_HUMAN', lease_expires_at=? WHERE id=?",
+            ((now - timedelta(seconds=5)).isoformat(timespec="seconds"), assigned["id"]),
+        )
+        self.conn.execute(
+            "UPDATE factory_worker SET state='WAITING_HUMAN', last_heartbeat_at=? WHERE id='worker-01'",
+            (stale.isoformat(timespec="seconds"),),
+        )
+
+        reconciled = self.scheduler.reconcile_expired_leases(now.isoformat(timespec="seconds"))
+
+        self.assertEqual([assigned["id"]], reconciled)
+        job = self.conn.execute("SELECT * FROM factory_job WHERE id=?", (assigned["id"],)).fetchone()
+        account = self.repo.get_account(assigned["account_id"])
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("EXPIRED", job["state"])
+        self.assertEqual(AccountStage.NEEDS_CONFIRMATION.value, account["stage"])
+        self.assertEqual(AccountStage.PROFILE_READY.value, account["last_safe_stage"])
+        self.assertIsNone(account["assigned_worker_id"])
+        self.assertIsNone(account["current_job_id"])
+        self.assertEqual("RECOVERING", worker["state"])
+        self.assertIsNone(worker["current_account_id"])
+        self.assertIsNone(worker["current_job_id"])
 
 
 if __name__ == "__main__":
