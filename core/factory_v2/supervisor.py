@@ -1,4 +1,9 @@
-"""Durable AVD worker supervision and adaptive pool control."""
+"""Durable AVD worker supervision and adaptive pool control.
+
+Only REMOTE_AVD runners belong to this supervisor. LOCAL_DEVICE runners are
+owned by the Android app heartbeat/command channel and must never be started,
+stopped, or marked missing based on ADB state.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +11,7 @@ import time
 
 from core.db import now
 
-from .models import AccountStage
+from .models import AccountStage, RunnerType
 from .resource_policy import CapacityState, classify_capacity, next_worker_target
 
 
@@ -47,8 +52,10 @@ class WorkerSupervisor:
     def _workers(self):
         placeholders = ",".join("?" for _ in _ACTIVE_STATES)
         return self.repo.conn.execute(
-            f"SELECT * FROM factory_worker WHERE state IN ({placeholders}) ORDER BY id",
-            _ACTIVE_STATES,
+            f"""SELECT * FROM factory_worker
+                WHERE runner_type=? AND state IN ({placeholders})
+                ORDER BY id""",
+            (RunnerType.REMOTE_AVD.value, *_ACTIVE_STATES),
         ).fetchall()
 
     def _is_stable(self, capacity: CapacityState) -> bool:
@@ -80,7 +87,9 @@ class WorkerSupervisor:
     def _promote_booted_starting_workers(self) -> None:
         online = set(self.avd.list_online_devices())
         workers = self.repo.conn.execute(
-            "SELECT * FROM factory_worker WHERE state='STARTING' ORDER BY id"
+            """SELECT * FROM factory_worker
+               WHERE runner_type='REMOTE_AVD' AND state='STARTING'
+               ORDER BY id"""
         ).fetchall()
         for worker in workers:
             serial = worker["adb_serial"]
@@ -96,7 +105,8 @@ class WorkerSupervisor:
         online = set(self.avd.list_online_devices())
         workers = self.repo.conn.execute(
             """SELECT * FROM factory_worker
-               WHERE state IN ('READY','RUNNING','WAITING_HUMAN','RECOVERING')
+               WHERE runner_type='REMOTE_AVD'
+                 AND state IN ('READY','RUNNING','WAITING_HUMAN','RECOVERING')
                ORDER BY id"""
         ).fetchall()
         for worker in workers:
@@ -210,7 +220,7 @@ class WorkerSupervisor:
         return SupervisorDecision("HOLD", capacity, target)
 
     def _start_one(self, capacity, target, workers):
-        active_names = {w["avd_name"] for w in workers}
+        active_names = {w["avd_name"] for w in workers if w["avd_name"]}
         configured_avds = sorted(self.avd.list_avds())
         candidates = [name for name in configured_avds if name.startswith("acp-worker-") and name not in active_names]
         if not candidates:
@@ -224,9 +234,10 @@ class WorkerSupervisor:
         intent_at = now()
         self.repo.conn.execute(
             """INSERT INTO factory_worker
-               (id,avd_name,adb_serial,state,started_at,last_error,draining)
-               VALUES (?,?,?, 'STARTING', ?, NULL, 0)
+               (id,runner_type,avd_name,adb_serial,state,started_at,last_error,draining)
+               VALUES (?, 'REMOTE_AVD', ?, ?, 'STARTING', ?, NULL, 0)
                ON CONFLICT(avd_name) DO UPDATE SET
+                   runner_type='REMOTE_AVD',
                    adb_serial=excluded.adb_serial,
                    state='STARTING',
                    started_at=excluded.started_at,
@@ -289,7 +300,9 @@ class WorkerSupervisor:
 
     def reconcile_on_boot(self) -> None:
         online = set(self.avd.list_online_devices())
-        workers = self.repo.conn.execute("SELECT * FROM factory_worker ORDER BY id").fetchall()
+        workers = self.repo.conn.execute(
+            "SELECT * FROM factory_worker WHERE runner_type='REMOTE_AVD' ORDER BY id"
+        ).fetchall()
         for worker in workers:
             if worker["state"] == "WAITING_HUMAN" and worker["current_account_id"]:
                 account = self.repo.get_account(worker["current_account_id"])
