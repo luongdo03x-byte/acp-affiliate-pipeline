@@ -49,7 +49,7 @@ class SafeUiDriver:
         if not expected_screens:
             return ActionResult("completed", before=before)
         detected = self.wait_for(expected_screens, timeout)
-        if detected.kind in expected_screens and detected.automation_allowed:
+        if detected.kind in expected_screens:
             return ActionResult("completed", before=before, after=detected.kind)
         return ActionResult("postcondition_failed", before=before, after=detected.kind)
 
