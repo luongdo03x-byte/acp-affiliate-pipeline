@@ -486,6 +486,111 @@ def test_generate_hooks_wrong_count_falls_back_to_template():
         content_hook.set_hook_generator(None)
 
 
+def test_rule_score_penalizes_long_hook_and_name_repeat():
+    print("\n_rule_score() trừ điểm hook dài và hook chứa tên sản phẩm, không hard-fail")
+    from acp.core import content_hook
+    facts = _mk_dog_bowl_facts()
+    short_clean = content_hook._rule_score("Bát cho cún có gì hay vậy?", facts)
+    long_hook = content_hook._rule_score(" ".join(["từ"] * 20), facts)
+    with_name = content_hook._rule_score(f"{facts.name} đáng chú ý không?", facts)
+    empty = content_hook._rule_score("", facts)
+    check("hook ngắn sạch điểm cao (gần 1.0)", short_clean >= 0.9, short_clean)
+    check("hook dài bị trừ điểm nhưng không về 0", 0 < long_hook < short_clean, long_hook)
+    check("hook chứa tên sản phẩm bị trừ điểm", with_name < short_clean, with_name)
+    check("hook rỗng điểm 0", empty == 0.0, empty)
+
+
+def test_score_hooks_no_judge_uses_rule_score():
+    print("\nscore_hooks() dùng _rule_score() khi chưa đăng ký judge")
+    from acp.core import content_hook
+    content_hook.set_hook_judge(None)
+    facts = _mk_dog_bowl_facts()
+    hooks = ["Bát cho cún có gì hay vậy?", ""]
+    scores = content_hook.score_hooks(hooks, "DEAL_PRICE", facts)
+    expected = [content_hook._rule_score(h, facts) for h in hooks]
+    check("khớp _rule_score() từng phần tử", scores == expected, scores)
+
+
+def test_score_hooks_judge_valid_json():
+    print("\nscore_hooks() dùng đúng JSON judge trả về khi hợp lệ")
+    from acp.core import content_hook
+    calls = []
+
+    def fake_judge(prompt):
+        calls.append(prompt)
+        return "[0.9, 0.3]"
+
+    content_hook.set_hook_judge(fake_judge)
+    try:
+        facts = _mk_dog_bowl_facts()
+        scores = content_hook.score_hooks(["hook A", "hook B"], "DEAL_PRICE", facts)
+        check("dùng đúng điểm từ judge", scores == [0.9, 0.3], scores)
+        check("chỉ gọi judge đúng 1 lần khi JSON hợp lệ ngay", len(calls) == 1, len(calls))
+    finally:
+        content_hook.set_hook_judge(None)
+
+
+def test_score_hooks_judge_raises_exception_falls_back():
+    print("\nscore_hooks() fallback rule-based khi judge tự ném exception")
+    from acp.core import content_hook
+
+    def crashing_judge(prompt):
+        raise ConnectionError("giả lập lỗi mạng")
+
+    content_hook.set_hook_judge(crashing_judge)
+    try:
+        facts = _mk_dog_bowl_facts()
+        hooks = ["hook A", "hook B"]
+        scores = content_hook.score_hooks(hooks, "DEAL_PRICE", facts)
+        expected = [content_hook._rule_score(h, facts) for h in hooks]
+        check("fallback về rule_score, không sập", scores == expected, scores)
+    finally:
+        content_hook.set_hook_judge(None)
+
+
+def test_select_best_hook_picks_highest_score():
+    print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
+    from acp.core import content_hook
+
+    def five_hook_generator(prompt):
+        return json.dumps(["hook thấp điểm", "hook cao điểm", "hook trung bình", "hook thấp 2", "hook trung bình 2"])
+
+    def score_judge(prompt):
+        return "[0.2, 0.95, 0.5, 0.1, 0.5]"
+
+    content_hook.set_hook_generator(five_hook_generator)
+    content_hook.set_hook_judge(score_judge)
+    try:
+        facts = _mk_dog_bowl_facts()
+        result = content_hook.select_best_hook("DEAL_PRICE", facts)
+        check("chọn đúng hook điểm cao nhất", result["hook"] == "hook cao điểm", result)
+        check("điểm khớp", result["score"] == 0.95, result)
+        check("all_rejected là False", result["all_rejected"] is False, result)
+    finally:
+        content_hook.set_hook_generator(None)
+        content_hook.set_hook_judge(None)
+
+
+def test_select_best_hook_all_rejected_when_every_hook_fails_rules():
+    print("\nselect_best_hook() trả all_rejected=True khi cả 5 hook đều fail check_hook_rules()")
+    from acp.core import content_hook
+
+    def bad_generator(prompt):
+        return json.dumps([
+            "Sản phẩm này rất tốt.", "Đây là lựa chọn hay.",
+            "Mình đã dùng thử rồi.", "", "Sản phẩm này đáng mua.",
+        ])
+
+    content_hook.set_hook_generator(bad_generator)
+    try:
+        facts = _mk_dog_bowl_facts()
+        result = content_hook.select_best_hook("DEAL_PRICE", facts)
+        check("all_rejected là True", result["all_rejected"] is True, result)
+        check("score là 0.0", result["score"] == 0.0, result)
+    finally:
+        content_hook.set_hook_generator(None)
+
+
 def test_build_extract_prompt_fences_untrusted_description():
     print("\n_build_extract_prompt() rào description trong delimiter, chống prompt injection")
     from acp.core import content_facts
@@ -2885,6 +2990,12 @@ if __name__ == "__main__":
     test_generate_hooks_valid_json_five_elements()
     test_generate_hooks_generator_raises_exception_falls_back_to_template()
     test_generate_hooks_wrong_count_falls_back_to_template()
+    test_rule_score_penalizes_long_hook_and_name_repeat()
+    test_score_hooks_no_judge_uses_rule_score()
+    test_score_hooks_judge_valid_json()
+    test_score_hooks_judge_raises_exception_falls_back()
+    test_select_best_hook_picks_highest_score()
+    test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
     test_build_product_facts_extractor_raises_exception_falls_back()
     test_check_fact_safety_none_caption_returns_empty()
