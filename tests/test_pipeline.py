@@ -1184,6 +1184,52 @@ def test_fit_to_length_truncates_when_body_too_long():
     check("vẫn có disclosure", "disclosure test" in result, result)
 
 
+def test_adapt_for_platform_dispatches_correctly():
+    print("\nadapt_for_platform() dispatch đúng theo tên platform")
+    from acp.core import content_platform
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    for platform in ("threads", "facebook", "instagram"):
+        direct = getattr(content_platform, f"adapt_for_{platform}")(v, link)
+        via_dispatch = content_platform.adapt_for_platform(v, platform, link)
+        check(f"dispatch {platform} khớp gọi trực tiếp", via_dispatch == direct, (platform, via_dispatch, direct))
+
+
+def test_adapt_for_platform_invalid_platform_raises_keyerror():
+    print("\nadapt_for_platform() raise KeyError với platform không hợp lệ")
+    from acp.core import content_platform
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    try:
+        content_platform.adapt_for_platform(v, "tiktok", link)
+        check("phải raise KeyError", False)
+    except KeyError:
+        check("raise đúng KeyError", True)
+
+
+def test_adapt_for_platforms_returns_only_requested_platforms():
+    print("\nadapt_for_platforms() chỉ trả đúng platform trong danh sách yêu cầu, không tự thêm")
+    from acp.core import content_platform
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    result_one = content_platform.adapt_for_platforms(v, ["threads"], link)
+    check("chỉ có đúng 1 platform", set(result_one.keys()) == {"threads"}, result_one.keys())
+
+
+def test_adapt_for_platforms_all_three_matches_individual_calls():
+    print("\nadapt_for_platforms() với đủ 3 platform khớp từng lời gọi riêng lẻ")
+    from acp.core import content_platform
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    result = content_platform.adapt_for_platforms(v, ["threads", "facebook", "instagram"], link)
+    check("khớp cả 3 platform với gọi riêng lẻ",
+          result == {
+              "threads": content_platform.adapt_for_threads(v, link),
+              "facebook": content_platform.adapt_for_facebook(v, link),
+              "instagram": content_platform.adapt_for_instagram(v, link),
+          }, result)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3682,6 +3728,10 @@ if __name__ == "__main__":
     test_platform_adapters_never_add_hashtag()
     test_fit_to_length_no_truncation_when_body_fits()
     test_fit_to_length_truncates_when_body_too_long()
+    test_adapt_for_platform_dispatches_correctly()
+    test_adapt_for_platform_invalid_platform_raises_keyerror()
+    test_adapt_for_platforms_returns_only_requested_platforms()
+    test_adapt_for_platforms_all_three_matches_individual_calls()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()

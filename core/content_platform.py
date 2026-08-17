@@ -39,3 +39,22 @@ def adapt_for_instagram(variant, affiliate_link: str, disclosure: str = None) ->
     lines = [variant.hook, "", variant.main_message, *variant.body, variant.cta]
     body = "\n".join(l for l in lines if l)
     return _fit_to_length(body, affiliate_link, disclosure, content.PLATFORM_MAX_LEN["instagram"])
+
+
+_ADAPTERS = {
+    "threads": adapt_for_threads,
+    "facebook": adapt_for_facebook,
+    "instagram": adapt_for_instagram,
+}
+
+
+def adapt_for_platform(variant, platform: str, affiliate_link: str, disclosure: str = None) -> str:
+    return _ADAPTERS[platform](variant, affiliate_link, disclosure)
+
+
+def adapt_for_platforms(variant, platforms: list, affiliate_link: str, disclosure: str = None) -> dict:
+    """PTYC mục 27 "dùng nội dung này cho tất cả kênh": tính riêng từng
+    platform trong danh sách được truyền vào -- không tự ý sinh cả 3 nếu
+    caller chỉ cần 1-2 platform.
+    """
+    return {p: adapt_for_platform(variant, p, affiliate_link, disclosure) for p in platforms}
