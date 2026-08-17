@@ -6,7 +6,7 @@ import secrets
 
 from core.db import transaction, ulid
 
-from .models import AccountStage
+from .models import AccountStage, RunnerType
 
 _ACTIVE_JOB_STATES = ("LEASED", "RUNNING", "WAITING_HUMAN", "RECOVERING")
 
@@ -29,6 +29,33 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _target_matches(account, worker) -> bool:
+    target = (account["execution_target"] or "AUTO_AVD").strip()
+    runner_type = worker["runner_type"] or RunnerType.REMOTE_AVD.value
+    if target == "AUTO_AVD":
+        return runner_type == RunnerType.REMOTE_AVD.value
+    if target.startswith("THIS_PHONE:"):
+        target = target.split(":", 1)[1]
+    if target == "AUTO":
+        return True
+    return target == worker["id"]
+
+
+def _resume_action(account) -> tuple[str, AccountStage] | None:
+    if account["stage"] == AccountStage.PROFILE_READY.value:
+        return "PREPARE_INSTAGRAM", AccountStage.RUNNER_ASSIGNED
+    if account["stage"] != AccountStage.RETRY_PENDING.value:
+        return None
+
+    safe = account["last_safe_stage"]
+    if safe == AccountStage.PROFILE_READY.value:
+        return "PREPARE_INSTAGRAM", AccountStage.RUNNER_ASSIGNED
+    if safe == AccountStage.IG_CREATED.value:
+        return "PREPARE_THREADS", AccountStage.THREADS_READY_FOR_HUMAN
+    # THREADS_CREATED retries belong to ACP activation, not a creation runner.
+    return None
+
+
 class Scheduler:
     def __init__(self, repository, service, *, lease_seconds: int = 120, live_heartbeat_seconds: int = 60):
         self.repo = repository
@@ -47,7 +74,7 @@ class Scheduler:
                 return None
 
             placeholders = ",".join("?" for _ in _ACTIVE_JOB_STATES)
-            account = conn.execute(
+            candidates = conn.execute(
                 f"""SELECT a.*
                     FROM factory_account a
                     JOIN factory_batch b ON b.id=a.batch_id
@@ -58,28 +85,41 @@ class Scheduler:
                           SELECT 1 FROM factory_job j
                           WHERE j.account_id=a.id AND j.state IN ({placeholders})
                       )
-                    ORDER BY a.batch_id, a.sequence
-                    LIMIT 1""",
+                    ORDER BY a.batch_id, a.sequence""",
                 _ACTIVE_JOB_STATES,
-            ).fetchone()
+            ).fetchall()
+
+            account = None
+            desired_action = None
+            target_stage = None
+            for candidate in candidates:
+                if not _target_matches(candidate, worker):
+                    continue
+                resume = _resume_action(candidate)
+                if resume is None:
+                    continue
+                account = candidate
+                desired_action, target_stage = resume
+                break
             if account is None:
                 return None
 
             job_id = ulid()
             leased_at = _iso(now_dt)
             lease_expires_at = _iso(now_dt + timedelta(seconds=self.lease_seconds))
+            runner_type = worker["runner_type"] or RunnerType.REMOTE_AVD.value
             conn.execute(
                 """INSERT INTO factory_job
-                   (id,account_id,worker_id,lease_token,state,desired_action,command_id,
+                   (id,account_id,worker_id,runner_type,lease_token,state,desired_action,command_id,
                     leased_at,lease_expires_at,heartbeat_at,attempt,started_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    job_id, account["id"], worker_id, secrets.token_urlsafe(24), "RUNNING",
-                    "PREPARE_INSTAGRAM", ulid(), leased_at, lease_expires_at,
-                    leased_at, 1, leased_at,
+                    job_id, account["id"], worker_id, runner_type,
+                    secrets.token_urlsafe(24), "RUNNING", desired_action, ulid(),
+                    leased_at, lease_expires_at, leased_at, 1, leased_at,
                 ),
             )
-            self.service.transition_account(account["id"], AccountStage.AVD_ASSIGNED)
+            self.service.transition_account(account["id"], target_stage)
             conn.execute(
                 """UPDATE factory_account
                    SET assigned_worker_id=?, current_job_id=?, updated_at=?
@@ -127,6 +167,37 @@ class Scheduler:
                    WHERE id=? AND current_job_id=?""",
                 (final_state, finished_at, job["worker_id"], job_id),
             )
+
+    def release_job_in_transaction(self, job_id: str, final_state: str) -> None:
+        """Release a job inside an already-open controller transaction."""
+        conn = self.repo.conn
+        finished_at = _iso(_utc_now())
+        final_state = str(final_state).upper()
+        job = conn.execute("SELECT * FROM factory_job WHERE id=?", (job_id,)).fetchone()
+        if job is None:
+            return
+        account = conn.execute(
+            "SELECT * FROM factory_account WHERE id=?", (job["account_id"],)
+        ).fetchone()
+        conn.execute(
+            "UPDATE factory_job SET state=?, finished_at=? WHERE id=?",
+            (final_state, finished_at, job_id),
+        )
+        if account is not None and account["current_job_id"] == job_id:
+            conn.execute(
+                """UPDATE factory_account
+                   SET assigned_worker_id=NULL, current_job_id=NULL, updated_at=?
+                   WHERE id=?""",
+                (finished_at, account["id"]),
+            )
+        conn.execute(
+            """UPDATE factory_worker
+               SET state='READY', current_account_id=NULL, current_job_id=NULL,
+                   processed_count=processed_count + CASE WHEN ?='COMPLETED' THEN 1 ELSE 0 END,
+                   last_progress_at=?
+               WHERE id=? AND current_job_id=?""",
+            (final_state, finished_at, job["worker_id"], job_id),
+        )
 
     def reconcile_expired_leases(self, now_iso: str) -> list[str]:
         conn = self.repo.conn
