@@ -178,21 +178,23 @@ git commit -m "feat: add factory v2 controller schema"
 - [ ] **Step 1: Write failing tests**
 
 ```python
+import unittest
+
 from core.factory_v2.models import AccountStage as S
 from core.factory_v2.state_machine import can_transition, safe_stage_after_transition
 
 
-def test_happy_path_and_no_shortcut():
-    assert can_transition(S.NEW, S.PROFILE_READY)
-    assert can_transition(S.IG_CREATED, S.THREADS_READY_FOR_HUMAN)
-    assert can_transition(S.THREADS_CREATED, S.ACP_CONNECTING)
-    assert can_transition(S.ACP_CONNECTING, S.ACP_ACTIVE)
-    assert not can_transition(S.NEW, S.ACP_ACTIVE)
+class FactoryV2StateMachineTests(unittest.TestCase):
+    def test_happy_path_and_no_shortcut(self):
+        self.assertTrue(can_transition(S.NEW, S.PROFILE_READY))
+        self.assertTrue(can_transition(S.IG_CREATED, S.THREADS_READY_FOR_HUMAN))
+        self.assertTrue(can_transition(S.THREADS_CREATED, S.ACP_CONNECTING))
+        self.assertTrue(can_transition(S.ACP_CONNECTING, S.ACP_ACTIVE))
+        self.assertFalse(can_transition(S.NEW, S.ACP_ACTIVE))
 
-
-def test_waiting_human_does_not_advance_safe_stage():
-    assert safe_stage_after_transition(S.IG_CREATED, S.WAITING_HUMAN) == S.IG_CREATED
-    assert safe_stage_after_transition(S.IG_CREATED, S.THREADS_CREATED) == S.THREADS_CREATED
+    def test_waiting_human_does_not_advance_safe_stage(self):
+        self.assertEqual(S.IG_CREATED, safe_stage_after_transition(S.IG_CREATED, S.WAITING_HUMAN))
+        self.assertEqual(S.THREADS_CREATED, safe_stage_after_transition(S.IG_CREATED, S.THREADS_CREATED))
 ```
 
 - [ ] **Step 2: Run and verify RED**
@@ -233,29 +235,31 @@ git commit -m "feat: add factory v2 account state machine"
 - [ ] **Step 1: Write failing generator tests**
 
 ```python
+import unittest
 from collections import Counter
+
 from core.factory_v2.identity import generate_profiles
 
 
-def test_default_batch_has_required_distribution():
-    rows = generate_profiles(50, seed=17082026)
-    assert len(rows) == 50
-    assert len({r.username for r in rows}) == 50
-    genders = Counter(r.gender_profile for r in rows)
-    assert genders == {"female": 35, "male": 15}
-    niches = Counter(r.primary_niche for r in rows)
-    assert niches == {
-        "beauty": 9, "fashion": 9, "tech": 8,
-        "home": 8, "fitness": 8, "food": 8,
-    }
+class FactoryV2IdentityTests(unittest.TestCase):
+    def test_default_batch_has_required_distribution(self):
+        rows = generate_profiles(50, seed=17082026)
+        self.assertEqual(50, len(rows))
+        self.assertEqual(50, len({r.username for r in rows}))
+        genders = Counter(r.gender_profile for r in rows)
+        self.assertEqual({"female": 35, "male": 15}, dict(genders))
+        niches = Counter(r.primary_niche for r in rows)
+        self.assertEqual({
+            "beauty": 9, "fashion": 9, "tech": 8,
+            "home": 8, "fitness": 8, "food": 8,
+        }, dict(niches))
 
-
-def test_usernames_are_normalized_and_not_factory_sequences():
-    rows = generate_profiles(50, seed=17082026)
-    assert all(r.username == r.username.lower() for r in rows)
-    assert all(" " not in r.username for r in rows)
-    assert all(not r.username.startswith("acp") for r in rows)
-    assert all(not r.username.startswith("user00") for r in rows)
+    def test_usernames_are_normalized_and_not_factory_sequences(self):
+        rows = generate_profiles(50, seed=17082026)
+        self.assertTrue(all(r.username == r.username.lower() for r in rows))
+        self.assertTrue(all(" " not in r.username for r in rows))
+        self.assertTrue(all(not r.username.startswith("acp") for r in rows))
+        self.assertTrue(all(not r.username.startswith("user00") for r in rows))
 ```
 
 - [ ] **Step 2: Run and verify RED**
@@ -274,7 +278,7 @@ Use avatar mix target 60/40 by assigning exactly 30 `illustration` and 20 `objec
 
 - [ ] **Step 4: Add collision test**
 
-Add a test that monkeypatches or supplies a reduced name pool so collisions occur, then asserts the generator selects another natural candidate before using digits.
+Add a `unittest.TestCase` method that supplies a reduced injectable name pool so collisions occur, then assert the generator selects another natural candidate before using digits. Make the pool injectable through a small `IdentityPools` dataclass rather than monkeypatching module globals.
 
 - [ ] **Step 5: Run tests**
 
@@ -312,7 +316,7 @@ def test_create_batch_persists_50_profile_ready_accounts(self):
     self.assertEqual(50, len({a["username"] for a in accounts}))
 ```
 
-Also assert that `last_safe_stage == PROFILE_READY` and no sensitive credential columns exist in the schema.
+Place this method inside `FactoryV2ServiceTests(unittest.TestCase)`. Also assert that `last_safe_stage == PROFILE_READY` and no sensitive credential columns exist in the schema.
 
 - [ ] **Step 2: Run and verify RED**
 
