@@ -61,7 +61,7 @@ class FactoryV2RunnerCommandApiTests(unittest.TestCase):
             self.job, action, {"package": "com.instagram.android"}
         )
 
-    def test_next_command_is_delivered_once(self):
+    def test_next_command_is_delivered_once_while_delivery_is_fresh(self):
         command = self._queue()
         url = f"/api/factory/v2/runners/{self.worker['id']}/commands/next"
 
@@ -71,6 +71,21 @@ class FactoryV2RunnerCommandApiTests(unittest.TestCase):
         self.assertEqual(200, first.status_code)
         self.assertEqual(command["command_id"], first.get_json()["command"]["id"])
         self.assertIsNone(second.get_json()["command"])
+
+    def test_stale_delivered_command_is_redelivered_after_runner_restart(self):
+        command = self._queue()
+        self.conn.execute(
+            """UPDATE factory_runner_command
+               SET status='DELIVERED', delivered_at='2000-01-01T00:00:00+00:00'
+               WHERE id=?""",
+            (command["command_id"],),
+        )
+        url = f"/api/factory/v2/runners/{self.worker['id']}/commands/next"
+
+        res = self.client.get(url, headers=self.auth)
+
+        self.assertEqual(200, res.status_code)
+        self.assertEqual(command["command_id"], res.get_json()["command"]["id"])
 
     def test_result_rejects_stage_injection(self):
         command = self.gateway.send(self.job, "OBSERVE_FOREGROUND")
