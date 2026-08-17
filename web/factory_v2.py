@@ -6,8 +6,9 @@ import os
 
 from flask import abort, jsonify, request
 
-from core.db import connect
+from core.db import connect, ulid
 from core.factory_v2.repository import FactoryRepository
+from core.factory_v2.service import FactoryService
 
 
 FACTORY_KEY_HEADER = "X-ACP-Factory-Key"
@@ -108,6 +109,10 @@ def _dashboard(repo: FactoryRepository) -> dict:
     }
 
 
+def _accepted(status: str, command_id: str | None = None):
+    return jsonify(ok=True, command_id=command_id or ulid(), status=status), 202
+
+
 def register_factory_v2_routes(app):
     @app.get("/api/factory/v2/dashboard")
     def factory_v2_dashboard():
@@ -180,6 +185,159 @@ def register_factory_v2_routes(app):
                 ok=True,
                 checkpoints=[_pick(row, _CHECKPOINT_FIELDS) for row in rows],
             )
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/batches/<batch_id>/pause")
+    def factory_v2_pause_batch(batch_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                batch = service.pause_batch(batch_id)
+            except KeyError:
+                return jsonify(ok=False, error="Batch không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(batch["status"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/batches/<batch_id>/resume")
+    def factory_v2_resume_batch(batch_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                batch = service.resume_batch(batch_id)
+            except KeyError:
+                return jsonify(ok=False, error="Batch không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(batch["status"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/checkpoints/<checkpoint_id>/continue")
+    def factory_v2_continue_checkpoint(checkpoint_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                result = service.request_checkpoint_verification(checkpoint_id)
+            except KeyError:
+                return jsonify(ok=False, error="Checkpoint không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(result["status"], result["command_id"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/checkpoints/<checkpoint_id>/retry")
+    def factory_v2_retry_checkpoint(checkpoint_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                result = service.request_checkpoint_verification(
+                    checkpoint_id, action="RETRY_CHECKPOINT"
+                )
+            except KeyError:
+                return jsonify(ok=False, error="Checkpoint không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(result["status"], result["command_id"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/checkpoints/<checkpoint_id>/snooze")
+    def factory_v2_snooze_checkpoint(checkpoint_id):
+        _require_factory_key()
+        data = request.get_json(silent=True) or {}
+        try:
+            minutes = int(data.get("minutes"))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="minutes phải là 10, 30 hoặc 60"), 400
+        if minutes not in {10, 30, 60}:
+            return jsonify(ok=False, error="minutes phải là 10, 30 hoặc 60"), 400
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                checkpoint = service.snooze_checkpoint(checkpoint_id, minutes)
+            except KeyError:
+                return jsonify(ok=False, error="Checkpoint không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(checkpoint["status"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/accounts/<account_id>/stop")
+    def factory_v2_stop_account(account_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                account = service.stop_account(account_id)
+            except KeyError:
+                return jsonify(ok=False, error="Account không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(account["stage"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/accounts/<account_id>/retry")
+    def factory_v2_retry_account(account_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                account = service.retry_account(account_id)
+            except KeyError:
+                return jsonify(ok=False, error="Account không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(account["stage"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/workers/<worker_id>/drain")
+    def factory_v2_drain_worker(worker_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                worker = service.request_worker_drain(worker_id)
+            except KeyError:
+                return jsonify(ok=False, error="Worker không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(worker["state"])
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/workers/<worker_id>/restart")
+    def factory_v2_restart_worker(worker_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                worker = service.request_worker_restart(worker_id)
+            except KeyError:
+                return jsonify(ok=False, error="Worker không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return _accepted(worker["state"])
         finally:
             conn.close()
 
