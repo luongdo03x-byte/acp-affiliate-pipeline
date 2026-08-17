@@ -79,7 +79,18 @@ def normalize_username(value: str) -> str:
 
 
 def ensure_schema(conn) -> None:
-    conn.executescript(SESSION_SCHEMA)
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_factory_oauth_session'"
+    ).fetchone()
+    if not exists:
+        conn.executescript(SESSION_SCHEMA)
+        return
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_factory_oauth_state ON account_factory_oauth_session(state)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_factory_oauth_status ON account_factory_oauth_session(status, expires_at)"
+    )
 
 
 def create_oauth_session(
