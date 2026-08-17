@@ -6,6 +6,7 @@ import com.acp.accountfactory.network.DashboardDto
 import com.acp.accountfactory.network.FactoryAccountDto
 import com.acp.accountfactory.network.FactoryCheckpointDto
 import com.acp.accountfactory.network.FactoryConnection
+import com.acp.accountfactory.network.FactoryRunnerDto
 import com.acp.accountfactory.network.FactoryV2ApiClient
 import com.acp.accountfactory.network.FactoryWorkerDto
 import kotlinx.coroutines.Job
@@ -23,6 +24,7 @@ data class FactoryUiState(
     val accounts: List<FactoryAccountDto> = emptyList(),
     val checkpoints: List<FactoryCheckpointDto> = emptyList(),
     val workers: List<FactoryWorkerDto> = emptyList(),
+    val runners: List<FactoryRunnerDto> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
 )
@@ -48,8 +50,20 @@ class FactoryViewModel(
     private val mutableEvents = MutableSharedFlow<FactoryUiEvent>(extraBufferCapacity = 1)
     val events: SharedFlow<FactoryUiEvent> = mutableEvents.asSharedFlow()
 
-    fun refresh(): Job = viewModelScope.launch {
-        loadSnapshot()
+    fun refresh(): Job = viewModelScope.launch { loadSnapshot() }
+
+    fun createAccount(executionTarget: String): Job = viewModelScope.launch {
+        mutableState.value = mutableState.value.copy(loading = true, error = null)
+        try {
+            val connection = connectionProvider()
+            api.createAccount(connection, executionTarget)
+            loadSnapshot(connection)
+        } catch (error: Exception) {
+            mutableState.value = mutableState.value.copy(
+                loading = false,
+                error = error.message?.take(300) ?: "Không thể tạo account",
+            )
+        }
     }
 
     fun continueCheckpoint(id: String): Job = command { connection ->
@@ -139,11 +153,31 @@ class FactoryViewModel(
             val accounts = api.accounts(connection)
             val checkpoints = api.checkpoints(connection)
             val workers = api.workers(connection)
+            val runners = try {
+                api.runners(connection)
+            } catch (_: Exception) {
+                workers.map { worker ->
+                    FactoryRunnerDto(
+                        id = worker.id,
+                        runnerType = worker.runnerType,
+                        deviceId = worker.deviceId,
+                        deviceName = worker.deviceName,
+                        avdName = worker.avdName,
+                        state = worker.state,
+                        currentAccountId = worker.currentAccountId,
+                        currentJobId = worker.currentJobId,
+                        lastHeartbeatAt = worker.lastHeartbeatAt,
+                        draining = worker.draining,
+                        lastError = worker.lastError,
+                    )
+                }
+            }
             mutableState.value = FactoryUiState(
                 dashboard = dashboard,
                 accounts = accounts,
                 checkpoints = checkpoints,
                 workers = workers,
+                runners = runners,
                 loading = false,
                 error = null,
             )
