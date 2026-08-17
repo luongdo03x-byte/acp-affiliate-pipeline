@@ -2,9 +2,6 @@ import hashlib
 import os
 import tempfile
 import unittest
-from unittest import mock
-
-from flask import Flask
 
 from core import db
 from core.factory_v2.device_credentials import (
@@ -13,7 +10,6 @@ from core.factory_v2.device_credentials import (
     revoke_device_token,
 )
 from core.factory_v2.schema import ensure_schema
-from web.factory_v2 import register_factory_v2_routes
 
 
 class DeviceCredentialTests(unittest.TestCase):
@@ -79,9 +75,10 @@ class AutoEnrollApiTests(unittest.TestCase):
         ensure_schema(conn)
         conn.close()
 
-        app = Flask(__name__)
+        from account_factory_server import build_app
+
+        app = build_app()
         app.testing = True
-        register_factory_v2_routes(app)
         self.client = app.test_client()
 
     def tearDown(self):
