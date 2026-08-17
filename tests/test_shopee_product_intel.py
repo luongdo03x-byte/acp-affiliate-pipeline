@@ -93,6 +93,33 @@ class ShopeeMetadataCacheTests(_DbCase):
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM shopee_metadata_cache").fetchone()[0], 1)
 
+    def test_partial_refresh_does_not_erase_known_fields(self):
+        from acp.adapters.shopee_affiliate import ProductMetadata
+        from acp.core.shopee_products import get_metadata_cache, put_metadata_cache
+
+        put_metadata_cache(
+            self.conn, "https://shopee.vn/product/3/4",
+            ProductMetadata(
+                name="Tai nghe đầy đủ", current_price=120000,
+                original_price=150000,
+                image_url="https://down-vn.img.susercontent.com/file/old-image",
+                shop="Shop Known",
+            ),
+            "helper",
+        )
+        put_metadata_cache(
+            self.conn, "https://shopee.vn/product/3/4",
+            ProductMetadata(current_price=99000),
+            "server",
+        )
+        cached = get_metadata_cache(self.conn, "https://shopee.vn/product/3/4")
+        self.assertEqual(cached.name, "Tai nghe đầy đủ")
+        self.assertEqual(cached.current_price, 99000)
+        self.assertEqual(cached.original_price, 150000)
+        self.assertEqual(cached.image_url, "https://down-vn.img.susercontent.com/file/old-image")
+        self.assertEqual(cached.shop, "Shop Known")
+        self.assertEqual(cached.source, "server")
+
     def test_partial_metadata_is_cached_without_fabricating_fields(self):
         from acp.adapters.shopee_affiliate import ProductMetadata
         from acp.core.shopee_products import get_metadata_cache, put_metadata_cache
