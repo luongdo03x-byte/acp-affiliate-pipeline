@@ -6,6 +6,8 @@ Account Factory helps an operator track Instagram/Threads profiles on Android an
 
 It does **not** bypass OTP/CAPTCHA, identity checks or Android security permissions. The operator completes any verification required by Meta in the official apps. Android Accessibility must be enabled manually once because Android does not allow an app to grant itself that permission.
 
+`REMOTE_AVD` additionally supports fail-closed UI assistance for known safe screens. It may fill only approved non-sensitive profile fields (`username`, `display_name`, `bio`) and tap only positively matched known controls. Unknown UI, password/OTP/CAPTCHA, contact verification, selfie/identity, recovery and security challenges stop automation and require the operator.
+
 ## Security boundaries
 
 Android never receives or stores:
@@ -21,6 +23,8 @@ For zero-config Controller access, Android receives a random **per-device creden
 `ACP_FACTORY_API_KEY` remains a server-side operator/fallback credential and is **not embedded in the APK**.
 
 ACP receives the OAuth authorization code, exchanges it server-side, verifies `id,username`, converts to a long-lived token, encrypts it with the existing `core.crypto` routine, and stores only the encrypted channel token.
+
+For `REMOTE_AVD`, raw Android hierarchy XML is parsed in memory and is not stored in Factory DB/logs. Password-like and verification-code EditText values are redacted by the hierarchy reader before selectors/flows see the snapshot. Screenshots are not part of the normal decision loop.
 
 ## Required ACP environment
 
@@ -59,10 +63,21 @@ https://your-public-acp-host.example/oauth/account-factory/threads/callback
 ## Run Account Factory Controller
 
 ```bash
-cd ~/Downloads/ACP/releases/2.0/acp
+cd ~/Downloads/ACP/worktrees/account-factory-android
+source .venv/bin/activate
 set -a
 source ~/Downloads/ACP/shared/.env.local
 set +a
+
+export ANDROID_HOME="$HOME/Android/Sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+
+export ACP_FACTORY_CONTROLLER=1
+export ACP_FACTORY_TICK_SECONDS=2
+export ACP_HOST=0.0.0.0
+export ACP_PORT=5001
+
 ACP_ADAPTER=mock ACP_SOURCE=mock python3 account_factory_server.py
 ```
 
@@ -75,7 +90,11 @@ The launcher does not publish a social post by itself.
 Open `android/account-factory` in Android Studio, or build from the repository root when Android SDK 36 + JDK 17 + Gradle are available:
 
 ```bash
-gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+~/.local/gradle/gradle-8.13/bin/gradle \
+  -p android/account-factory \
+  testDebugUnitTest assembleDebug \
+  --no-daemon --max-workers=2 --console=plain
 ```
 
 APK output:
@@ -160,7 +179,7 @@ X-ACP-Device-Token: <device credential>
 
 The Android app keeps compatibility with its existing networking layer; the Controller auth bridge also recognizes an enrolled credential presented in the existing `X-ACP-Factory-Key` slot. A real `ACP_FACTORY_API_KEY` continues to work unchanged.
 
-## Operator flow
+## LOCAL_DEVICE operator flow
 
 1. Open Account Factory. Controller discovery/enrollment and LOCAL_DEVICE runner startup happen automatically.
 2. Create/select the account work item.
@@ -171,25 +190,145 @@ The Android app keeps compatibility with its existing networking layer; the Cont
 7. Meta redirects to ACP; ACP validates the expected username and activates the channel only on a matching identity.
 8. When ACP reports `ACTIVE`, the account reaches `ACP_ACTIVE`.
 
+## REMOTE_AVD fail-closed automation
+
+`REMOTE_AVD` runs in the isolated Python worker process and is intentionally narrower than general Android automation.
+
+Allowed behavior:
+
+```text
+known screen detection
+known control tap with verified successor
+username/display_name/bio fill only
+open official Instagram/Threads package
+observe protected checkpoint until a known safe successor appears
+open the existing official ACP OAuth URL
+```
+
+Never automated:
+
+```text
+password entry or generation
+OTP/email/SMS verification code retrieval or entry
+CAPTCHA
+phone/email verification input
+selfie/identity/security/recovery challenges
+fingerprint/proxy/device-identity evasion
+Threads compose/publish
+blind tap on UNKNOWN UI
+```
+
+Normal flow:
+
+```text
+PROFILE_READY
+  -> RUNNER_ASSIGNED
+  -> PREPARE_INSTAGRAM
+  -> AUTOMATE_INSTAGRAM
+
+protected Instagram UI
+  -> IG_READY_FOR_HUMAN
+  -> WAITING_HUMAN
+  -> OBSERVE_CHECKPOINT only
+  -> known successor
+  -> IG_CREATED
+
+IG_CREATED
+  -> AUTOMATE_THREADS
+
+protected Threads UI
+  -> THREADS_READY_FOR_HUMAN
+  -> WAITING_HUMAN
+  -> OBSERVE_CHECKPOINT only
+  -> known successor
+  -> THREADS_CREATED
+
+THREADS_CREATED
+  -> existing ACP activation/OAuth path
+  -> ACP_ACTIVE
+```
+
+Unknown UI becomes `NEEDS_CONFIRMATION`; rate-limit/action-block/network conditions become bounded retry states; account-disabled becomes terminal error for the current account. A normal safe UI action receives at most three total attempts. Replayed commands first detect current UI, so an already-reached successor is treated as completion rather than replaying the previous mutation.
+
+### AVD pilot: `acp-worker-01`
+
+From the feature worktree:
+
+```bash
+cd ~/Downloads/ACP/worktrees/account-factory-android
+
+export ANDROID_HOME="$HOME/Android/Sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+
+$ANDROID_HOME/emulator/emulator -accel-check
+$ANDROID_HOME/emulator/emulator -list-avds
+adb devices
+```
+
+Expected prerequisites:
+
+```text
+KVM installed and usable
+AVD named acp-worker-01 exists
+Controller is running
+worker becomes REMOTE_AVD/READY
+```
+
+Once the emulator is booted, verify official packages:
+
+```bash
+SERIAL=$(adb devices | awk '/^emulator-[0-9]+[[:space:]]+device$/ {print $1; exit}')
+test -n "$SERIAL"
+adb -s "$SERIAL" shell pm list packages | grep -E 'com.instagram.android|com.instagram.barcelona'
+```
+
+Both must be installed through normal Android/Play Store means. Do not sideload modified social-app packages for this pilot.
+
+Create one account targeting `AUTO_AVD` or the specific ready `REMOTE_AVD` worker from the Account Factory UI/API. During the pilot verify:
+
+```text
+Instagram opens automatically
+known safe screens may be handled
+contact/password/OTP/CAPTCHA/security screen immediately stops mutation
+operator completes the protected step manually in the official app
+controller keeps sending observation-only checkpoint checks
+known successor automatically resumes
+Threads follows the same fail-closed policy
+THREADS_CREATED starts the existing ACP OAuth path
+UNKNOWN never receives an exploratory tap
+```
+
+If the dashboard reports `capacity_state=RED` and `desired_workers=0`, no new AVD worker will be booted. Free host RAM/swap pressure or stop other emulators/processes before retrying the pilot; do not bypass the resource safety policy just to force an AVD start.
+
 ## Verification commands
 
-Backend zero-config + Factory V2:
+Run the complete repository gate from the feature branch:
 
 ```bash
-python3 -m unittest tests.test_factory_v2_auto_enroll -v
-python3 -m unittest tests.test_factory_v2_api -v
+cd ~/Downloads/ACP/worktrees/account-factory-android
+
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+bash scripts/verify_account_factory_dual_runner.sh
 ```
 
-Existing Account Factory behavior:
+The script covers existing Factory V2 regressions plus the AVD hierarchy, detector, driver, Instagram/Threads flows, worker agent, runtime routing and Android unit/build gates.
+
+For Python-only diagnosis:
 
 ```bash
-ACP_ADAPTER=mock ACP_SOURCE=mock ACP_ENV=development python3 -m unittest tests.test_account_factory -v
+ACP_ADAPTER=mock ACP_SOURCE=mock ACP_ENV=development \
+python3 -m unittest discover -s tests -p 'test*.py' -v
 ```
 
-Android unit/build:
+For Android-only diagnosis:
 
 ```bash
-gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+~/.local/gradle/gradle-8.13/bin/gradle \
+  -p android/account-factory \
+  testDebugUnitTest assembleDebug \
+  --no-daemon --max-workers=2 --console=plain
 ```
 
-Do not run a live Threads publish as part of Account Factory verification.
+Do not claim the release gate is green unless these commands produce fresh PASS/`BUILD SUCCESSFUL` output. Do not run a live Threads publish as part of Account Factory verification.
