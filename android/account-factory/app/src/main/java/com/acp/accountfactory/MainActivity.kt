@@ -1,6 +1,8 @@
 package com.acp.accountfactory
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,6 +29,7 @@ import com.acp.accountfactory.network.FactoryV2Api
 import com.acp.accountfactory.ui.AccountsScreen
 import com.acp.accountfactory.ui.CheckpointsScreen
 import com.acp.accountfactory.ui.DashboardScreen
+import com.acp.accountfactory.ui.FactoryUiEvent
 import com.acp.accountfactory.ui.FactoryViewModel
 import com.acp.accountfactory.ui.WorkersScreen
 
@@ -68,6 +71,16 @@ private fun FactoryApp() {
         if (settings.isConfigured()) viewModel.refresh()
     }
 
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is FactoryUiEvent.OpenExternalUrl -> {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(event.url)))
+                }
+            }
+        }
+    }
+
     if (showSettings) {
         SettingsDialog(
             settings = settings,
@@ -98,6 +111,7 @@ private fun FactoryApp() {
             onBack = { screen = Screen.DASHBOARD },
             onRetry = viewModel::retryAccount,
             onStop = viewModel::stopAccount,
+            onConnectOAuth = viewModel::startOAuth,
         )
 
         Screen.CHECKPOINTS -> CheckpointsScreen(
