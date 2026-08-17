@@ -41,7 +41,7 @@ urgency).
   - `build_product_facts(conn, product, rng=None) -> ProductFacts` —
     cache hit/miss, gọi extractor khi cần, parse+validate JSON, retry giới
     hạn khi model trả sai schema, fallback an toàn khi retry hết.
-  - `check_fact_safety(caption, facts) -> list[str]` — hard gate, tái sử
+  - `check_fact_safety(caption) -> list[str]` — hard gate, tái sử
     2 blacklist có sẵn từ `content.py` + 2 blacklist mới
     (`FABRICATED_SOCIAL_PROOF`, `FABRICATED_URGENCY`).
 - Bộ trích xuất mặc định (không cần LLM) dùng cho test/`ACP_ADAPTER=mock`
@@ -112,7 +112,7 @@ class ProductFacts:
      `_heuristic_facts(description)`: tách câu theo `[.\n;]` (tái dùng ý
      tưởng `_highlight()` ở `content.py`), mỗi câu non-empty ≤ 200 ký tự
      là 1 phần tử `facts`, `unknown = []`. Deterministic, không network.
-   - Có extractor → gọi `_extractor_fn(_build_extract_prompt(product))`,
+   - Có extractor → gọi `_extractor_fn(_build_extract_prompt(description))`,
      parse JSON theo schema mục 47 PTYC (`{"facts": [...], "unknown":
      [...]}`). Parse fail → retry tối đa 2 lần (tổng 3 lần gọi, đúng mục
      48 "retry có giới hạn"). Hết retry vẫn fail → fallback
@@ -170,7 +170,7 @@ def set_extractor(fn):
     """fn(prompt: str) -> str. Model trả JSON thô, build_product_facts() tự parse."""
 ```
 
-Prompt dựng trong `_build_extract_prompt(product)`:
+Prompt dựng trong `_build_extract_prompt(description)`:
 ```
 Trích xuất fact từ mô tả sản phẩm dưới đây. Trả về đúng JSON, không thêm
 chữ nào khác:
