@@ -311,6 +311,18 @@ class FactoryService:
         if account is None:
             raise KeyError(account_id)
         if account["stage"] == AccountStage.RETRY_PENDING.value:
+            if (
+                account["last_safe_stage"] == AccountStage.THREADS_CREATED.value
+                and account["last_error_code"] == "OAUTH_FAILED"
+            ):
+                self.repo.conn.execute(
+                    """UPDATE factory_account
+                       SET last_error_code=NULL, last_error_message=NULL,
+                           retry_count=retry_count+1, updated_at=?
+                       WHERE id=?""",
+                    (now(), account_id),
+                )
+                return self.repo.get_account(account_id)
             return account
         return self.transition_account(account_id, AccountStage.RETRY_PENDING)
 
