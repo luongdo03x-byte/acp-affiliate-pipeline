@@ -10,37 +10,67 @@ import android.content.Intent
 import android.os.IBinder
 import com.acp.accountfactory.MainActivity
 import com.acp.accountfactory.network.FactoryV2Api
+import com.acp.accountfactory.network.ZeroConfigBootstrap
 import com.acp.accountfactory.settings.FactorySettingsStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class LocalRunnerService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var bootstrapJob: Job? = null
     private var runner: LocalDeviceRunner? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification("Đang kết nối Factory Controller…"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val settings = FactorySettingsStore(this)
-        if (!settings.isConfigured()) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
+        bootstrapJob?.cancel()
         runner?.stop()
-        runner = LocalDeviceRunner(
-            api = FactoryV2Api(),
-            connectionProvider = { settings.connection() },
-            identityStore = LocalRunnerIdentityStore(this),
-            actions = LocalDeviceActions(this),
-        ).also { it.start() }
+        runner = null
+
+        bootstrapJob = serviceScope.launch {
+            val settings = FactorySettingsStore(this@LocalRunnerService)
+            val identityStore = LocalRunnerIdentityStore(this@LocalRunnerService)
+            if (!settings.isConfigured()) {
+                ZeroConfigBootstrap(
+                    context = this@LocalRunnerService,
+                    settings = settings,
+                    identityStore = identityStore,
+                ).ensureConfigured()
+            }
+
+            if (!settings.isConfigured()) {
+                stopSelf(startId)
+                return@launch
+            }
+
+            getSystemService(NotificationManager::class.java).notify(
+                NOTIFICATION_ID,
+                buildNotification("Local device runner đang hoạt động"),
+            )
+            runner = LocalDeviceRunner(
+                api = FactoryV2Api(),
+                connectionProvider = { settings.connection() },
+                identityStore = identityStore,
+                actions = LocalDeviceActions(this@LocalRunnerService),
+            ).also { it.start() }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        bootstrapJob?.cancel()
+        bootstrapJob = null
         runner?.stop()
         runner = null
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -59,7 +89,7 @@ class LocalRunnerService : Service() {
         )
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(message: String): Notification {
         val launchIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -70,7 +100,7 @@ class LocalRunnerService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Account Factory")
-            .setContentText("Local device runner đang hoạt động")
+            .setContentText(message)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
