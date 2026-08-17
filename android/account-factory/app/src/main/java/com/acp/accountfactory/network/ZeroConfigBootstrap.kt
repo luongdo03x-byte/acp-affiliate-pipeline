@@ -22,7 +22,10 @@ data class BootstrapResult(
     val state: BootstrapState,
     val controllerUrl: String? = null,
     val message: String? = null,
-)
+) {
+    val ready: Boolean
+        get() = state == BootstrapState.ALREADY_CONFIGURED || state == BootstrapState.ENROLLED
+}
 
 class ZeroConfigBootstrap(
     context: Context,
@@ -33,16 +36,29 @@ class ZeroConfigBootstrap(
     private val appContext = context.applicationContext
 
     suspend fun ensureConfigured(): BootstrapResult {
-        if (settings.isConfigured()) {
-            return BootstrapResult(
-                state = BootstrapState.ALREADY_CONFIGURED,
-                controllerUrl = settings.baseUrl,
-            )
+        val rememberedUrl = settings.baseUrl.trim()
+        val enrolledToken = settings.deviceToken
+        val currentCredential = enrolledToken.ifBlank { settings.factoryKey }
+
+        if (rememberedUrl.isNotBlank() && currentCredential.isNotBlank()) {
+            if (api.validateCredential(rememberedUrl, currentCredential)) {
+                return BootstrapResult(
+                    state = BootstrapState.ALREADY_CONFIGURED,
+                    controllerUrl = rememberedUrl,
+                )
+            }
+            // An auto-enrolled credential can safely be discarded and issued
+            // again. Preserve a manual Factory Key until enrollment succeeds.
+            if (enrolledToken.isNotBlank()) settings.clearEnrollment()
         }
 
         val ipv4 = currentPrivateWifiIpv4()
             ?: return BootstrapResult(BootstrapState.NO_PRIVATE_WIFI)
-        val candidates = ControllerDiscovery.private24Candidates(ipv4, DEFAULT_CONTROLLER_PORT)
+        val scanned = ControllerDiscovery.private24Candidates(ipv4, DEFAULT_CONTROLLER_PORT)
+        val candidates = buildList {
+            if (rememberedUrl.isNotBlank()) add(rememberedUrl.trimEnd('/'))
+            addAll(scanned)
+        }.distinct()
         val controller = discoverFirst(candidates)
             ?: return BootstrapResult(BootstrapState.CONTROLLER_NOT_FOUND)
 
