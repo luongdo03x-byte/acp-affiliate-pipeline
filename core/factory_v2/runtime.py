@@ -7,10 +7,11 @@ the operator at explicit checkpoints.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import logging
 import threading
 
-from core.db import now, ulid
+from core.db import now, transaction, ulid
 
 from .models import AccountStage
 from .runner_gateway import RunnerGateway
@@ -25,6 +26,10 @@ def _pending(result: dict | None) -> bool:
     return isinstance(result, dict) and result.get("status") == "pending"
 
 
+def _lease_extension(seconds: int = 180) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
 class FactoryControllerRuntime:
     def __init__(
         self,
@@ -35,6 +40,7 @@ class FactoryControllerRuntime:
         worker_processes,
         *,
         runner_gateway=None,
+        activation_service=None,
         owned_connection=None,
     ):
         self.repo = repository
@@ -43,7 +49,14 @@ class FactoryControllerRuntime:
         self.supervisor = supervisor
         self.worker_processes = worker_processes
         self.runner_gateway = runner_gateway or RunnerGateway(repository, worker_processes)
+        self.activation_service = activation_service
         self.owned_connection = owned_connection
+
+    def _activation(self):
+        if self.activation_service is None:
+            from .activation import FactoryActivationService
+            self.activation_service = FactoryActivationService(self.repo.conn)
+        return self.activation_service
 
     def _command(self, job, action: str, payload: dict | None = None) -> dict:
         return self.runner_gateway.send(job, action, payload)
@@ -103,6 +116,99 @@ class FactoryControllerRuntime:
                ORDER BY created_at DESC, id DESC LIMIT 1""",
             (account_id,),
         ).fetchone()
+
+    def _activation_checkpoint(self, account_id: str):
+        return self.repo.conn.execute(
+            """SELECT * FROM factory_checkpoint
+               WHERE account_id=? AND type='ACP_OAUTH' AND status != 'RESOLVED'
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (account_id,),
+        ).fetchone()
+
+    def _ensure_activation_checkpoint(self, job, account) -> None:
+        if self._activation_checkpoint(account["id"]) is not None:
+            return
+        self.repo.create_checkpoint({
+            "id": ulid(),
+            "batch_id": account["batch_id"],
+            "account_id": account["id"],
+            "worker_id": job["worker_id"],
+            "type": "ACP_OAUTH",
+            "status": "WAITING_EXTERNAL",
+            "message": "Đang chờ xác nhận OAuth Threads chính thức để active ACP.",
+            "created_at": now(),
+        })
+
+    def _resolve_activation_checkpoint(self, account_id: str, resolution: str) -> None:
+        checkpoint = self._activation_checkpoint(account_id)
+        if checkpoint is not None:
+            self.repo.resolve_checkpoint(
+                checkpoint["id"],
+                resolved_at=now(),
+                resolution=resolution,
+            )
+
+    def _release_preserving_account(self, job_id: str, final_state: str) -> None:
+        with transaction(self.repo.conn):
+            self.scheduler.release_job_in_transaction(job_id, final_state)
+
+    def _start_activation(self, job, account) -> None:
+        try:
+            activation = self._activation()
+            started = activation.start(account["id"])
+        except RuntimeError:
+            current = self.repo.get_account(account["id"])
+            if current and current["stage"] in {
+                AccountStage.THREADS_CREATED.value,
+                AccountStage.ACP_CONNECTING.value,
+            }:
+                if current["stage"] == AccountStage.THREADS_CREATED.value:
+                    self.service.transition_account(
+                        account["id"],
+                        AccountStage.RETRY_PENDING,
+                        error_code="OAUTH_FAILED",
+                        error_message="ACP activation is not configured",
+                    )
+            self._release_preserving_account(job["id"], "FAILED")
+            return
+
+        current = self.repo.get_account(account["id"])
+        self._ensure_activation_checkpoint(job, current)
+        opened = self._command(job, "OPEN_URL", {"url": started["authorization_url"]})
+        if _pending(opened):
+            return
+        self.repo.conn.execute(
+            """UPDATE factory_job
+               SET state='WAITING_HUMAN', desired_action='WAIT_ACP', heartbeat_at=?, lease_expires_at=?
+               WHERE id=?""",
+            (now(), _lease_extension(), job["id"]),
+        )
+        self.repo.conn.execute(
+            """UPDATE factory_worker
+               SET state='WAITING_HUMAN', last_progress_at=?
+               WHERE id=?""",
+            (now(), job["worker_id"]),
+        )
+
+    def _reconcile_activation(self, job, account) -> None:
+        self.repo.conn.execute(
+            "UPDATE factory_job SET heartbeat_at=?, lease_expires_at=? WHERE id=?",
+            (now(), _lease_extension(), job["id"]),
+        )
+        updated = self._activation().reconcile(account["id"])
+        if updated["stage"] == AccountStage.ACP_CONNECTING.value:
+            return
+        if updated["stage"] == AccountStage.ACP_ACTIVE.value:
+            self._resolve_activation_checkpoint(account["id"], "ACP_ACTIVE")
+            self._release_preserving_account(job["id"], "COMPLETED")
+            return
+        if updated["stage"] == AccountStage.RETRY_PENDING.value:
+            self._resolve_activation_checkpoint(account["id"], "OAUTH_FAILED")
+            self._release_preserving_account(job["id"], "FAILED")
+            return
+        if updated["stage"] == AccountStage.ERROR.value:
+            self._resolve_activation_checkpoint(account["id"], updated.get("last_error_code") or "ERROR")
+            self._release_preserving_account(job["id"], "FAILED")
 
     def _verify_checkpoint(self, job, account) -> None:
         checkpoint = self._checkpoint_for_account(account["id"])
@@ -168,7 +274,20 @@ class FactoryControllerRuntime:
         self.repo.resolve_checkpoint(
             checkpoint["id"], resolved_at=now(), resolution="POSTCHECK_OK"
         )
-        self.scheduler.release_job(job["id"], "COMPLETED")
+        self.repo.conn.execute(
+            """UPDATE factory_job
+               SET state='RUNNING', desired_action='START_ACP', command_id=?, heartbeat_at=?
+               WHERE id=?""",
+            (ulid(), now(), job["id"]),
+        )
+        self.repo.conn.execute(
+            "UPDATE factory_worker SET state='RUNNING', last_progress_at=? WHERE id=?",
+            (now(), job["worker_id"]),
+        )
+        refreshed_job = dict(self.repo.conn.execute(
+            "SELECT * FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone())
+        self._start_activation(refreshed_job, self.repo.get_account(account["id"]))
 
     def _drive_job(self, job) -> None:
         account = self.repo.get_account(job["account_id"])
@@ -185,6 +304,10 @@ class FactoryControllerRuntime:
             )
         elif action in {"VERIFY_CHECKPOINT", "RETRY_CHECKPOINT"}:
             self._verify_checkpoint(job, account)
+        elif action == "START_ACP":
+            self._start_activation(job, account)
+        elif action == "WAIT_ACP":
+            self._reconcile_activation(job, account)
 
     def _drive_job_safely(self, job) -> None:
         try:
@@ -209,8 +332,11 @@ class FactoryControllerRuntime:
 
         active_jobs = self.repo.conn.execute(
             """SELECT * FROM factory_job
-               WHERE state IN ('RUNNING','RECOVERING')
-                 AND desired_action IN ('PREPARE_INSTAGRAM','PREPARE_THREADS','VERIFY_CHECKPOINT','RETRY_CHECKPOINT')
+               WHERE state IN ('RUNNING','RECOVERING','WAITING_HUMAN')
+                 AND desired_action IN (
+                     'PREPARE_INSTAGRAM','PREPARE_THREADS','VERIFY_CHECKPOINT','RETRY_CHECKPOINT',
+                     'START_ACP','WAIT_ACP'
+                 )
                ORDER BY leased_at, id"""
         ).fetchall()
         for job in active_jobs:
