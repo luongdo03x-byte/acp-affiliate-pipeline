@@ -49,6 +49,7 @@ data class FactoryAccountDto(
     val bio: String?,
     val stage: String,
     val lastSafeStage: String,
+    val executionTarget: String?,
     val assignedWorkerId: String?,
     val currentJobId: String?,
     val channelCode: String?,
@@ -58,7 +59,10 @@ data class FactoryAccountDto(
 
 data class FactoryWorkerDto(
     val id: String,
-    val avdName: String,
+    val runnerType: String,
+    val avdName: String?,
+    val deviceId: String?,
+    val deviceName: String?,
     val state: String,
     val currentAccountId: String?,
     val currentJobId: String?,
@@ -70,6 +74,29 @@ data class FactoryWorkerDto(
     val currentCpuPercent: Double?,
     val draining: Boolean,
     val lastError: String?,
+)
+
+data class FactoryRunnerDto(
+    val id: String,
+    val runnerType: String,
+    val deviceId: String?,
+    val deviceName: String?,
+    val avdName: String?,
+    val state: String,
+    val currentAccountId: String?,
+    val currentJobId: String?,
+    val lastHeartbeatAt: String?,
+    val draining: Boolean,
+    val lastError: String?,
+)
+
+data class RunnerCommandDto(
+    val id: String,
+    val jobId: String,
+    val accountId: String,
+    val action: String,
+    val payload: Map<String, String?>,
+    val createdAt: String?,
 )
 
 data class FactoryCheckpointDto(
@@ -100,6 +127,20 @@ data class StartedOAuthDto(
 object FactoryV2Json {
     private fun JSONObject.stringOrNull(name: String): String? =
         optString(name).takeIf { it.isNotBlank() && it != "null" }
+
+    private fun parseRunner(row: JSONObject) = FactoryRunnerDto(
+        id = row.getString("id"),
+        runnerType = row.optString("runner_type", "REMOTE_AVD"),
+        deviceId = row.stringOrNull("device_id"),
+        deviceName = row.stringOrNull("device_name"),
+        avdName = row.stringOrNull("avd_name"),
+        state = row.getString("state"),
+        currentAccountId = row.stringOrNull("current_account_id"),
+        currentJobId = row.stringOrNull("current_job_id"),
+        lastHeartbeatAt = row.stringOrNull("last_heartbeat_at"),
+        draining = row.optInt("draining", 0) != 0,
+        lastError = row.stringOrNull("last_error"),
+    )
 
     fun parseDashboard(text: String): DashboardDto {
         val root = JSONObject(text)
@@ -155,7 +196,10 @@ object FactoryV2Json {
             val row = array.getJSONObject(index)
             FactoryWorkerDto(
                 id = row.getString("id"),
-                avdName = row.getString("avd_name"),
+                runnerType = row.optString("runner_type", "REMOTE_AVD"),
+                avdName = row.stringOrNull("avd_name"),
+                deviceId = row.stringOrNull("device_id"),
+                deviceName = row.stringOrNull("device_name"),
                 state = row.getString("state"),
                 currentAccountId = row.stringOrNull("current_account_id"),
                 currentJobId = row.stringOrNull("current_job_id"),
@@ -169,6 +213,32 @@ object FactoryV2Json {
                 lastError = row.stringOrNull("last_error"),
             )
         }
+    }
+
+    fun parseRunners(text: String): List<FactoryRunnerDto> {
+        val array = JSONObject(text).getJSONArray("runners")
+        return List(array.length()) { index -> parseRunner(array.getJSONObject(index)) }
+    }
+
+    fun parseRunnerResponse(text: String): FactoryRunnerDto =
+        parseRunner(JSONObject(text).getJSONObject("runner"))
+
+    fun parseRunnerCommandResponse(text: String): RunnerCommandDto? {
+        val root = JSONObject(text)
+        if (root.isNull("command")) return null
+        val row = root.getJSONObject("command")
+        val payloadJson = row.optJSONObject("payload") ?: JSONObject()
+        val payload = payloadJson.keys().asSequence().associateWith { key ->
+            if (payloadJson.isNull(key)) null else payloadJson.optString(key)
+        }
+        return RunnerCommandDto(
+            id = row.getString("id"),
+            jobId = row.getString("job_id"),
+            accountId = row.getString("account_id"),
+            action = row.getString("action"),
+            payload = payload,
+            createdAt = row.stringOrNull("created_at"),
+        )
     }
 
     fun parseCheckpoints(text: String): List<FactoryCheckpointDto> {
@@ -218,6 +288,7 @@ object FactoryV2Json {
         bio = row.stringOrNull("bio"),
         stage = row.getString("stage"),
         lastSafeStage = row.getString("last_safe_stage"),
+        executionTarget = row.stringOrNull("execution_target"),
         assignedWorkerId = row.stringOrNull("assigned_worker_id"),
         currentJobId = row.stringOrNull("current_job_id"),
         channelCode = row.stringOrNull("channel_code"),
