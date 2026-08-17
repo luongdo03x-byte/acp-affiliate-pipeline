@@ -269,6 +269,41 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
+
+CREATE TABLE IF NOT EXISTS system_setting (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    updated_by  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS content_generation_run (
+    id          TEXT PRIMARY KEY,
+    post_id     TEXT NOT NULL REFERENCES post(id),
+    status      TEXT NOT NULL DEFAULT 'READY',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS content_variant_row (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES content_generation_run(id),
+    label           TEXT NOT NULL,
+    angle           TEXT NOT NULL,
+    hook            TEXT NOT NULL,
+    main_message    TEXT NOT NULL,
+    body_json       TEXT NOT NULL,
+    cta             TEXT NOT NULL,
+    structure       TEXT NOT NULL,
+    rule_score      REAL,
+    hybrid_score    REAL,
+    final_score     REAL,
+    is_best         INTEGER NOT NULL DEFAULT 0,
+    manual_edited   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_content_variant_run ON content_variant_row(run_id);
 """
 
 

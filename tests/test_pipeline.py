@@ -1238,6 +1238,62 @@ def test_adapt_for_platforms_all_three_matches_individual_calls():
           }, result)
 
 
+def test_system_setting_schema():
+    print("\nBảng system_setting/content_generation_run/content_variant_row tồn tại đúng cột")
+    conn = connect()
+    ss_cols = {r[1] for r in conn.execute("PRAGMA table_info(system_setting)").fetchall()}
+    check("system_setting đủ cột", ss_cols == {"key", "value", "updated_at", "updated_by"}, ss_cols)
+    cgr_cols = {r[1] for r in conn.execute("PRAGMA table_info(content_generation_run)").fetchall()}
+    check("content_generation_run đủ cột", cgr_cols == {"id", "post_id", "status", "created_at", "updated_at"}, cgr_cols)
+    cv_cols = {r[1] for r in conn.execute("PRAGMA table_info(content_variant_row)").fetchall()}
+    check("content_variant_row đủ cột", cv_cols == {
+        "id", "run_id", "label", "angle", "hook", "main_message", "body_json", "cta", "structure",
+        "rule_score", "hybrid_score", "final_score", "is_best", "manual_edited", "created_at", "updated_at"
+    }, cv_cols)
+    conn.close()
+
+
+def test_get_setting_default_when_missing():
+    print("\nget_setting() trả default khi chưa có key")
+    from acp.core import system_settings
+    conn = connect()
+    check("chưa có key -> default", system_settings.get_setting(conn, "khong_ton_tai_xxx", "mac_dinh") == "mac_dinh")
+    conn.close()
+
+
+def test_set_setting_then_get_roundtrip():
+    print("\nset_setting() rồi get_setting() trả đúng giá trị vừa lưu")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "test_key_e6", "gia_tri_moi", actor="test")
+    check("get lại đúng giá trị", system_settings.get_setting(conn, "test_key_e6") == "gia_tri_moi")
+    conn.close()
+
+
+def test_set_setting_overwrites_existing():
+    print("\nset_setting() ghi đè giá trị cũ, không tạo dòng trùng")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "test_key_e6_overwrite", "v1")
+    system_settings.set_setting(conn, "test_key_e6_overwrite", "v2")
+    rows = conn.execute("SELECT * FROM system_setting WHERE key=?", ("test_key_e6_overwrite",)).fetchall()
+    check("chỉ 1 dòng sau 2 lần set", len(rows) == 1, rows)
+    check("giá trị là bản mới nhất", rows[0]["value"] == "v2", rows[0]["value"])
+    conn.close()
+
+
+def test_is_content_engine_v2_enabled_default_false():
+    print("\nis_content_engine_v2_enabled() mặc định False khi chưa cấu hình")
+    from acp.core import system_settings
+    conn = connect()
+    check("mặc định tắt", system_settings.is_content_engine_v2_enabled(conn) is False)
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    check("bật đúng sau khi set '1'", system_settings.is_content_engine_v2_enabled(conn) is True)
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("tắt lại đúng sau khi set '0'", system_settings.is_content_engine_v2_enabled(conn) is False)
+    conn.close()
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3741,6 +3797,11 @@ if __name__ == "__main__":
     test_adapt_for_platform_invalid_platform_raises_keyerror()
     test_adapt_for_platforms_returns_only_requested_platforms()
     test_adapt_for_platforms_all_three_matches_individual_calls()
+    test_system_setting_schema()
+    test_get_setting_default_when_missing()
+    test_set_setting_then_get_roundtrip()
+    test_set_setting_overwrites_existing()
+    test_is_content_engine_v2_enabled_default_false()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
