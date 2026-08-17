@@ -44,8 +44,20 @@ python3 -m unittest \
   tests.test_factory_v2_activation \
   tests.test_factory_v2_launcher -v
 
+if [[ -x android/account-factory/gradlew ]]; then
+  GRADLE=(android/account-factory/gradlew -p android/account-factory)
+elif command -v gradle >/dev/null 2>&1; then
+  GRADLE=(gradle -p android/account-factory)
+elif [[ -x "$HOME/.local/gradle/gradle-8.13/bin/gradle" ]]; then
+  GRADLE=("$HOME/.local/gradle/gradle-8.13/bin/gradle" -p android/account-factory)
+else
+  echo "ERROR: Gradle 8.13 is required but no gradle/gradlew was found." >&2
+  echo "Install Gradle 8.13 user-locally or generate android/account-factory/gradlew, then rerun this script." >&2
+  exit 127
+fi
+
 echo "==> Android unit tests + debug APK"
-gradle -p android/account-factory \
+"${GRADLE[@]}" \
   testDebugUnitTest assembleDebug \
   --no-daemon --max-workers=2 --console=plain
 
