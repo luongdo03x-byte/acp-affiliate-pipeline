@@ -5,6 +5,8 @@ encryption, and channel upsert remain in ``core.account_factory``.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from core.account_factory import create_oauth_session, ensure_schema as ensure_oauth_schema, get_session
 from core.db import now, transaction
 
@@ -17,6 +19,18 @@ _RETRYABLE_START_STAGES = {AccountStage.THREADS_CREATED.value, AccountStage.RETR
 _RETRYABLE_OAUTH_ERRORS = {None, "OAUTH_FAILED"}
 
 
+def _expired(expires_at: str | None) -> bool:
+    if not expires_at:
+        return True
+    try:
+        value = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value <= datetime.now(timezone.utc)
+
+
 def start_account_oauth(conn, account_id: str, redirect_uri: str, provider) -> dict:
     """Create OAuth state from the controller-owned username and mark it connecting."""
     repo = FactoryRepository(conn)
@@ -26,11 +40,12 @@ def start_account_oauth(conn, account_id: str, redirect_uri: str, provider) -> d
         raise KeyError(account_id)
     if account["stage"] not in _RETRYABLE_START_STAGES:
         raise ValueError(f"account cannot start OAuth from {account['stage']}")
-    if account["stage"] == AccountStage.RETRY_PENDING.value and account["last_error_code"] not in _RETRYABLE_OAUTH_ERRORS:
-        raise ValueError("account retry is not an OAuth retry")
+    if account["stage"] == AccountStage.RETRY_PENDING.value:
+        if account["last_error_code"] not in _RETRYABLE_OAUTH_ERRORS:
+            raise ValueError("account retry is not an OAuth retry")
+        if account["last_safe_stage"] != AccountStage.THREADS_CREATED.value:
+            raise ValueError("OAuth retry requires THREADS_CREATED last safe stage")
 
-    # Ensure DDL is complete before the controller transaction. Once the table
-    # exists, ensure_schema only maintains indexes with transaction-safe execute().
     ensure_oauth_schema(conn)
     with transaction(conn):
         session = create_oauth_session(
@@ -74,6 +89,16 @@ def sync_account_from_oauth_session(conn, session_id: str) -> dict:
         raise ValueError("OAuth session is stale for this Factory V2 account")
 
     status = session["status"]
+    if status == "WAITING_AUTH" and _expired(session.get("expires_at")):
+        conn.execute(
+            """UPDATE account_factory_oauth_session
+               SET status='SESSION_EXPIRED', last_error='OAuth session đã hết hạn', completed_at=?
+               WHERE id=? AND status='WAITING_AUTH'""",
+            (now(), session_id),
+        )
+        session = get_session(conn, session_id)
+        status = session["status"]
+
     if status == "WAITING_AUTH":
         return account
 
