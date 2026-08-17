@@ -1184,6 +1184,14 @@ def test_fit_to_length_truncates_when_body_too_long():
     check("vẫn có disclosure", "disclosure test" in result, result)
 
 
+def test_fit_to_length_no_space_in_truncated_region_stays_within_max_len():
+    print("\n_fit_to_length() không vượt max_len dù phần bị cắt không có khoảng trắng nào")
+    from acp.core import content_platform
+    long_no_space_body = "a" * 600
+    result = content_platform._fit_to_length(long_no_space_body, "https://link.test", "disclosure test", 100)
+    check("độ dài không vượt quá max_len", len(result) <= 100, len(result))
+
+
 def test_adapt_for_platform_dispatches_correctly():
     print("\nadapt_for_platform() dispatch đúng theo tên platform")
     from acp.core import content_platform
@@ -3728,6 +3736,7 @@ if __name__ == "__main__":
     test_platform_adapters_never_add_hashtag()
     test_fit_to_length_no_truncation_when_body_fits()
     test_fit_to_length_truncates_when_body_too_long()
+    test_fit_to_length_no_space_in_truncated_region_stays_within_max_len()
     test_adapt_for_platform_dispatches_correctly()
     test_adapt_for_platform_invalid_platform_raises_keyerror()
     test_adapt_for_platforms_returns_only_requested_platforms()
