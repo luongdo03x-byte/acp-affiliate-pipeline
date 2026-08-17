@@ -9,9 +9,12 @@ import com.acp.accountfactory.network.FactoryCheckpointDto
 import com.acp.accountfactory.network.FactoryConnection
 import com.acp.accountfactory.network.FactoryV2ApiClient
 import com.acp.accountfactory.network.FactoryWorkerDto
+import com.acp.accountfactory.network.StartedOAuthDto
 import com.acp.accountfactory.network.WorkerCountsDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -64,8 +67,31 @@ class FactoryViewModelTest {
         assertTrue(api.refreshCount >= 2)
     }
 
+    @Test
+    fun oauthEmitsOfficialUrlAndRefreshesActiveStateFromServer() = runTest {
+        val api = FakeFactoryApi().apply { accountStage = "THREADS_CREATED" }
+        val vm = FactoryViewModel(
+            api = api,
+            connectionProvider = { FactoryConnection("https://acp.example", "test-key") },
+            oauthPollDelayMs = 0,
+            oauthMaxAttempts = 2,
+        )
+        vm.refresh().join()
+        val event = async { vm.events.first() }
+
+        vm.startOAuth("acc-1").join()
+
+        assertEquals(
+            FactoryUiEvent.OpenExternalUrl("https://threads.example/authorize?state=test"),
+            event.await(),
+        )
+        assertEquals("ACP_ACTIVE", vm.state.value.accounts.single().stage)
+        assertEquals("threads_maianh_le", vm.state.value.accounts.single().channelCode)
+    }
+
     private class FakeFactoryApi : FactoryV2ApiClient {
         var accountStage = "PROFILE_READY"
+        var channelCode: String? = null
         var refreshCount = 0
         val actions = mutableListOf<String>()
 
@@ -73,20 +99,14 @@ class FactoryViewModelTest {
             refreshCount += 1
             return DashboardDto(
                 batch = BatchSummaryDto("batch-1", "Batch 01", "RUNNING", 50),
-                accounts = AccountCountsDto(1, 0, 0, if (accountStage == "WAITING_HUMAN") 1 else 0, 0, if (accountStage == "PROFILE_READY") 1 else 0),
+                accounts = AccountCountsDto(1, if (accountStage == "ACP_ACTIVE") 1 else 0, 0, if (accountStage == "WAITING_HUMAN") 1 else 0, 0, if (accountStage == "PROFILE_READY") 1 else 0),
                 workers = WorkerCountsDto(1, 0, if (accountStage == "WAITING_HUMAN") 1 else 0, 0),
                 host = null,
             )
         }
 
         override suspend fun accounts(connection: FactoryConnection): List<FactoryAccountDto> = listOf(
-            FactoryAccountDto(
-                id = "acc-1", batchId = "batch-1", sequence = 1, groupNo = 1,
-                username = "mai.anh", displayName = "Mai Anh", bio = null,
-                stage = accountStage, lastSafeStage = "PROFILE_READY",
-                assignedWorkerId = "worker-1", currentJobId = "job-1", channelCode = null,
-                lastErrorCode = null, lastErrorMessage = null,
-            )
+            account()
         )
 
         override suspend fun workers(connection: FactoryConnection): List<FactoryWorkerDto> = emptyList()
@@ -112,5 +132,29 @@ class FactoryViewModelTest {
         override suspend fun retryAccount(connection: FactoryConnection, id: String) = CommandAcceptedDto("cmd-7", "RETRY_PENDING")
         override suspend fun drainWorker(connection: FactoryConnection, id: String) = CommandAcceptedDto("cmd-8", "DRAINING")
         override suspend fun restartWorker(connection: FactoryConnection, id: String) = CommandAcceptedDto("cmd-9", "RECOVERING")
+
+        override suspend fun startOAuth(connection: FactoryConnection, id: String): StartedOAuthDto {
+            accountStage = "ACP_CONNECTING"
+            return StartedOAuthDto(
+                sessionId = "session-1",
+                authorizationUrl = "https://threads.example/authorize?state=test",
+                status = "WAITING_AUTH",
+                expiresAt = "2026-08-17T07:00:00Z",
+            )
+        }
+
+        override suspend fun oauthStatus(connection: FactoryConnection, id: String): FactoryAccountDto {
+            accountStage = "ACP_ACTIVE"
+            channelCode = "threads_maianh_le"
+            return account()
+        }
+
+        private fun account() = FactoryAccountDto(
+            id = "acc-1", batchId = "batch-1", sequence = 1, groupNo = 1,
+            username = "mai.anh", displayName = "Mai Anh", bio = null,
+            stage = accountStage, lastSafeStage = if (accountStage == "ACP_ACTIVE") "ACP_ACTIVE" else "PROFILE_READY",
+            assignedWorkerId = "worker-1", currentJobId = "job-1", channelCode = channelCode,
+            lastErrorCode = null, lastErrorMessage = null,
+        )
     }
 }
