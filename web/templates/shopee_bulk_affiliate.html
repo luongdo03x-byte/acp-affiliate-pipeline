@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Shopee Bulk Affiliate — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Shopee Affiliate Factory</div>
+    <h1>Tạo link Shopee hàng loạt</h1>
+    <p class="lede">Dán tối đa {{ max_urls }} link sản phẩm Shopee. ACP tạo affiliate URL trực tiếp theo Affiliate ID cấu hình ở backend.</p>
+  </div>
+  <a class="btn btn--ghost" href="/duyet">Chờ duyệt{% if pending_review %} · {{ pending_review }}{% endif %}</a>
+</div>
+
+<div class="tabs" role="navigation" aria-label="Chế độ sản phẩm">
+  <a class="tab" href="{{ url_for('products') }}">Catalog sản phẩm</a>
+  <a class="tab" href="{{ url_for('products', mode='affiliate') }}">Nhập link affiliate</a>
+  <a class="tab tab--active" href="{{ url_for('shopee_bulk.page') }}">Tạo link Shopee hàng loạt</a>
+</div>
+
+{% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
+{% if not affiliate_configured %}
+<div class="alert alert--warning"><strong>Chưa cấu hình Affiliate ID.</strong><span>Thêm <code>SHOPEE_AFFILIATE_ID</code> vào <code>shared/.env.local</code>. Giá trị này chỉ được đọc ở backend.</span></div>
+{% endif %}
+
+<section class="card card--elevated">
+  <div class="section-heading">
+    <div>
+      <span class="status-badge status-badge--accent">Shopee Direct</span>
+      <h2>Product URL → Affiliate URL</h2>
+      <p class="note">Mỗi dòng 1 link sản phẩm. Không dùng link <code>s.shopee.vn</code> đã rút gọn và không cần đăng nhập Shopee trong ACP.</p>
+    </div>
+  </div>
+  <form method="post" action="{{ url_for('shopee_bulk.generate') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <div class="field field--full">
+        <label for="product_urls">URL sản phẩm Shopee</label>
+        <textarea id="product_urls" name="product_urls" rows="12" required
+                  placeholder="https://shopee.vn/product/123/456&#10;https://shopee.vn/Ten-san-pham-i.123.789">{{ raw_urls }}</textarea>
+      </div>
+      <div class="field">
+        <label for="sub_tag">Nhãn tracking</label>
+        <input id="sub_tag" name="sub_tag" value="{{ sub_tag or 'default' }}" maxlength="24"
+               placeholder="threads, facebook, campaign01...">
+      </div>
+      <div class="field">
+        <label>Giới hạn</label>
+        <input value="{{ max_urls }} URL / lần" disabled>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn--primary" type="submit" {% if not affiliate_configured %}disabled{% endif %}>Tạo affiliate link</button>
+    </div>
+  </form>
+</section>
+
+{% if results %}
+<section class="card card--elevated" style="margin-top:18px">
+  <div class="section-heading">
+    <div>
+      <div class="eyebrow">Kết quả</div>
+      <h2>{{ summary.total }} URL đã xử lý</h2>
+      <p class="note">Tạo mới: {{ summary.created }} · Gắn Product DB: {{ summary.linked }} · Trùng: {{ summary.duplicate }} · Lỗi: {{ summary.error }}</p>
+    </div>
+  </div>
+  <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Trạng thái</th><th>Sản phẩm</th><th>Sub ID</th><th>Affiliate link</th></tr></thead>
+      <tbody>
+      {% for r in results %}
+        <tr>
+          <td>
+            {% if r.status == 'ERROR' %}<span class="status-badge status-badge--danger">Lỗi</span>
+            {% elif r.status == 'LINKED' %}<span class="status-badge status-badge--success">Đã gắn DB</span>
+            {% elif r.status == 'DUPLICATE' %}<span class="status-badge">Trùng</span>
+            {% else %}<span class="status-badge status-badge--accent">Đã tạo</span>{% endif %}
+          </td>
+          <td>
+            {% if r.product_url %}<code title="{{ r.product_url }}">{{ r.product_url }}</code>
+            {% else %}<span>{{ r.input_url }}</span>{% endif %}
+            {% if r.error %}<div class="note">{{ r.error }}</div>{% endif %}
+          </td>
+          <td><code>{{ r.sub_id or '—' }}</code></td>
+          <td>
+            {% if r.affiliate_url %}
+              <code title="{{ r.affiliate_url }}">{{ r.affiliate_url }}</code>
+              <button class="btn btn--small js-copy-affiliate" type="button" data-url="{{ r.affiliate_url }}">Copy</button>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<script>
+document.querySelectorAll('.js-copy-affiliate').forEach(function (button) {
+  button.addEventListener('click', function () {
+    var value = button.dataset.url || '';
+    navigator.clipboard.writeText(value).then(function () {
+      var old = button.textContent;
+      button.textContent = 'Đã copy';
+      setTimeout(function () { button.textContent = old; }, 1200);
+    });
+  });
+});
+</script>
+{% endif %}
+{% endblock %}
