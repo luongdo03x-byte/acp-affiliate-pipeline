@@ -18,7 +18,7 @@ from ..core.account_factory import (
     get_session_by_state,
     public_session,
 )
-from ..core.db import connect
+from ..core.db import connect, now
 from ..core.factory_v2.oauth_bridge import sync_account_from_oauth_session
 
 
@@ -60,6 +60,21 @@ def _sync_v2_safely(conn, session_id: str | None) -> None:
         sync_account_from_oauth_session(conn, session_id)
     except Exception as exc:  # OAuth/channel result must remain durable; status poll can retry V2 sync.
         _LOG.warning("Factory V2 OAuth reconciliation deferred (%s)", type(exc).__name__)
+
+
+def _mark_provider_denial(conn, state: str) -> str | None:
+    if not state:
+        return None
+    session = get_session_by_state(conn, state)
+    if not session or session["status"] != "WAITING_AUTH":
+        return session["id"] if session else None
+    conn.execute(
+        """UPDATE account_factory_oauth_session
+           SET status='OAUTH_ERROR', last_error=?, completed_at=?
+           WHERE id=? AND status='WAITING_AUTH'""",
+        ("Threads authorization was denied or cancelled", now(), session["id"]),
+    )
+    return session["id"]
 
 
 def register_account_factory_routes(app):
@@ -112,6 +127,12 @@ def register_account_factory_routes(app):
         code = request.args.get("code", "")
         provider_error = request.args.get("error") or request.args.get("error_description")
         if provider_error:
+            conn = connect()
+            try:
+                session_id = _mark_provider_denial(conn, state)
+                _sync_v2_safely(conn, session_id)
+            finally:
+                conn.close()
             return (
                 "<h2>Threads authorization đã bị hủy hoặc từ chối.</h2>"
                 "<p>Quay lại ACP Account Factory và thử lại.</p>",
