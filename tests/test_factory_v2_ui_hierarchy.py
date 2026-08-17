@@ -77,6 +77,26 @@ class AdbClientTests(unittest.TestCase):
             client.foreground(),
         )
 
+    def test_dump_hierarchy_trims_uiautomator_status_suffix(self):
+        xml = '<?xml version="1.0" encoding="UTF-8"?><hierarchy><node text="x" bounds="[0,0][1,1]" /></hierarchy>'
+        result = SimpleNamespace(
+            returncode=0,
+            stdout=xml + "\nUI hierchary dumped to: /dev/tty\n",
+            stderr="",
+        )
+        client = AdbClient("emulator-5554", adb_path="adb", runner=FakeRunner([result]))
+        self.assertEqual(xml, client.dump_hierarchy())
+
+    def test_dump_hierarchy_rejects_incomplete_xml(self):
+        result = SimpleNamespace(
+            returncode=0,
+            stdout="<?xml version=\"1.0\"?><hierarchy>",
+            stderr="",
+        )
+        client = AdbClient("emulator-5554", adb_path="adb", runner=FakeRunner([result]))
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            client.dump_hierarchy()
+
 
 if __name__ == "__main__":
     unittest.main()
