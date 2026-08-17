@@ -66,6 +66,28 @@ class SafeUiDriverTests(unittest.TestCase):
         self.assertEqual("new_user", adb.text)
         self.assertEqual((150, 50), adb.tap_calls[0])
 
+    def test_tap_accepts_protected_screen_as_verified_transition(self):
+        class TransitionAdb(FakeAdb):
+            def __init__(self):
+                super().__init__("")
+                self.after_tap = False
+
+            def dump_hierarchy(self):
+                if self.after_tap:
+                    return '<hierarchy><node text="Enter confirmation code" class="android.widget.TextView" enabled="true" bounds="[0,0][300,100]" /></hierarchy>'
+                return '<hierarchy><node text="Continue" class="android.widget.Button" clickable="true" enabled="true" bounds="[0,0][300,100]" /></hierarchy>'
+
+            def tap(self, x, y):
+                super().tap(x, y)
+                self.after_tap = True
+
+        adb = TransitionAdb()
+        driver = SafeUiDriver(adb, build_instagram_detector(), poll_interval=0)
+        selector = Selector(semantic="continue", texts=("Continue",), require_clickable=True)
+        result = driver.tap(selector, expected_screens=("OTP_REQUIRED",), timeout=0)
+        self.assertEqual("completed", result.status)
+        self.assertEqual("OTP_REQUIRED", result.after)
+
 
 if __name__ == "__main__":
     unittest.main()
