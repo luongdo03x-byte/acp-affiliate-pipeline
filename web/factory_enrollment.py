@@ -16,6 +16,7 @@ from core.factory_v2.device_credentials import authenticate_device_token, issue_
 
 
 DEVICE_TOKEN_HEADER = "X-ACP-Device-Token"
+LEGACY_FACTORY_KEY_HEADER = "X-ACP-Factory-Key"
 _INSTALLED = False
 _LEGACY_REQUIRE_FACTORY_KEY = None
 
@@ -33,7 +34,13 @@ def _private_remote(remote_addr: str | None) -> bool:
 
 
 def install_factory_device_auth() -> None:
-    """Extend Factory V2 auth without rewriting every existing route."""
+    """Extend Factory V2 auth without rewriting every existing route.
+
+    New Android builds may send a device credential in X-ACP-Device-Token. For
+    backward-compatible APK wiring they may also store that credential in the
+    existing Factory Key slot; in that case we try it as a device credential
+    before delegating to the original Factory Key checker.
+    """
     global _INSTALLED, _LEGACY_REQUIRE_FACTORY_KEY
     if _INSTALLED:
         return
@@ -43,16 +50,18 @@ def install_factory_device_auth() -> None:
     _LEGACY_REQUIRE_FACTORY_KEY = factory_v2._require_factory_key
 
     def require_factory_auth() -> None:
-        token = request.headers.get(DEVICE_TOKEN_HEADER, "").strip()
-        if token:
+        explicit_device_token = request.headers.get(DEVICE_TOKEN_HEADER, "").strip()
+        candidate = explicit_device_token or request.headers.get(LEGACY_FACTORY_KEY_HEADER, "").strip()
+        if candidate:
             conn = connect()
             try:
-                credential = authenticate_device_token(conn, token)
+                credential = authenticate_device_token(conn, candidate)
             finally:
                 conn.close()
-            if credential is None:
+            if credential is not None:
+                return None
+            if explicit_device_token:
                 abort(401, "Device token không hợp lệ")
-            return None
         return _LEGACY_REQUIRE_FACTORY_KEY()
 
     factory_v2._require_factory_key = require_factory_auth
