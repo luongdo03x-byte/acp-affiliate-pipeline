@@ -37,6 +37,7 @@ import com.acp.accountfactory.ui.ExecutionTarget
 import com.acp.accountfactory.ui.FactoryUiEvent
 import com.acp.accountfactory.ui.FactoryViewModel
 import com.acp.accountfactory.ui.WorkersScreen
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: FactorySettingsStore
@@ -48,7 +49,9 @@ class MainActivity : ComponentActivity() {
         settingsStore = FactorySettingsStore(this)
         api = FactoryV2Api()
         identityStore = LocalRunnerIdentityStore(this)
-        if (settingsStore.isConfigured()) LocalRunnerService.start(this)
+        // Always start the foreground service. It reuses persisted credentials
+        // or performs private-LAN discovery/enrollment on first launch.
+        LocalRunnerService.start(this)
         val localDeviceId = identityStore.getOrCreate().deviceId
 
         setContent {
@@ -85,7 +88,15 @@ private fun FactoryApp(
     var showSettings by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (settings.isConfigured()) viewModel.refresh()
+        // First launch may spend a few seconds discovering/enrolling the
+        // controller. Refresh as soon as the service persists its credential.
+        repeat(20) {
+            if (settings.isConfigured()) {
+                viewModel.refresh()
+                return@LaunchedEffect
+            }
+            delay(500)
+        }
     }
 
     LaunchedEffect(viewModel) {
@@ -183,9 +194,10 @@ private fun SettingsDialog(
     var factoryKey by remember { mutableStateOf(settings.factoryKey) }
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Kết nối Controller") },
+        title = { Text("Kết nối Controller (fallback)") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("App tự tìm Controller trong cùng Wi-Fi. Chỉ nhập tay khi auto-discovery không tìm thấy Controller.")
                 OutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it },
@@ -200,11 +212,12 @@ private fun SettingsDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
-                Text("Cấu hình này được lưu trên máy. App không lưu Threads token, mật khẩu, OTP/CAPTCHA, App Secret hoặc ACP_MASTER_KEY.")
+                Text("Cấu hình tay chỉ là fallback. Credential auto-enroll được mã hóa bằng Android Keystore; app không lưu Threads token, mật khẩu, OTP/CAPTCHA, App Secret hoặc ACP_MASTER_KEY.")
             }
         },
         confirmButton = {
             Button(onClick = {
+                settings.clearEnrollment()
                 settings.baseUrl = baseUrl
                 settings.factoryKey = factoryKey
                 onSaved()
