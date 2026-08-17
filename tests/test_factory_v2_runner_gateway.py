@@ -61,6 +61,18 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         self.assertEqual("avd-1", self.processes.last_worker_id)
         self.assertEqual("OPEN_PACKAGE", self.processes.last_command.action)
 
+    def test_remote_avd_automation_action_is_forwarded(self):
+        job = self._leased_job("avd-automation", "REMOTE_AVD")
+        result = self.gateway.send(
+            job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user", "display_name": "Sample User", "bio": "Sample bio"}},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("AUTOMATE_INSTAGRAM", self.processes.last_command.action)
+        self.assertEqual("sample_user", self.processes.last_command.payload["profile"]["username"])
+
     def test_local_gateway_queues_command_without_adb(self):
         job = self._leased_job("phone-1", "LOCAL_DEVICE")
         result = self.gateway.send(
@@ -71,6 +83,12 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         queued = self.repo.get_runner_command(result["command_id"])
         self.assertEqual("LOCAL_DEVICE", queued["runner_type"])
         self.assertEqual("OPEN_PACKAGE", queued["action"])
+        self.assertIsNone(self.processes.last_command)
+
+    def test_local_gateway_rejects_avd_automation_action(self):
+        job = self._leased_job("phone-automation", "LOCAL_DEVICE")
+        with self.assertRaisesRegex(ValueError, "unsupported local runner action"):
+            self.gateway.send(job, "AUTOMATE_INSTAGRAM", {"profile": {"username": "sample_user"}})
         self.assertIsNone(self.processes.last_command)
 
     def test_local_gateway_reuses_unfinished_command(self):
