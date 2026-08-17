@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Android Account Factory app auto-discover its LAN controller, auto-enroll for a per-device token, persist that token securely, and auto-start its LOCAL_DEVICE runner without manual URL/Factory Key entry.
+**Goal:** Make the Android Account Factory app auto-discover its LAN controller, auto-enroll for a per-device token, persist that token securely, validate/recover that enrollment automatically, and auto-start its LOCAL_DEVICE runner without manual URL/Factory Key entry.
 
-**Architecture:** Add a small credential/auth layer to the Flask Factory V2 controller and a zero-config bootstrap layer to Android. Preserve the existing Factory Key path as fallback; device tokens are independently revocable and stored hashed server-side. Android discovery is limited to private IPv4 LAN candidates and persisted credentials are preferred after first success.
+**Architecture:** Add a small credential/auth layer beside the Flask Factory V2 controller and a zero-config bootstrap layer to Android. Preserve the existing Factory Key path as fallback; device tokens are independently revocable and stored hashed server-side. To minimize risk on the mature Android networking layer, the enrolled credential is passed through its existing credential/header slot and the Controller auth bridge resolves device-token-vs-legacy-key semantics server-side.
 
 **Tech Stack:** Python 3, Flask, SQLite; Kotlin, Android SDK 26+, OkHttp, coroutines, Android Keystore, JUnit 4.
 
@@ -13,16 +13,15 @@
 - Do not hardcode `ACP_FACTORY_API_KEY` into the APK.
 - Auto-enroll is server-gated by `ACP_FACTORY_LAN_AUTO_ENROLL=true`.
 - Raw device tokens are never persisted in SQLite or returned by read APIs.
-- Existing `X-ACP-Factory-Key` behavior remains backward-compatible.
+- Existing real `X-ACP-Factory-Key` behavior remains backward-compatible.
 - Accessibility permission remains a one-time manual Android action.
 - Discovery scans private IPv4 LAN only and stops on the first valid Account Factory controller.
 
 ---
 
-### Task 1: Controller credential schema and token authentication
+### Task 1: Controller credential storage and authentication
 
 **Files:**
-- Modify: `core/factory_v2/schema.py`
 - Create: `core/factory_v2/device_credentials.py`
 - Test: `tests/test_factory_v2_auto_enroll.py`
 
@@ -31,73 +30,79 @@
 - `authenticate_device_token(conn, token: str) -> dict | None`
 - `revoke_device_token(conn, device_id: str) -> bool`
 
-- [ ] Write failing tests for token hashing, rotation, authentication, and revocation.
-- [ ] Run focused test and confirm failure because credential table/functions do not exist.
-- [ ] Add schema + minimal credential functions.
-- [ ] Run focused test and confirm green.
+- [x] Define tests for token hashing, rotation, authentication, revocation and identity validation.
+- [x] Implement lazy/idempotent credential table creation and minimal credential functions.
+- [x] Verify the exact credential module with SQLite in the available sandbox: 2 focused tests pass.
 
 ### Task 2: Discovery, enrollment, and dual authentication routes
 
 **Files:**
-- Modify: `web/factory_v2.py`
+- Create: `web/factory_enrollment.py`
+- Modify: `account_factory_server.py`
 - Test: `tests/test_factory_v2_auto_enroll.py`
 
 **Interfaces:**
 - `GET /api/factory/discovery`
 - `POST /api/factory/enroll`
-- Existing Factory V2 routes accept `X-ACP-Device-Token` in addition to `X-ACP-Factory-Key`.
+- Existing Factory V2 routes accept `X-ACP-Device-Token` and preserve real `X-ACP-Factory-Key` semantics.
+- Compatibility bridge also recognizes an enrolled device credential in the existing Android `X-ACP-Factory-Key` slot.
 
-- [ ] Add failing route tests: public discovery, default-disabled enrollment, private-IP enrollment, device-token auth, invalid token 401, legacy key still valid.
-- [ ] Run tests and confirm expected failures.
-- [ ] Implement `_require_factory_auth`, private-address validation, discovery and enrollment routes.
-- [ ] Run focused and existing Factory V2 API tests.
+- [x] Define route tests for public discovery, default-disabled enrollment, private-IP enrollment, invalid token, rotation, Android compatibility slot and legacy key.
+- [x] Implement private-address validation, enrollment and auth bridge as a separate module instead of rewriting the large Factory V2 route file.
+- [x] Syntax-compile the enrollment module in the available sandbox.
+- [ ] Run the real Flask focused/regression suite on a checkout with project dependencies installed.
 
-### Task 3: Android connection model and LAN discovery helpers
+### Task 3: Android LAN discovery helpers
 
 **Files:**
-- Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/network/FactoryV2Api.kt`
 - Create: `android/account-factory/app/src/main/java/com/acp/accountfactory/network/ControllerDiscovery.kt`
+- Create: `android/account-factory/app/src/main/java/com/acp/accountfactory/network/ControllerBootstrapApi.kt`
 - Test: `android/account-factory/app/src/test/java/com/acp/accountfactory/network/ControllerDiscoveryTest.kt`
 
 **Interfaces:**
-- `FactoryConnection(baseUrl, factoryKey = "", deviceToken = "")`
-- `FactoryV2Api.discover(candidateBaseUrl: String): DiscoveryDto?`
-- `FactoryV2Api.enroll(baseUrl, deviceId, deviceName): EnrollmentDto`
 - `ControllerDiscovery.private24Candidates(ipv4: String, port: Int): List<String>`
+- `ControllerDiscovery.parseDiscovery(body: String): DiscoveryDto?`
+- `ControllerDiscovery.parseEnrollment(body: String): EnrollmentDto?`
+- `ControllerBootstrapApi.validateCredential(...)`
+- `ControllerBootstrapApi.enroll(...)`
 
-- [ ] Write pure JVM tests for candidate generation, public-IP rejection, discovery JSON validation, and auth-header preference.
-- [ ] Run Android unit test and confirm failures.
-- [ ] Implement minimal DTO/parser/helper/API changes.
-- [ ] Run Android unit test green.
+- [x] Add pure helper tests for private `/24` candidate generation and discovery/enrollment parsing.
+- [x] Implement bounded private-LAN candidates and strict Account Factory v2 response validation.
+- [x] Compile and execute the exact `ControllerDiscovery.kt` logic with `kotlinc`: verification harness passes.
 
-### Task 4: Secure Android credential persistence and bootstrap
+### Task 4: Secure persistence, validation/recovery and auto-start
 
 **Files:**
-- Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/settings/FactorySettingsStore.kt`
 - Create: `android/account-factory/app/src/main/java/com/acp/accountfactory/settings/SecureDeviceTokenStore.kt`
+- Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/settings/FactorySettingsStore.kt`
 - Create: `android/account-factory/app/src/main/java/com/acp/accountfactory/network/ZeroConfigBootstrap.kt`
-- Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/MainActivity.kt`
 - Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/runner/LocalRunnerService.kt`
+- Modify: `android/account-factory/app/src/main/java/com/acp/accountfactory/MainActivity.kt`
+- Modify: `android/account-factory/app/src/main/AndroidManifest.xml`
 
 **Interfaces:**
 - `FactorySettingsStore.deviceToken`
 - `FactorySettingsStore.saveEnrollment(baseUrl, deviceToken)`
 - `ZeroConfigBootstrap.ensureConfigured(): BootstrapResult`
 
-- [ ] Add unit-testable bootstrap decision tests with fakes.
-- [ ] Implement native Android Keystore AES/GCM token storage.
-- [ ] Implement bootstrap order: persisted credential -> legacy manual config -> private LAN discovery/enroll.
-- [ ] Start `LocalRunnerService` automatically after successful bootstrap.
-- [ ] Keep manual settings dialog as fallback/troubleshooting only.
+- [x] Implement Android Keystore AES/GCM credential storage.
+- [x] Validate a persisted credential before runner startup.
+- [x] If an enrolled credential or remembered LAN URL is stale, rediscover and re-enroll automatically.
+- [x] Start the foreground bootstrap service whenever the app opens.
+- [x] Keep manual settings only behind the explicit Settings action; refresh/create retries zero-config instead of forcing a dialog.
+- [x] Add `ACCESS_NETWORK_STATE` for private Wi-Fi discovery.
+- [x] Compile the bootstrap logic with Android/network stubs + real coroutines using `kotlinc`.
+- [ ] Run Android SDK/Gradle unit tests and `assembleDebug` on a machine with Android SDK 36 + Gradle 8.13.
 
-### Task 5: Deployment config, docs, and verification
+### Task 5: Deployment config and docs
 
 **Files:**
 - Modify: `.env.example`
 - Modify: `android/account-factory/README.md`
-- Modify: `README.md` or Account Factory runbook section if present.
+- Modify: `docs/ACP_ACCOUNT_FACTORY_RUNBOOK.md`
+- Create/update: zero-config design/plan docs.
 
-- [ ] Add `ACP_FACTORY_LAN_AUTO_ENROLL=false` and document setting `ACP_HOST=0.0.0.0`, `ACP_PORT=5001` for phone LAN use.
-- [ ] Run Python focused tests and Factory V2 regression tests.
-- [ ] Run Android JVM unit tests and `assembleDebug` when Android Gradle environment is available.
-- [ ] Inspect branch diff for secrets and unrelated files.
+- [x] Document `ACP_HOST=0.0.0.0`, `ACP_PORT=5001`, `ACP_FACTORY_LAN_AUTO_ENROLL` and server-side fallback key boundaries.
+- [x] Document first-launch zero-config flow and one-time Accessibility requirement.
+- [x] Inspect the feature diff from pre-task branch head; changes are scoped to zero-config Controller/Android/tests/docs/config.
+- [ ] Run full repository/Android release verification before merging or distributing a replacement APK.
