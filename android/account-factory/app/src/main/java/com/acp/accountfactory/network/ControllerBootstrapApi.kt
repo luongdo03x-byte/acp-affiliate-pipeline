@@ -31,6 +31,22 @@ class ControllerBootstrapApi(
         }.getOrNull()
     }
 
+    suspend fun validateCredential(baseUrl: String, credential: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val clean = credential.trim()
+            if (clean.isBlank()) return@withContext false
+            val request = Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/api/factory/v2/dashboard")
+                // The controller auth bridge recognizes an enrolled device
+                // credential in this legacy slot, preserving the existing API client.
+                .header("X-ACP-Factory-Key", clean)
+                .get()
+                .build()
+            runCatching {
+                client.newCall(request).execute().use { response -> response.isSuccessful }
+            }.getOrDefault(false)
+        }
+
     suspend fun enroll(baseUrl: String, deviceId: String, deviceName: String): EnrollmentDto =
         withContext(Dispatchers.IO) {
             val body = JSONObject()
