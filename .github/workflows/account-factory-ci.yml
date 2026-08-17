@@ -7,7 +7,7 @@ on:
     paths:
       - "core/account_factory.py"
       - "web/account_factory.py"
-      - "web/server.py"
+      - "account_factory_server.py"
       - "tests/test_account_factory.py"
       - "android/account-factory/**"
       - ".github/workflows/account-factory-ci.yml"
@@ -44,3 +44,8 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Android unit tests and debug APK
         run: gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: acp-account-factory-debug
+          path: android/account-factory/app/build/outputs/apk/debug/app-debug.apk
