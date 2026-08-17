@@ -8,6 +8,8 @@ core/content_checker.py (E3, đã merge+review) -- chỉ import và gọi.
 import re
 import unicodedata
 
+from . import content_checker
+
 _OPENING_WORDS = 5
 _ANGLE_FREQUENCY_WINDOW = 5
 _ANGLE_FREQUENCY_THRESHOLD = 0.6
@@ -84,3 +86,32 @@ def check_repetition(variant, recent_variants: list) -> list:
 
 def repetition_penalty(variant, recent_variants: list) -> float:
     return sum(_REPETITION_PENALTY[v["rule"]] for v in check_repetition(variant, recent_variants))
+
+
+_hybrid_judge_fn = None
+
+
+def set_hybrid_judge(fn):
+    """fn(prompt: str) -> str. Model trả JSON thô {"hook_strength": 0-1,
+    "readability": 0-1, "relevance": 0-1, "originality": 0-1}.
+    fn=None (mặc định) -- mỗi yếu tố mặc định = rule_score, không bịa
+    điểm AI giả khi chưa có judge.
+    """
+    global _hybrid_judge_fn
+    _hybrid_judge_fn = fn
+
+
+def score_variant_hybrid(variant) -> dict:
+    """{"rules": RuleScore, "judge": dict, "hybrid_score": float}.
+    Task 2: chưa gọi LLM thật (_hybrid_judge_fn luôn None ở bước này) --
+    Task 3 thêm nhánh LLM đầy đủ.
+    """
+    rules = content_checker.score_variant_rules(variant)
+    if not rules.fact_safety_pass:
+        return {"rules": rules, "judge": {}, "hybrid_score": 0.0}
+    if _hybrid_judge_fn is None:
+        judge = {k: rules.score for k in ("hook_strength", "readability", "relevance", "originality")}
+    else:
+        judge = {k: rules.score for k in ("hook_strength", "readability", "relevance", "originality")}
+    hybrid_score = round((rules.score + sum(judge.values()) / 4) / 2, 4)
+    return {"rules": rules, "judge": judge, "hybrid_score": hybrid_score}

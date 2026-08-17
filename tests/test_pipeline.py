@@ -986,6 +986,28 @@ def test_repetition_penalty_sums_correctly():
     check("penalty khớp tổng các rule vi phạm", penalty == expected, (penalty, expected, violations))
 
 
+def test_score_variant_hybrid_fact_unsafe():
+    print("\nscore_variant_hybrid() variant bịa fact -> hybrid_score=0.0, judge rỗng")
+    from acp.core import content_scoring
+    v = _mk_test_variant(main_message="Mình đã dùng 2 tuần rồi, thấy rất ổn.")
+    result = content_scoring.score_variant_hybrid(v)
+    check("hybrid_score = 0.0", result["hybrid_score"] == 0.0, result)
+    check("judge rỗng", result["judge"] == {}, result)
+
+
+def test_score_variant_hybrid_no_judge_uses_rule_score():
+    print("\nscore_variant_hybrid() không judge -> mỗi yếu tố = rule_score, hybrid_score = rule_score")
+    from acp.core import content_scoring
+    content_scoring.set_hybrid_judge(None)
+    v = _mk_test_variant()
+    result = content_scoring.score_variant_hybrid(v)
+    rule_score = result["rules"].score
+    check("cả 4 yếu tố judge = rule_score",
+          all(result["judge"][k] == rule_score for k in ("hook_strength", "readability", "relevance", "originality")),
+          result)
+    check("hybrid_score = rule_score", result["hybrid_score"] == rule_score, result)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3468,6 +3490,8 @@ if __name__ == "__main__":
     test_check_repetition_same_cta()
     test_check_repetition_high_text_similarity()
     test_repetition_penalty_sums_correctly()
+    test_score_variant_hybrid_fact_unsafe()
+    test_score_variant_hybrid_no_judge_uses_rule_score()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
