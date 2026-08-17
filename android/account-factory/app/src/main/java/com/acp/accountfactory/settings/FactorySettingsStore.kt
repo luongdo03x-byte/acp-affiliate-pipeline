@@ -8,6 +8,7 @@ class FactorySettingsStore(context: Context) {
         "factory_settings",
         Context.MODE_PRIVATE,
     )
+    private val secureTokenStore = SecureDeviceTokenStore(context)
 
     var baseUrl: String
         get() = prefs.getString("base_url", "") ?: ""
@@ -17,6 +18,24 @@ class FactorySettingsStore(context: Context) {
         get() = prefs.getString("factory_key", "") ?: ""
         set(value) = prefs.edit().putString("factory_key", value.trim()).apply()
 
-    fun connection(): FactoryConnection = FactoryConnection(baseUrl, factoryKey)
-    fun isConfigured(): Boolean = baseUrl.isNotBlank() && factoryKey.isNotBlank()
+    val deviceToken: String
+        get() = secureTokenStore.get()
+
+    fun saveEnrollment(controllerUrl: String, deviceToken: String) {
+        baseUrl = controllerUrl
+        secureTokenStore.set(deviceToken)
+        factoryKey = ""
+    }
+
+    fun clearEnrollment() {
+        secureTokenStore.clear()
+    }
+
+    fun connection(): FactoryConnection {
+        val credential = deviceToken.ifBlank { factoryKey }
+        return FactoryConnection(baseUrl, credential)
+    }
+
+    fun isConfigured(): Boolean =
+        baseUrl.isNotBlank() && (deviceToken.isNotBlank() || factoryKey.isNotBlank())
 }
