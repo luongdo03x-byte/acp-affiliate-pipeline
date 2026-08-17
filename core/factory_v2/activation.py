@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from core.account_factory import ThreadsOAuthClient, get_session
 
+from .channel_schema import ensure_factory_channel_schema
 from .models import AccountStage
 from .oauth_bridge import start_account_oauth, sync_account_from_oauth_session
 from .oauth_config import build_factory_redirect_uri, configured_factory_public_base_url
@@ -32,6 +33,7 @@ class FactoryActivationService:
         public_base_url: str | None = None,
     ):
         self.conn = conn
+        ensure_factory_channel_schema(conn)
         self.repo = FactoryRepository(conn)
         self.provider = provider or ThreadsOAuthClient()
         self.public_base_url = configured_factory_public_base_url(public_base_url)
