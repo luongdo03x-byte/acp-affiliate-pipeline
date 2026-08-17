@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
 from core.db import now, ulid
 
@@ -23,12 +22,22 @@ _THREADS_PACKAGE = "com.instagram.barcelona"
 
 
 class FactoryControllerRuntime:
-    def __init__(self, repository, service, scheduler, supervisor, worker_processes):
+    def __init__(
+        self,
+        repository,
+        service,
+        scheduler,
+        supervisor,
+        worker_processes,
+        *,
+        owned_connection=None,
+    ):
         self.repo = repository
         self.service = service
         self.scheduler = scheduler
         self.supervisor = supervisor
         self.worker_processes = worker_processes
+        self.owned_connection = owned_connection
 
     def _command(self, job, action: str, payload: dict | None = None) -> dict:
         return self.worker_processes.request(
@@ -207,12 +216,63 @@ class FactoryControllerRuntime:
             if job is not None:
                 self._drive_job_safely(job)
 
+    def close(self) -> None:
+        try:
+            stop_all = getattr(self.worker_processes, "stop_all", None)
+            if stop_all is not None:
+                stop_all()
+        finally:
+            if self.owned_connection is not None:
+                self.owned_connection.close()
+                self.owned_connection = None
+
     def run_forever(self, *, interval_seconds: float = 2.0, stop_event=None) -> None:
         stop_event = stop_event or threading.Event()
         interval_seconds = max(0.2, float(interval_seconds))
-        while not stop_event.is_set():
-            try:
-                self.tick()
-            except Exception as exc:
-                _LOG.warning("Factory controller tick failed (%s)", type(exc).__name__)
-            stop_event.wait(interval_seconds)
+        try:
+            while not stop_event.is_set():
+                try:
+                    self.tick()
+                except Exception as exc:
+                    _LOG.warning("Factory controller tick failed (%s)", type(exc).__name__)
+                stop_event.wait(interval_seconds)
+        finally:
+            self.close()
+
+
+def build_default_runtime():
+    """Construct the local controller runtime in the thread that will own SQLite."""
+    from core.db import connect
+
+    from .avd import AvdManager
+    from .host_metrics import HostMetricsSampler
+    from .repository import FactoryRepository
+    from .scheduler import Scheduler
+    from .schema import ensure_schema
+    from .service import FactoryService
+    from .supervisor import WorkerSupervisor
+    from .worker_process import WorkerProcessManager
+
+    conn = connect()
+    ensure_schema(conn)
+    repo = FactoryRepository(conn)
+    service = FactoryService(repo)
+    worker_processes = WorkerProcessManager()
+    avd = AvdManager()
+    metrics = HostMetricsSampler()
+    scheduler = Scheduler(repo, service)
+    supervisor = WorkerSupervisor(
+        repo,
+        avd,
+        metrics,
+        worker_processes=worker_processes,
+    )
+    supervisor.reconcile_on_boot()
+    return FactoryControllerRuntime(
+        repo,
+        service,
+        scheduler,
+        supervisor,
+        worker_processes,
+        owned_connection=conn,
+    )
