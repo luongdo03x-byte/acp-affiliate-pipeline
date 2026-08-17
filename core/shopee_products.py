@@ -132,11 +132,11 @@ def put_metadata_cache(conn, product_url: str, metadata: ProductMetadata, source
                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(shop_id, item_id) DO UPDATE SET
                     product_id=COALESCE(excluded.product_id, shopee_metadata_cache.product_id),
-                    name=excluded.name,
-                    current_price=excluded.current_price,
-                    original_price=excluded.original_price,
-                    image_url=excluded.image_url,
-                    shop_name=excluded.shop_name,
+                    name=COALESCE(excluded.name, shopee_metadata_cache.name),
+                    current_price=COALESCE(excluded.current_price, shopee_metadata_cache.current_price),
+                    original_price=COALESCE(excluded.original_price, shopee_metadata_cache.original_price),
+                    image_url=COALESCE(excluded.image_url, shopee_metadata_cache.image_url),
+                    shop_name=COALESCE(excluded.shop_name, shopee_metadata_cache.shop_name),
                     source=excluded.source,
                     observed_at=excluded.observed_at,
                     updated_at=excluded.updated_at""",
