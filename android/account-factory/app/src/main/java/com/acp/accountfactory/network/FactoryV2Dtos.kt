@@ -1,6 +1,5 @@
 package com.acp.accountfactory.network
 
-import org.json.JSONArray
 import org.json.JSONObject
 
 data class BatchSummaryDto(
@@ -91,6 +90,13 @@ data class CommandAcceptedDto(
     val status: String,
 )
 
+data class StartedOAuthDto(
+    val sessionId: String,
+    val authorizationUrl: String,
+    val status: String,
+    val expiresAt: String,
+)
+
 object FactoryV2Json {
     private fun JSONObject.stringOrNull(name: String): String? =
         optString(name).takeIf { it.isNotBlank() && it != "null" }
@@ -140,6 +146,9 @@ object FactoryV2Json {
         return List(array.length()) { index -> parseAccount(array.getJSONObject(index)) }
     }
 
+    fun parseAccountResponse(text: String): FactoryAccountDto =
+        parseAccount(JSONObject(text).getJSONObject("account"))
+
     fun parseWorkers(text: String): List<FactoryWorkerDto> {
         val array = JSONObject(text).getJSONArray("workers")
         return List(array.length()) { index ->
@@ -186,6 +195,16 @@ object FactoryV2Json {
         return CommandAcceptedDto(
             commandId = root.getString("command_id"),
             status = root.getString("status"),
+        )
+    }
+
+    fun parseStartedOAuth(text: String): StartedOAuthDto {
+        val root = JSONObject(text)
+        return StartedOAuthDto(
+            sessionId = root.getString("session_id"),
+            authorizationUrl = root.getString("authorization_url"),
+            status = root.getString("status"),
+            expiresAt = root.getString("expires_at"),
         )
     }
 
