@@ -618,6 +618,64 @@ def test_score_hooks_judge_wrong_count_falls_back_to_rule_score():
         content_hook.set_hook_judge(None)
 
 
+def test_generate_variants_three_distinct_angles_when_data_allows():
+    print("\ngenerate_variants() trả đủ 3 variant distinct angle khi dữ liệu cho phép")
+    from acp.core import content_variant, content_facts
+    conn = connect()
+    p = conn.execute(
+        "SELECT * FROM product WHERE original_price IS NOT NULL AND original_price > current_price "
+        "AND (original_price - current_price) * 1.0 / original_price >= 0.05 "
+        "AND category_code = 'gia-dung' LIMIT 1"
+    ).fetchone()
+    facts = content_facts.build_product_facts(conn, p)
+    variants = content_variant.generate_variants(facts, p)
+    check("đúng 3 variant", len(variants) == 3, variants)
+    check("3 angle đúng thứ tự DEAL_PRICE/USE_CASE/PERSONAL_RECOMMENDATION",
+          [v.angle for v in variants] == ["DEAL_PRICE", "USE_CASE", "PERSONAL_RECOMMENDATION"],
+          [v.angle for v in variants])
+    conn.close()
+
+
+def test_generate_variants_single_angle_when_data_limited():
+    print("\ngenerate_variants() trả đúng 1 variant khi sản phẩm không đủ tín hiệu (không ép đủ 3)")
+    from acp.core import content_variant, content_facts
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE category_code = 'thiet-bi-y-te' LIMIT 1").fetchone()
+    facts = content_facts.build_product_facts(conn, p)
+    variants = content_variant.generate_variants(facts, p)
+    check("đúng 1 variant", len(variants) == 1, variants)
+    check("angle là PERSONAL_RECOMMENDATION", variants[0].angle == "PERSONAL_RECOMMENDATION", variants[0])
+    conn.close()
+
+
+def test_generate_variant_body_at_most_two_items():
+    print("\ngenerate_variant() body tối đa 2 phần tử (PTYC mục 20)")
+    from acp.core import content_variant
+    facts = _mk_dog_bowl_facts()
+    for angle in ("DEAL_PRICE", "USE_CASE", "PERSONAL_RECOMMENDATION"):
+        v = content_variant.generate_variant(angle, facts)
+        check(f"body <=2 phần tử ({angle})", len(v.body) <= 2, v.body)
+
+
+def test_generate_variant_cta_from_correct_pool():
+    print("\ngenerate_variant() chọn CTA đúng pool theo ANGLE_TO_CTA_TYPE")
+    from acp.core import content_variant
+    facts = _mk_dog_bowl_facts()
+    for angle in ("DEAL_PRICE", "USE_CASE", "PERSONAL_RECOMMENDATION"):
+        v = content_variant.generate_variant(angle, facts)
+        expected_pool = content_variant.CTA_POOL[content_variant.ANGLE_TO_CTA_TYPE[angle]]
+        check(f"cta thuộc đúng pool ({angle})", v.cta in expected_pool, (angle, v.cta))
+
+
+def test_template_body_differs_per_angle():
+    print("\n_template_body() cho main_message khác nhau theo từng angle (không tạo variant gần giống hệt)")
+    from acp.core import content_variant
+    facts = _mk_dog_bowl_facts()
+    messages = {a: content_variant._template_body(a, facts)[0]
+                for a in ("DEAL_PRICE", "USE_CASE", "PERSONAL_RECOMMENDATION")}
+    check("3 main_message khác nhau", len(set(messages.values())) == 3, messages)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3068,6 +3126,11 @@ if __name__ == "__main__":
     test_score_hooks_judge_raises_exception_falls_back()
     test_score_hooks_judge_scores_clamped_to_0_1_range()
     test_score_hooks_judge_wrong_count_falls_back_to_rule_score()
+    test_generate_variants_three_distinct_angles_when_data_allows()
+    test_generate_variants_single_angle_when_data_limited()
+    test_generate_variant_body_at_most_two_items()
+    test_generate_variant_cta_from_correct_pool()
+    test_template_body_differs_per_angle()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
