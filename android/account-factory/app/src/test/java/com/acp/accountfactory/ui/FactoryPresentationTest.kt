@@ -30,4 +30,13 @@ class FactoryPresentationTest {
         assertEquals("45 phút", waitingDuration("2026-08-17T06:00:00Z", now))
         assertEquals("2 giờ 5 phút", waitingDuration("2026-08-17T04:40:00Z", now))
     }
+
+    @Test
+    fun oauthRetryUsesOAuthActionInsteadOfGenericStageRetry() {
+        assertEquals(AccountAction.CONNECT_OAUTH, primaryAccountAction("THREADS_CREATED", null))
+        assertEquals(AccountAction.CONNECT_OAUTH, primaryAccountAction("RETRY_PENDING", "OAUTH_FAILED"))
+        assertEquals(AccountAction.RETRY, primaryAccountAction("ERROR", "POSTCHECK_FAILED"))
+        assertEquals(AccountAction.NONE, primaryAccountAction("ACP_CONNECTING", null))
+        assertEquals(AccountAction.NONE, primaryAccountAction("ACP_ACTIVE", null))
+    }
 }
