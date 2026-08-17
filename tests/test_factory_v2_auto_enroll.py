@@ -137,6 +137,21 @@ class AutoEnrollApiTests(unittest.TestCase):
         )
         self.assertEqual(200, dashboard.status_code)
 
+    def test_enrolled_token_works_in_existing_android_factory_key_slot(self):
+        os.environ["ACP_FACTORY_LAN_AUTO_ENROLL"] = "true"
+        enrolled = self.client.post(
+            "/api/factory/enroll",
+            json={"device_id": "phone-android01", "device_name": "Android"},
+            environ_base={"REMOTE_ADDR": "192.168.1.22"},
+        )
+        self.assertEqual(201, enrolled.status_code)
+        token = enrolled.get_json()["device_token"]
+        dashboard = self.client.get(
+            "/api/factory/v2/dashboard",
+            headers={"X-ACP-Factory-Key": token},
+        )
+        self.assertEqual(200, dashboard.status_code)
+
     def test_invalid_device_token_is_401_and_legacy_key_still_works(self):
         invalid = self.client.get(
             "/api/factory/v2/dashboard",
