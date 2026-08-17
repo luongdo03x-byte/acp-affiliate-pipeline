@@ -9,17 +9,18 @@ Cài APK rồi mở app mà không phải nhập Controller URL hoặc Factory K
 Dùng HTTP LAN discovery + device enrollment, không hardcode Factory Key vào APK.
 
 1. Controller công khai `GET /api/factory/discovery` không yêu cầu secret và chỉ trả metadata không nhạy cảm.
-2. Android ưu tiên URL/token đã lưu. Nếu chưa có, app quét subnet Wi-Fi hiện tại để tìm endpoint discovery trên port cấu hình mặc định 5001.
+2. Android ưu tiên URL/token đã lưu. Nếu chưa có hoặc credential cũ không còn hợp lệ, app quét subnet Wi-Fi hiện tại để tìm endpoint discovery trên port cấu hình mặc định 5001.
 3. Controller cho phép `POST /api/factory/enroll` chỉ khi `ACP_FACTORY_LAN_AUTO_ENROLL=true` và request đến từ private/link-local address. Endpoint nhận `device_id` + `device_name`, tạo token ngẫu nhiên, chỉ lưu SHA-256 hash trong SQLite và trả raw token đúng ở response enrollment.
 4. Android lưu token bằng Android Keystore AES/GCM; `base_url` có thể lưu plain SharedPreferences vì không phải secret.
-5. Các API Factory V2 chấp nhận hoặc `X-ACP-Factory-Key` (legacy/operator) hoặc `X-ACP-Device-Token` hợp lệ. Device token có thể bị revoke server-side và không bao giờ được trả trong API đọc.
-6. Khi bootstrap thành công, foreground `LocalRunnerService` tự start và tiếp tục auto-reconnect qua persisted credential.
+5. Các API Factory V2 chấp nhận hoặc `X-ACP-Factory-Key` (legacy/operator) hoặc `X-ACP-Device-Token` hợp lệ. Để không phải sửa networking layer cũ của APK, auth bridge cũng nhận device credential trong slot `X-ACP-Factory-Key` rồi mới fallback sang real Factory Key.
+6. Foreground `LocalRunnerService` khởi động ngay khi mở app, validate credential, tự rediscover/re-enroll khi credential/URL cũ hỏng, rồi mới start LOCAL_DEVICE runner.
 
 ## Backward compatibility
 
 - Giữ `Factory Key` manual fallback cho máy cũ và troubleshooting.
-- `FactoryConnection` hỗ trợ `deviceToken` trước, fallback `factoryKey` sau.
-- Existing API clients/tests dùng `X-ACP-Factory-Key` không đổi semantics.
+- Không thay đổi constructor/networking contract hiện tại của `FactoryConnection`; `FactorySettingsStore` đưa credential đã enroll vào credential slot hiện có.
+- Controller auth bridge thử giá trị đó như device credential trước, rồi mới dùng semantics `ACP_FACTORY_API_KEY` cũ.
+- Existing API clients/tests dùng real `X-ACP-Factory-Key` không đổi semantics.
 - Existing `factory_worker` / LOCAL_DEVICE registration flow không bị thay thế; enrollment chỉ cấp credential, runner registration vẫn là bước runner chuẩn.
 
 ## Controller data model
@@ -41,7 +42,7 @@ Không lưu raw token.
 
 Android xác định IPv4 Wi-Fi hiện tại và tạo candidate hosts cùng `/24`. Quét có giới hạn concurrency và timeout ngắn; dừng ngay khi response có `service = account-factory` và `api_version = 2`. Không quét Internet/public ranges.
 
-Nếu không tìm thấy Controller, app vẫn mở bình thường và hiển thị trạng thái `Controller not found`; manual settings được giữ làm fallback, không hiện như bước onboarding bắt buộc.
+Nếu không tìm thấy Controller, app vẫn mở bình thường; bấm refresh/create sẽ thử bootstrap lại. Manual settings được giữ làm fallback chủ động qua nút Settings, không hiện như bước onboarding bắt buộc.
 
 ## Enrollment security
 
@@ -56,14 +57,17 @@ Nếu không tìm thấy Controller, app vẫn mở bình thường và hiển t
 
 ```text
 App start
+  -> start foreground LocalRunnerService
   -> credential exists?
-       yes -> ping dashboard -> start LocalRunnerService
+       yes -> validate against controller
+              -> valid: start LOCAL_DEVICE runner
+              -> invalid/unreachable: rediscover + re-enroll
        no  -> discover controller
                -> enroll device
                -> save base URL + encrypted device token
-               -> start LocalRunnerService
-  -> Accessibility disabled?
-       show action to open Accessibility Settings
+               -> start LOCAL_DEVICE runner
+  -> Accessibility needed for an action?
+       open Accessibility Settings for one-time human enablement
 ```
 
 ## Testing
@@ -75,6 +79,7 @@ App start
 - enrollment rejects non-private address
 - enrollment creates token, stores only hash, rotates token on re-enroll
 - device token authenticates Factory V2 routes
+- enrolled token also works through the existing Android credential/header slot
 - invalid/revoked token gets 401
 - legacy Factory Key remains valid
 
@@ -83,10 +88,9 @@ App start
 Pure helper tests cover:
 - candidate `/24` host generation only for private IPv4
 - discovery JSON validation
-- connection header preference: Device Token over Factory Key
-- bootstrap state selection from persisted settings
+- enrollment JSON validation
 
-Android Keystore and service startup remain Android-runtime integration points and require APK/device verification.
+Additional compile/static verification covers bootstrap state and recovery logic. Android Keystore, OkHttp/Android integration and foreground service startup still require the real Android SDK/Gradle build plus device verification.
 
 ## Out of scope
 
