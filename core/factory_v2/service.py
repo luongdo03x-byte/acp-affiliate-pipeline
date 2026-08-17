@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from core.db import now, transaction, ulid
 
 from .identity import generate_profiles
-from .models import AccountStage, BatchStatus
+from .models import AccountStage, BatchStatus, RunnerType, WorkerState
 from .state_machine import require_transition, safe_stage_after_transition
 
 _ALLOWED_ERROR_CODES = frozenset({
@@ -33,6 +33,15 @@ def _clean_error(error_code: str | None, error_message: str | None) -> tuple[str
 
 def _future_iso(minutes: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def _clean_runner_text(value: str, field: str, *, max_length: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        raise ValueError(f"{field} is required")
+    if len(text) > max_length:
+        raise ValueError(f"{field} is too long")
+    return text
 
 
 class FactoryService:
@@ -80,6 +89,58 @@ class FactoryService:
             self.repo.create_batch(batch_row)
             self.repo.insert_accounts(account_rows)
         return self.repo.get_batch(batch_id)
+
+    def register_local_runner(self, device_id: str, device_name: str) -> dict:
+        device_id = _clean_runner_text(device_id, "device_id", max_length=160)
+        device_name = _clean_runner_text(device_name, "device_name", max_length=160)
+        timestamp = now()
+        existing = self.repo.get_worker_by_device_id(device_id)
+        if existing is not None:
+            if existing.get("runner_type") != RunnerType.LOCAL_DEVICE.value:
+                raise ValueError("device_id belongs to a non-local runner")
+            updates = {
+                "device_name": device_name,
+                "last_heartbeat_at": timestamp,
+            }
+            if not existing.get("current_job_id") and existing.get("state") in {
+                WorkerState.STOPPED.value,
+                WorkerState.ERROR.value,
+            }:
+                updates.update(state=WorkerState.READY.value, draining=0, last_error=None)
+            return self.repo.update_worker_fields(existing["id"], **updates)
+
+        return self.repo.insert_worker({
+            "id": ulid(),
+            "runner_type": RunnerType.LOCAL_DEVICE.value,
+            "device_id": device_id,
+            "device_name": device_name,
+            "state": WorkerState.READY.value,
+            "started_at": timestamp,
+            "last_heartbeat_at": timestamp,
+        })
+
+    def heartbeat_runner(
+        self,
+        worker_id: str,
+        *,
+        current_account_id: str | None,
+        current_job_id: str | None,
+    ) -> dict:
+        worker = self.repo.get_worker(worker_id)
+        if worker is None:
+            raise KeyError(worker_id)
+        if worker.get("runner_type") != RunnerType.LOCAL_DEVICE.value:
+            raise ValueError("phone heartbeat is only valid for LOCAL_DEVICE runners")
+
+        expected_account = worker.get("current_account_id")
+        expected_job = worker.get("current_job_id")
+        if current_account_id != expected_account or current_job_id != expected_job:
+            raise ValueError("runner assignment does not match controller lease")
+
+        return self.repo.update_worker_fields(
+            worker_id,
+            last_heartbeat_at=now(),
+        )
 
     def transition_account(
         self,
