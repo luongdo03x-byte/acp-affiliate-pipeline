@@ -35,6 +35,8 @@ class FakeAvd:
     def __init__(self):
         self.stopped = []
         self.started = []
+        self.online = []
+        self.booted = set()
 
     def stop(self, serial):
         self.stopped.append(serial)
@@ -43,14 +45,14 @@ class FakeAvd:
         return ["acp-worker-01", "acp-worker-02", "acp-worker-03"]
 
     def list_online_devices(self):
-        return []
+        return list(self.online)
 
     def start(self, avd_name, port):
         self.started.append((avd_name, port))
         return type("P", (), {"pid": 4321})()
 
     def is_boot_completed(self, serial):
-        return False
+        return serial in self.booted
 
 
 class FactoryV2SupervisorTests(unittest.TestCase):
@@ -110,6 +112,23 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         worker = self.repo.get_worker("boot")
         self.assertEqual(3, worker["recovery_count"])
         self.assertEqual("ERROR", worker["state"])
+
+    def test_started_avd_records_serial_and_reaches_ready_after_boot(self):
+        supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
+
+        decision = supervisor.tick()
+
+        self.assertEqual("START", decision.action)
+        worker = self.repo.get_worker(decision.worker_id)
+        self.assertEqual("emulator-5554", worker["adb_serial"])
+        self.assertEqual("STARTING", worker["state"])
+
+        self.avd.online = ["emulator-5554"]
+        self.avd.booted.add("emulator-5554")
+        supervisor.tick()
+
+        worker = self.repo.get_worker(decision.worker_id)
+        self.assertEqual("READY", worker["state"])
 
 
 if __name__ == "__main__":
