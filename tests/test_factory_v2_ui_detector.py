@@ -36,6 +36,12 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(detected.protected)
         self.assertFalse(detected.automation_allowed)
 
+    def test_contact_input_screen_waits_for_human(self):
+        snapshot = UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Mobile number or email"),))
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("EMAIL_OR_PHONE_VERIFICATION", detected.kind)
+        self.assertTrue(detected.protected)
+
     def test_unknown_never_allows_automation(self):
         detected = build_instagram_detector().detect(UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Unexpected screen"),)))
         self.assertEqual("UNKNOWN", detected.kind)
