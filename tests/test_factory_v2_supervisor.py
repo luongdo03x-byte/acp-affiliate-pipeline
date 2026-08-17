@@ -130,6 +130,47 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         worker = self.repo.get_worker(decision.worker_id)
         self.assertEqual("READY", worker["state"])
 
+    def test_manual_drain_intent_stops_idle_worker_before_green_scale_up(self):
+        self.repo.insert_worker({
+            "id": "drain-me",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "DRAINING",
+            "draining": 1,
+        })
+        supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
+
+        decision = supervisor.tick()
+
+        self.assertEqual("DRAIN", decision.action)
+        self.assertEqual("drain-me", decision.worker_id)
+        self.assertEqual(["emulator-5554"], self.avd.stopped)
+        self.assertEqual([], self.avd.started)
+        self.assertEqual("STOPPED", self.repo.get_worker("drain-me")["state"])
+
+    def test_manual_restart_intent_stops_first_and_restarts_on_next_tick(self):
+        self.repo.insert_worker({
+            "id": "restart-me",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "RECOVERING",
+            "last_error": "manual restart requested",
+        })
+        supervisor = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1))
+
+        stop_decision = supervisor.tick()
+
+        self.assertEqual("RESTART_STOP", stop_decision.action)
+        self.assertEqual(["emulator-5554"], self.avd.stopped)
+        self.assertEqual([], self.avd.started)
+        self.assertEqual("STOPPED", self.repo.get_worker("restart-me")["state"])
+
+        start_decision = supervisor.tick()
+
+        self.assertEqual("START", start_decision.action)
+        self.assertEqual("restart-me", start_decision.worker_id)
+        self.assertEqual([("acp-worker-01", 5554)], self.avd.started)
+
 
 if __name__ == "__main__":
     unittest.main()
