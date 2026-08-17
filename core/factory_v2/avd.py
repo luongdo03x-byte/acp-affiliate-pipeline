@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -92,11 +93,20 @@ class AvdManager:
         self._checked([self.adb, "-s", serial, "emu", "kill"], timeout=20)
 
     def open_url(self, serial: str, url: str) -> None:
-        if not (url.startswith("https://") or url.startswith("http://")):
-            raise ValueError("only http/https URLs are supported")
+        value = str(url or "").strip()
+        if not value or any(ord(character) < 32 for character in value):
+            raise ValueError("invalid URL")
+        try:
+            parsed = urlsplit(value)
+        except ValueError as exc:
+            raise ValueError("invalid URL") from exc
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            raise ValueError("only https URLs are supported")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("URL credentials are not supported")
         self._checked([
             self.adb, "-s", serial, "shell", "am", "start",
-            "-a", "android.intent.action.VIEW", "-d", url,
+            "-a", "android.intent.action.VIEW", "-d", value,
         ], timeout=20)
 
     def open_package(self, serial: str, package: str) -> None:
