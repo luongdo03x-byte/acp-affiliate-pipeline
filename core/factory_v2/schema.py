@@ -118,6 +118,23 @@ CREATE TABLE IF NOT EXISTS factory_checkpoint (
 );
 CREATE INDEX IF NOT EXISTS idx_factory_checkpoint_status ON factory_checkpoint(status, next_reminder_at);
 
+CREATE TABLE IF NOT EXISTS factory_runner_command (
+    id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL REFERENCES factory_worker(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL REFERENCES factory_job(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES factory_account(id) ON DELETE CASCADE,
+    runner_type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    completed_at TEXT,
+    result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_factory_runner_command_delivery
+ON factory_runner_command(worker_id, status, created_at, id);
+
 CREATE TABLE IF NOT EXISTS factory_resource_sample (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
