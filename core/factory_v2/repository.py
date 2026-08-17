@@ -160,6 +160,67 @@ class FactoryRepository:
             (account_id, *_ACTIVE_JOB_STATES),
         ).fetchone())
 
+    def create_runner_command(self, row: Mapping[str, Any]) -> dict:
+        try:
+            _insert(self.conn, "factory_runner_command", row)
+        except sqlite3.IntegrityError:
+            existing = self.get_runner_command(row["id"])
+            if existing is not None:
+                return existing
+            raise
+        return self.get_runner_command(row["id"])
+
+    def get_runner_command(self, command_id: str) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_runner_command WHERE id=?", (command_id,)
+        ).fetchone())
+
+    def claim_next_runner_command(self, worker_id: str, *, delivered_at: str) -> dict | None:
+        with transaction(self.conn):
+            row = self.conn.execute(
+                """SELECT * FROM factory_runner_command
+                   WHERE worker_id=? AND status='QUEUED'
+                   ORDER BY created_at, id
+                   LIMIT 1""",
+                (worker_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                """UPDATE factory_runner_command
+                   SET status='DELIVERED', delivered_at=?
+                   WHERE id=? AND status='QUEUED'""",
+                (delivered_at, row["id"]),
+            )
+        return self.get_runner_command(row["id"])
+
+    def complete_runner_command(
+        self,
+        worker_id: str,
+        command_id: str,
+        *,
+        status: str,
+        result_json: str,
+        completed_at: str,
+    ) -> dict:
+        status = str(status).upper()
+        if status not in {"COMPLETED", "FAILED"}:
+            raise ValueError("runner command result status must be COMPLETED or FAILED")
+        row = self.get_runner_command(command_id)
+        if row is None or row["worker_id"] != worker_id:
+            raise KeyError(command_id)
+        if row["status"] in {"COMPLETED", "FAILED"}:
+            return row
+        if row["status"] not in {"QUEUED", "DELIVERED"}:
+            raise ValueError(f"runner command cannot complete from {row['status']}")
+        self.conn.execute(
+            """UPDATE factory_runner_command
+               SET status=?, result_json=?, completed_at=?
+               WHERE id=?""",
+            (status, result_json, completed_at, command_id),
+        )
+        return self.get_runner_command(command_id)
+
     def create_checkpoint(self, row: Mapping[str, Any]) -> dict:
         _insert(self.conn, "factory_checkpoint", row)
         return self.get_checkpoint(row["id"])
