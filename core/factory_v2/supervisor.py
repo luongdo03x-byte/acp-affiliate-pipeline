@@ -88,6 +88,56 @@ class WorkerSupervisor:
                     (now(), worker["id"]),
                 )
 
+    def _stop_persisted_worker(self, worker, *, action: str, capacity, target) -> SupervisorDecision:
+        worker_id = worker["id"]
+        self.repo.conn.execute(
+            "UPDATE factory_worker SET state='DRAINING', draining=1 WHERE id=?",
+            (worker_id,),
+        )
+        try:
+            if worker["adb_serial"]:
+                self.avd.stop(worker["adb_serial"])
+            self.repo.conn.execute(
+                """UPDATE factory_worker
+                   SET state='STOPPED', draining=0, current_account_id=NULL,
+                       current_job_id=NULL, pid=NULL
+                   WHERE id=?""",
+                (worker_id,),
+            )
+        except Exception as exc:
+            self.repo.conn.execute(
+                "UPDATE factory_worker SET state='ERROR', last_error=? WHERE id=?",
+                (str(exc)[:500], worker_id),
+            )
+            return SupervisorDecision(
+                f"{action}_FAILED", capacity, len(self._workers()), worker_id, worker["avd_name"]
+            )
+        return SupervisorDecision(action, capacity, target, worker_id, worker["avd_name"])
+
+    def _process_operator_intent(self, capacity, target, workers) -> SupervisorDecision | None:
+        restart = next((
+            w for w in workers
+            if w["state"] == "RECOVERING"
+            and w["last_error"] == "manual restart requested"
+            and not w["current_job_id"]
+        ), None)
+        if restart is not None:
+            return self._stop_persisted_worker(
+                restart, action="RESTART_STOP", capacity=capacity, target=target
+            )
+
+        drain = next((
+            w for w in workers
+            if w["draining"]
+            and not w["current_job_id"]
+            and w["state"] != "WAITING_HUMAN"
+        ), None)
+        if drain is not None:
+            return self._stop_persisted_worker(
+                drain, action="DRAIN", capacity=capacity, target=target
+            )
+        return None
+
     def tick(self) -> SupervisorDecision:
         self._promote_booted_starting_workers()
         sample = self.metrics.sample()
@@ -99,6 +149,11 @@ class WorkerSupervisor:
         target = next_worker_target(len(workers), waiting, capacity, learned_ram)
         stable = self._is_stable(capacity)
         self._persist_sample(sample, capacity, workers, target)
+
+        operator_decision = self._process_operator_intent(capacity, target, workers)
+        if operator_decision is not None:
+            return operator_decision
+
         if not stable:
             return SupervisorDecision("HOLD", capacity, len(workers))
 
@@ -161,23 +216,9 @@ class WorkerSupervisor:
             self.repo.conn.execute("UPDATE factory_worker SET state='DRAINING', draining=1 WHERE id=?", (worker_id,))
             return SupervisorDecision("DRAIN_PENDING", capacity, target, worker_id, candidate["avd_name"])
 
-        self.repo.conn.execute("UPDATE factory_worker SET state='DRAINING', draining=1 WHERE id=?", (worker_id,))
-        try:
-            if candidate["adb_serial"]:
-                self.avd.stop(candidate["adb_serial"])
-            self.repo.conn.execute(
-                """UPDATE factory_worker
-                   SET state='STOPPED', draining=0, current_account_id=NULL, current_job_id=NULL
-                   WHERE id=?""",
-                (worker_id,),
-            )
-        except Exception as exc:
-            self.repo.conn.execute(
-                "UPDATE factory_worker SET state='ERROR', last_error=? WHERE id=?",
-                (str(exc)[:500], worker_id),
-            )
-            return SupervisorDecision("DRAIN_FAILED", capacity, len(workers), worker_id, candidate["avd_name"])
-        return SupervisorDecision("DRAIN", capacity, target, worker_id, candidate["avd_name"])
+        return self._stop_persisted_worker(
+            candidate, action="DRAIN", capacity=capacity, target=target
+        )
 
     def reconcile_missing_heartbeat(self, worker_id: str) -> None:
         worker = self.repo.get_worker(worker_id)
