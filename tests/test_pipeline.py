@@ -294,6 +294,62 @@ def test_check_fact_safety_blocks_efficacy_claim():
     check("cam kết công dụng bị chặn", len(result) > 0, result)
 
 
+def test_select_angle_candidates_deal_price_from_real_discount():
+    print("\nselect_angle_candidates() thêm DEAL_PRICE đầu list khi giảm giá >=5%")
+    from acp.core import content_angle
+    conn = connect()
+    p = conn.execute(
+        "SELECT * FROM product WHERE original_price IS NOT NULL AND original_price > current_price "
+        "AND (original_price - current_price) * 1.0 / original_price >= 0.05 LIMIT 1"
+    ).fetchone()
+    candidates = content_angle.select_angle_candidates(p)
+    check("DEAL_PRICE có trong candidates", "DEAL_PRICE" in candidates, candidates)
+    check("DEAL_PRICE đứng đầu danh sách", candidates[0] == "DEAL_PRICE", candidates)
+    conn.close()
+
+
+def test_select_angle_candidates_use_case_category():
+    print("\nselect_angle_candidates() thêm USE_CASE cho category gia-dung/phu-kien-cong-nghe")
+    from acp.core import content_angle
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE category_code = 'gia-dung' LIMIT 1").fetchone()
+    candidates = content_angle.select_angle_candidates(p)
+    check("USE_CASE có trong candidates", "USE_CASE" in candidates, candidates)
+    conn.close()
+
+
+def test_select_angle_candidates_personal_recommendation_category():
+    print("\nselect_angle_candidates() thêm PERSONAL_RECOMMENDATION cho category thoi-trang/cham-soc-ca-nhan")
+    from acp.core import content_angle
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE category_code = 'thoi-trang' LIMIT 1").fetchone()
+    candidates = content_angle.select_angle_candidates(p)
+    check("PERSONAL_RECOMMENDATION có trong candidates", "PERSONAL_RECOMMENDATION" in candidates, candidates)
+    conn.close()
+
+
+def test_select_angle_candidates_unknown_category_falls_back():
+    print("\nselect_angle_candidates() category lạ, không giảm giá -> chỉ PERSONAL_RECOMMENDATION")
+    from acp.core import content_angle
+    conn = connect()
+    p = conn.execute("SELECT * FROM product WHERE category_code = 'thiet-bi-y-te' LIMIT 1").fetchone()
+    candidates = content_angle.select_angle_candidates(p)
+    check("chỉ có PERSONAL_RECOMMENDATION", candidates == ["PERSONAL_RECOMMENDATION"], candidates)
+    conn.close()
+
+
+def test_select_angle_candidates_always_ends_with_personal_recommendation():
+    print("\nselect_angle_candidates() luôn kết thúc bằng PERSONAL_RECOMMENDATION")
+    from acp.core import content_angle
+    conn = connect()
+    rows = conn.execute("SELECT * FROM product LIMIT 20").fetchall()
+    results = [content_angle.select_angle_candidates(p) for p in rows]
+    check("toàn bộ 20 sản phẩm đều kết thúc bằng PERSONAL_RECOMMENDATION",
+          all(c[-1] == "PERSONAL_RECOMMENDATION" for c in results),
+          [c for c in results if c[-1] != "PERSONAL_RECOMMENDATION"])
+    conn.close()
+
+
 def test_build_extract_prompt_fences_untrusted_description():
     print("\n_build_extract_prompt() rào description trong delimiter, chống prompt injection")
     from acp.core import content_facts
@@ -2677,6 +2733,11 @@ if __name__ == "__main__":
     test_check_fact_safety_does_not_block_real_sold_count_phrasing()
     test_check_fact_safety_blocks_fabricated_urgency()
     test_check_fact_safety_blocks_efficacy_claim()
+    test_select_angle_candidates_deal_price_from_real_discount()
+    test_select_angle_candidates_use_case_category()
+    test_select_angle_candidates_personal_recommendation_category()
+    test_select_angle_candidates_unknown_category_falls_back()
+    test_select_angle_candidates_always_ends_with_personal_recommendation()
     test_build_extract_prompt_fences_untrusted_description()
     test_build_product_facts_extractor_raises_exception_falls_back()
     test_check_fact_safety_none_caption_returns_empty()
