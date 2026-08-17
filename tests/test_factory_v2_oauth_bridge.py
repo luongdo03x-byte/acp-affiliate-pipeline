@@ -221,6 +221,25 @@ class FactoryV2OAuthBridgeTests(unittest.TestCase):
         self.assertEqual(AccountStage.ERROR.value, updated["stage"])
         self.assertEqual("ACCOUNT_MISMATCH", updated["last_error_code"])
 
+    def test_callback_provider_denial_marks_oauth_error_and_factory_retry_pending(self):
+        provider = FakeThreadsOAuth()
+        account, result = self.start(provider=provider)
+        app = Flask(__name__)
+        app.testing = True
+        app.config["ACCOUNT_FACTORY_OAUTH_FACTORY"] = lambda: provider
+        register_account_factory_routes(app)
+
+        response = app.test_client().get(
+            f"/oauth/account-factory/threads/callback?error=access_denied&state={provider.state}"
+        )
+
+        self.assertEqual(400, response.status_code)
+        session = get_session(self.conn, result["session_id"])
+        updated = self.repo.get_account(account["id"])
+        self.assertEqual("OAUTH_ERROR", session["status"])
+        self.assertEqual(AccountStage.RETRY_PENDING.value, updated["stage"])
+        self.assertEqual("OAUTH_FAILED", updated["last_error_code"])
+
 
 if __name__ == "__main__":
     unittest.main()
