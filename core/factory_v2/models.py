@@ -10,10 +10,18 @@ class BatchStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class RunnerType(StrEnum):
+    LOCAL_DEVICE = "LOCAL_DEVICE"
+    REMOTE_AVD = "REMOTE_AVD"
+
+
 class AccountStage(StrEnum):
     NEW = "NEW"
     PROFILE_READY = "PROFILE_READY"
+    # AVD_ASSIGNED remains readable for persisted P0 rows. New leases use the
+    # runner-neutral RUNNER_ASSIGNED stage.
     AVD_ASSIGNED = "AVD_ASSIGNED"
+    RUNNER_ASSIGNED = "RUNNER_ASSIGNED"
     IG_READY_FOR_HUMAN = "IG_READY_FOR_HUMAN"
     WAITING_HUMAN = "WAITING_HUMAN"
     NEEDS_VERIFICATION = "NEEDS_VERIFICATION"
