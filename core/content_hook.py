@@ -51,7 +51,11 @@ def _template_hooks(facts) -> list:
 
 
 def check_hook_rules(hook: str, facts) -> list:
-    """Empty list means hook is valid. Non-empty is violation."""
+    """[] nghĩa là hook hợp lệ. Non-empty là vi phạm -- loại khỏi candidate
+    ở select_best_hook(). Tái dùng content_facts.check_fact_safety() cho
+    đúng ý "không clickbait sai sự thật" (PTYC mục 14) -- hook cũng là 1
+    đoạn text có thể bịa y hệt caption.
+    """
     problems = list(content_facts.check_fact_safety(hook))
     flat = (hook or "").strip().lower()
     if not flat:
@@ -59,7 +63,7 @@ def check_hook_rules(hook: str, facts) -> list:
         return problems
     for opening in _GENERIC_OPENINGS:
         if flat.startswith(opening):
-            problems.append(f"Mở đầu chung chung: {opening}")
+            problems.append(f'Mở đầu chung chung: “{opening}”')
     if facts.name and flat == facts.name.strip().lower():
         problems.append("Hook trùng y hệt tên sản phẩm, không có điểm nhấn")
     return problems
