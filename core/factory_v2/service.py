@@ -243,10 +243,16 @@ class FactoryService:
             raise ValueError("cannot drain worker during human checkpoint")
         if worker["state"] in {"STOPPED", "ERROR"}:
             raise ValueError(f"worker cannot drain from {worker['state']}")
-        self.repo.conn.execute(
-            "UPDATE factory_worker SET state='DRAINING', draining=1 WHERE id=?",
-            (worker_id,),
-        )
+        if worker["current_job_id"]:
+            self.repo.conn.execute(
+                "UPDATE factory_worker SET draining=1 WHERE id=?",
+                (worker_id,),
+            )
+        else:
+            self.repo.conn.execute(
+                "UPDATE factory_worker SET state='DRAINING', draining=1 WHERE id=?",
+                (worker_id,),
+            )
         return self.repo.get_worker(worker_id)
 
     def request_worker_restart(self, worker_id: str) -> dict:
@@ -255,6 +261,10 @@ class FactoryService:
             raise KeyError(worker_id)
         if worker["state"] == "WAITING_HUMAN":
             raise ValueError("cannot restart worker during human checkpoint")
+        if worker["current_job_id"]:
+            raise ValueError("cannot restart worker with an active job")
+        if worker["state"] == "STOPPED":
+            raise ValueError("cannot restart a stopped worker; start it through pool scaling")
         self.repo.conn.execute(
             """UPDATE factory_worker
                SET state='RECOVERING', draining=0,
