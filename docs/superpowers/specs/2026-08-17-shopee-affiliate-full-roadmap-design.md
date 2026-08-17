@@ -29,11 +29,13 @@ ACP:
 
 Phase 1 hiện được phát triển trong `feat/shopee-bulk-affiliate` và là dependency nền cho các phase sau.
 
+**Source-of-truth clarification:** một patch/roadmap cũ từng đề xuất bảng `affiliate_link` riêng và persist cả URL chưa có Product. PR Phase 1 hiện tại không làm vậy: URL chưa có Product chỉ được trả về UI để copy, còn Product đã tồn tại mới được cập nhật các affiliate fields hiện có. Các phase sau phải bám code/schema hiện tại; chỉ thêm bảng mới nếu Phase 3 chứng minh thật sự cần và có migration/test rõ ràng.
+
 ### Phase 2 — Shopee Metadata Helper
 
 Mục tiêu là giảm nhập metadata thủ công khi request server-side bị Shopee chặn bởi CAPTCHA/403.
 
-Thêm Chrome Extension nhỏ tên `ACP Shopee Helper` và một helper channel localhost an toàn.
+Thêm Chrome/Chromium Extension nhỏ tên `ACP Shopee Helper` và một helper channel localhost an toàn. P0 chỉ nhắm browser desktop trên máy operator chạy ACP; không yêu cầu mobile browser extension.
 
 Flow:
 
@@ -81,6 +83,8 @@ Helper endpoint phải:
 - không cho extension gửi arbitrary field;
 - không tạo draft/post/publish tự động.
 
+Ưu tiên tái sử dụng `core/helper_pairing.py` và `/api/helper/*` hiện có nếu contract phù hợp, thay vì tạo cơ chế auth thứ hai.
+
 Metadata states chuẩn:
 
 - `AUTO_COMPLETE` — các field bắt buộc có đủ từ server metadata;
@@ -121,12 +125,12 @@ Natural identity cho Shopee manual/direct product là Shopee item identity, khô
 Mục tiêu:
 
 - một canonical Product record cho cùng Shopee item;
-- nhiều affiliate link / tracking context có thể tham chiếu product đó;
+- nhiều affiliate link / tracking context có thể tham chiếu product đó khi data model cần;
 - nhiều post vẫn được phép;
 - không tạo product giả từ URL khi chưa đủ metadata bắt buộc;
 - không phá dữ liệu legacy.
 
-Schema/migration phải idempotent và backward-compatible.
+Schema/migration phải idempotent và backward-compatible. Phase 3 phải ưu tiên tận dụng các affiliate fields hiện có trên `product`; không tự động thêm bảng `affiliate_link` chỉ để khớp patch cũ.
 
 ### 3.3 Price history and refresh
 
@@ -323,7 +327,17 @@ main
 
 Phase sau base trên phase trước cho tới khi stack được merge tuần tự. Không force-push main.
 
-## 10. Testing strategy
+## 10. Planning decomposition
+
+Không tạo một mega-plan cho cả Phase 2–4. Mỗi phase có plan riêng vì có subsystem, schema/UI và verification gate khác nhau:
+
+1. `Phase 2 plan` — helper pairing, extension, metadata states và confirmation integration.
+2. `Phase 3 plan` — cache/upsert/price history/refresh.
+3. `Phase 4 plan` — preview/review polish, audit và release hardening.
+
+Mỗi plan được viết và thực thi trên stacked branch tương ứng. Phase sau không được coi là verified chỉ vì phase trước pass.
+
+## 11. Testing strategy
 
 ### Unit/focused
 
@@ -361,7 +375,7 @@ manager tests
 ./manage.sh test
 ```
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 Toàn bộ Shopee Affiliate roadmap chỉ xem là hoàn thành khi:
 
@@ -385,7 +399,7 @@ Toàn bộ Shopee Affiliate roadmap chỉ xem là hoàn thành khi:
 - browser pilot được operator duyệt;
 - các stacked PR được merge tuần tự sau verification.
 
-## 12. Explicit non-goals
+## 13. Explicit non-goals
 
 - Tự tạo hàng loạt tài khoản Shopee/Threads;
 - tự login Shopee;
