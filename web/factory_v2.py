@@ -23,14 +23,15 @@ _ACCOUNT_FIELDS = (
     "id", "batch_id", "sequence", "group_no", "username", "display_name", "bio",
     "gender_profile", "primary_niche", "secondary_interest", "personality_style",
     "content_tone", "avatar_type", "avatar_theme", "avatar_file", "stage",
-    "last_safe_stage", "assigned_worker_id", "current_job_id", "threads_user_id",
-    "channel_id", "channel_code", "retry_count", "last_error_code",
+    "last_safe_stage", "execution_target", "assigned_worker_id", "current_job_id",
+    "threads_user_id", "channel_id", "channel_code", "retry_count", "last_error_code",
     "last_error_message", "created_at", "updated_at", "completed_at",
 )
-_WORKER_FIELDS = (
-    "id", "avd_name", "state", "current_account_id", "current_job_id", "started_at",
-    "last_heartbeat_at", "last_progress_at", "processed_count", "recovery_count",
-    "estimated_ram_mb", "current_ram_mb", "current_cpu_percent", "draining", "last_error",
+_RUNNER_FIELDS = (
+    "id", "runner_type", "device_id", "device_name", "avd_name", "state",
+    "current_account_id", "current_job_id", "started_at", "last_heartbeat_at",
+    "last_progress_at", "processed_count", "recovery_count", "estimated_ram_mb",
+    "current_ram_mb", "current_cpu_percent", "draining", "last_error",
 )
 _CHECKPOINT_FIELDS = (
     "id", "batch_id", "account_id", "worker_id", "type", "status", "message",
@@ -47,7 +48,8 @@ _WAITING_STAGES = {
     "WAITING_HUMAN", "NEEDS_VERIFICATION", "NEEDS_CONFIRMATION", "USERNAME_UNAVAILABLE",
 }
 _RUNNING_STAGES = {
-    "AVD_ASSIGNED", "IG_READY_FOR_HUMAN", "THREADS_READY_FOR_HUMAN", "ACP_CONNECTING",
+    "AVD_ASSIGNED", "RUNNER_ASSIGNED", "IG_READY_FOR_HUMAN",
+    "THREADS_READY_FOR_HUMAN", "ACP_CONNECTING",
 }
 _ACTIVE_WORKER_STATES = {
     "STARTING", "READY", "RUNNING", "WAITING_HUMAN", "RECOVERING", "DRAINING",
@@ -228,8 +230,58 @@ def register_factory_v2_routes(app):
         try:
             return jsonify(
                 ok=True,
-                workers=[_pick(row, _WORKER_FIELDS) for row in repo.list_workers()],
+                workers=[_pick(row, _RUNNER_FIELDS) for row in repo.list_workers()],
             )
+        finally:
+            conn.close()
+
+    @app.get("/api/factory/v2/runners")
+    def factory_v2_runners():
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            return jsonify(
+                ok=True,
+                runners=[_pick(row, _RUNNER_FIELDS) for row in repo.list_workers()],
+            )
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/runners/local/register")
+    def factory_v2_register_local_runner():
+        _require_factory_key()
+        data = request.get_json(silent=True) or {}
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                runner = service.register_local_runner(
+                    data.get("device_id"), data.get("device_name")
+                )
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 400
+            return jsonify(ok=True, runner=_pick(runner, _RUNNER_FIELDS)), 201
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/runners/<worker_id>/heartbeat")
+    def factory_v2_runner_heartbeat(worker_id):
+        _require_factory_key()
+        data = request.get_json(silent=True) or {}
+        conn, repo = _repo()
+        try:
+            service = FactoryService(repo)
+            try:
+                runner = service.heartbeat_runner(
+                    worker_id,
+                    current_account_id=data.get("current_account_id"),
+                    current_job_id=data.get("current_job_id"),
+                )
+            except KeyError:
+                return jsonify(ok=False, error="Runner không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            return jsonify(ok=True, runner=_pick(runner, _RUNNER_FIELDS))
         finally:
             conn.close()
 
