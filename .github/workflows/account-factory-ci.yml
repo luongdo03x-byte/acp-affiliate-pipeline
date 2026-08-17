@@ -6,9 +6,13 @@ on:
   pull_request:
     paths:
       - "core/account_factory.py"
+      - "core/factory_v2/**"
       - "web/account_factory.py"
+      - "web/factory_v2.py"
+      - "workers/account_factory_worker.py"
       - "account_factory_server.py"
       - "tests/test_account_factory.py"
+      - "tests/test_factory_v2_*.py"
       - "android/account-factory/**"
       - ".github/workflows/account-factory-ci.yml"
 
@@ -26,7 +30,17 @@ jobs:
           ACP_ADAPTER: mock
           ACP_SOURCE: mock
           ACP_ENV: development
-        run: python -m unittest tests.test_account_factory -v
+        run: |
+          python -m unittest \
+            tests.test_account_factory \
+            tests.test_factory_v2_schema \
+            tests.test_factory_v2_identity \
+            tests.test_factory_v2_state_machine \
+            tests.test_factory_v2_service \
+            tests.test_factory_v2_resource_policy \
+            tests.test_factory_v2_avd \
+            tests.test_factory_v2_scheduler \
+            tests.test_factory_v2_supervisor -v
 
   android:
     runs-on: ubuntu-latest
