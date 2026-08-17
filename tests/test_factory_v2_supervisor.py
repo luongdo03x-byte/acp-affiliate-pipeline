@@ -171,6 +171,28 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         self.assertIsNotNone(worker["last_heartbeat_at"])
         self.assertEqual("2026-08-17T06:00:00+00:00", worker["last_progress_at"])
 
+    def test_recovering_online_worker_relaunches_agent_and_returns_ready_when_idle(self):
+        self.repo.insert_worker({
+            "id": "worker-01",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "RECOVERING",
+            "last_error": "worker heartbeat missing",
+        })
+        self.avd.online = ["emulator-5554"]
+        self.avd.booted.add("emulator-5554")
+        supervisor = self._supervisor(HostSample(55, 5000, 0, 0, 1, 1))
+
+        supervisor.tick()
+
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("READY", worker["state"])
+        self.assertEqual(
+            [("worker-01", "acp-worker-01", "emulator-5554")],
+            self.worker_processes.started,
+        )
+        self.assertIsNotNone(worker["last_heartbeat_at"])
+
     def test_manual_drain_intent_stops_idle_worker_before_green_scale_up(self):
         self.repo.insert_worker({
             "id": "drain-me",
