@@ -49,7 +49,7 @@ data class FactoryAccountDto(
     val bio: String?,
     val stage: String,
     val lastSafeStage: String,
-    val executionTarget: String?,
+    val executionTarget: String? = null,
     val assignedWorkerId: String?,
     val currentJobId: String?,
     val channelCode: String?,
@@ -59,10 +59,10 @@ data class FactoryAccountDto(
 
 data class FactoryWorkerDto(
     val id: String,
-    val runnerType: String,
+    val runnerType: String = "REMOTE_AVD",
     val avdName: String?,
-    val deviceId: String?,
-    val deviceName: String?,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
     val state: String,
     val currentAccountId: String?,
     val currentJobId: String?,
