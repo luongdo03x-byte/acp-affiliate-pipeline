@@ -21,7 +21,7 @@ def build_instagram_detector() -> ScreenDetector:
         _protected("PASSWORD_REQUIRED", "password_marker", "Password", "Create a password", "Mật khẩu", priority=10),
         _protected("OTP_REQUIRED", "otp_marker", "Enter confirmation code", "Enter code", "Verification code", "Mã xác nhận", "Mã xác minh", priority=11),
         _protected("CAPTCHA_REQUIRED", "captcha_marker", "CAPTCHA", "I'm not a robot", "Verify you're human", priority=12),
-        _protected("EMAIL_OR_PHONE_VERIFICATION", "contact_verification", "Confirm your email", "Confirm your phone number", "Verify your email", "Verify your phone number", priority=13),
+        _protected("EMAIL_OR_PHONE_VERIFICATION", "contact_verification", "Confirm your email", "Confirm your phone number", "Verify your email", "Verify your phone number", "Mobile number or email", "Email address", "Phone number", priority=13),
         _protected("SELFIE_OR_IDENTITY_CHECK", "identity_check", "Take a selfie", "Video selfie", "Confirm your identity", priority=14),
         _protected("SECURITY_CHALLENGE", "security_challenge", "Security check", "Suspicious login attempt", "Help us confirm it's you", priority=15),
         _protected("ACCOUNT_RECOVERY", "account_recovery", "Recover your account", "Account recovery", priority=16),
