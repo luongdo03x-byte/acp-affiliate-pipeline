@@ -37,12 +37,18 @@ if "acp" not in sys.modules:
 from acp.core.factory_v2.runtime import build_default_runtime  # noqa: E402
 from acp.web.account_factory import register_account_factory_routes  # noqa: E402
 from acp.web.factory_app import create_factory_app  # noqa: E402
+from acp.web.factory_enrollment import (  # noqa: E402
+    install_factory_device_auth,
+    register_factory_enrollment_routes,
+)
 from acp.web.factory_v2 import register_factory_v2_routes  # noqa: E402
 
 
 def build_app(*, start_controller=False, runtime_factory=build_default_runtime):
     app = create_factory_app()
+    install_factory_device_auth()
     register_account_factory_routes(app)
+    register_factory_enrollment_routes(app)
     register_factory_v2_routes(app)
     if start_controller:
         interval = float(os.environ.get("ACP_FACTORY_TICK_SECONDS", "2"))
