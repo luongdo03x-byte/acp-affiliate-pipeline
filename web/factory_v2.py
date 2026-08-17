@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 
 from flask import abort, jsonify, request
 
 from core.account_factory import ThreadsOAuthClient
-from core.db import connect, ulid
+from core.db import connect, now, ulid
 from core.factory_v2.oauth_bridge import start_account_oauth, sync_account_from_oauth_session
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.service import FactoryService
@@ -43,6 +44,9 @@ _HOST_FIELDS = (
     "load_1m", "load_5m", "avd_total", "avd_running", "avd_waiting_human",
     "capacity_state", "desired_workers", "timestamp",
 )
+_ALLOWED_RUNNER_RESULT_KEYS = frozenset({
+    "package", "activity", "waiting_human", "error_code", "prepared",
+})
 
 _WAITING_STAGES = {
     "WAITING_HUMAN", "NEEDS_VERIFICATION", "NEEDS_CONFIRMATION", "USERNAME_UNAVAILABLE",
@@ -129,6 +133,42 @@ def _dashboard(repo: FactoryRepository) -> dict:
 
 def _accepted(status: str, command_id: str | None = None):
     return jsonify(ok=True, command_id=command_id or ulid(), status=status), 202
+
+
+def _public_runner_command(row: dict | None) -> dict | None:
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row.get("payload_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "id": row["id"],
+        "job_id": row["job_id"],
+        "account_id": row["account_id"],
+        "action": row["action"],
+        "payload": payload,
+        "created_at": row["created_at"],
+    }
+
+
+def _clean_runner_result(value) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("result phải là object")
+    unknown = set(value) - _ALLOWED_RUNNER_RESULT_KEYS
+    if unknown:
+        raise ValueError(f"runner result chứa field không hợp lệ: {sorted(unknown)}")
+    clean = {}
+    for key, child in value.items():
+        if key in {"package", "activity", "error_code"}:
+            clean[key] = None if child is None else str(child)[:240]
+        elif key in {"waiting_human", "prepared"}:
+            clean[key] = bool(child)
+    return clean
 
 
 def register_factory_v2_routes(app):
@@ -282,6 +322,57 @@ def register_factory_v2_routes(app):
             except ValueError as exc:
                 return jsonify(ok=False, error=str(exc)), 409
             return jsonify(ok=True, runner=_pick(runner, _RUNNER_FIELDS))
+        finally:
+            conn.close()
+
+    @app.get("/api/factory/v2/runners/<worker_id>/commands/next")
+    def factory_v2_next_runner_command(worker_id):
+        _require_factory_key()
+        conn, repo = _repo()
+        try:
+            runner = repo.get_worker(worker_id)
+            if runner is None:
+                return jsonify(ok=False, error="Runner không tồn tại"), 404
+            if runner.get("runner_type") != "LOCAL_DEVICE":
+                return jsonify(ok=False, error="Command polling chỉ dành cho LOCAL_DEVICE"), 409
+            command = repo.claim_next_runner_command(worker_id, delivered_at=now())
+            return jsonify(ok=True, command=_public_runner_command(command))
+        finally:
+            conn.close()
+
+    @app.post("/api/factory/v2/runners/<worker_id>/commands/<command_id>/result")
+    def factory_v2_runner_command_result(worker_id, command_id):
+        _require_factory_key()
+        data = request.get_json(silent=True) or {}
+        status = str(data.get("status") or "").upper()
+        if status not in {"COMPLETED", "FAILED"}:
+            return jsonify(ok=False, error="status phải là COMPLETED hoặc FAILED"), 400
+        try:
+            result = _clean_runner_result(data.get("result"))
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+
+        conn, repo = _repo()
+        try:
+            runner = repo.get_worker(worker_id)
+            if runner is None:
+                return jsonify(ok=False, error="Runner không tồn tại"), 404
+            if runner.get("runner_type") != "LOCAL_DEVICE":
+                return jsonify(ok=False, error="Command result chỉ dành cho LOCAL_DEVICE"), 409
+            try:
+                command = repo.complete_runner_command(
+                    worker_id,
+                    command_id,
+                    status=status,
+                    result_json=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                    completed_at=now(),
+                )
+            except KeyError:
+                return jsonify(ok=False, error="Command không tồn tại"), 404
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            repo.update_worker_fields(worker_id, last_progress_at=now())
+            return _accepted(command["status"], command_id)
         finally:
             conn.close()
 
