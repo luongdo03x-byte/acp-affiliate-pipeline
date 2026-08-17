@@ -6,7 +6,7 @@
 
 **Architecture:** Controller owns queue and leases; each Android Studio AVD has one worker agent. Workers report observed state and never select their own account. Resource policy computes GREEN/YELLOW/RED from host metrics and the supervisor starts/drains workers conservatively.
 
-**Tech Stack:** Python 3, Android SDK emulator/adb CLI, `subprocess`, `psutil` if already available or `/proc` + standard library fallback, existing Factory V2 repository/service, `unittest` with fakes.
+**Tech Stack:** Python 3, Android SDK emulator/adb CLI, `subprocess`, Linux `/proc` and `os.getloadavg()` for host metrics, existing Factory V2 repository/service, `unittest` with fakes.
 
 ## Global Constraints
 
@@ -49,17 +49,20 @@
 - [ ] **Step 1: Write failing policy tests**
 
 ```python
+import unittest
+
 from core.factory_v2.resource_policy import HostSample, CapacityState, classify_capacity
 
 
-def test_capacity_thresholds():
-    assert classify_capacity(HostSample(40, 8192, 0, 0, 1, 1)) == CapacityState.GREEN
-    assert classify_capacity(HostSample(70, 5000, 0, 0, 1, 1)) == CapacityState.YELLOW
-    assert classify_capacity(HostSample(90, 2500, 0, 0, 4, 4)) == CapacityState.RED
-    assert classify_capacity(HostSample(40, 1200, 0, 0, 1, 1)) == CapacityState.EMERGENCY
+class FactoryV2ResourcePolicyTests(unittest.TestCase):
+    def test_capacity_thresholds(self):
+        self.assertEqual(CapacityState.GREEN, classify_capacity(HostSample(40, 8192, 0, 0, 1, 1)))
+        self.assertEqual(CapacityState.YELLOW, classify_capacity(HostSample(70, 5000, 0, 0, 1, 1)))
+        self.assertEqual(CapacityState.RED, classify_capacity(HostSample(90, 2500, 0, 0, 4, 4)))
+        self.assertEqual(CapacityState.EMERGENCY, classify_capacity(HostSample(40, 1200, 0, 0, 1, 1)))
 ```
 
-Also test that `waiting_human >= min(3, ceil(active_pool * 0.4))` blocks scale-up.
+Add another `unittest.TestCase` method that asserts `waiting_human >= min(3, ceil(active_pool * 0.4))` blocks scale-up.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -102,13 +105,19 @@ git commit -m "feat: add adaptive avd resource policy"
 - [ ] **Step 1: Write failing parser tests**
 
 ```python
-def test_parse_adb_devices_ignores_offline():
-    runner = FakeRunner({("adb", "devices"): "List of devices attached\nemulator-5554\tdevice\nemulator-5556\toffline\n"})
-    manager = AvdManager(runner=runner)
-    assert manager.list_online_devices() == ["emulator-5554"]
+import unittest
+
+from core.factory_v2.avd import AvdManager
+
+
+class FactoryV2AvdTests(unittest.TestCase):
+    def test_parse_adb_devices_ignores_offline(self):
+        runner = FakeRunner({("adb", "devices"): "List of devices attached\nemulator-5554\tdevice\nemulator-5556\toffline\n"})
+        manager = AvdManager(runner=runner)
+        self.assertEqual(["emulator-5554"], manager.list_online_devices())
 ```
 
-Also test `is_boot_completed` only returns true when `adb -s SERIAL shell getprop sys.boot_completed` returns exactly `1` after stripping.
+Define `FakeRunner` inside the test file with an exact `run(argv, timeout)` method returning an object with `returncode`, `stdout`, and `stderr`. Add a second test that `is_boot_completed` returns true only when `adb -s SERIAL shell getprop sys.boot_completed` yields exactly `1` after stripping.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -156,7 +165,7 @@ def test_two_workers_cannot_receive_same_account(self):
     self.assertEqual("worker-01", active["worker_id"])
 ```
 
-Add a test where an expired lease with a live heartbeat is not blindly reassigned; it must enter reconciliation first.
+Place this inside `FactoryV2SchedulerTests(unittest.TestCase)`. Add a test where an expired lease with a live heartbeat is not blindly reassigned; it must enter reconciliation first.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -197,7 +206,7 @@ git commit -m "feat: add factory v2 lease scheduler"
 
 - [ ] **Step 1: Write failing idempotency test**
 
-Test a pure `CommandLedger` helper so executing the same `command_id` twice returns the stored result the second time and does not run the action again.
+Inside `WorkerProtocolTests(unittest.TestCase)`, test a pure `CommandLedger` helper so executing the same `command_id` twice returns the stored result the second time and does not run the action again.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -240,7 +249,7 @@ def test_missing_heartbeat_moves_worker_to_recovering_not_ready(self):
     self.assertEqual("a17", worker["current_account_id"])
 ```
 
-Add tests for: READY worker drained first on RED; WAITING_HUMAN worker preserved in EMERGENCY when possible; boot retry stops after 3 attempts and marks ERROR.
+Place this inside `FactoryV2SupervisorTests(unittest.TestCase)`. Add tests for: READY worker drained first on RED; WAITING_HUMAN worker preserved in EMERGENCY when possible; boot retry stops after 3 attempts and marks ERROR.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -250,7 +259,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement host sampling and supervisor tick**
 
-Sample CPU/RAM/swap/load, persist `factory_resource_sample`, classify capacity, then decide only one structural pool change per tick. Boot one worker, hold, drain one, or enter emergency hold. Persist every worker state change before issuing the subprocess action so restart reconciliation has a durable intent.
+Read CPU counters from `/proc/stat`, memory/swap from `/proc/meminfo`, swap activity from `/proc/vmstat`, and load from `os.getloadavg()`. Persist `factory_resource_sample`, classify capacity, then decide only one structural pool change per tick. Boot one worker, hold, drain one, or enter emergency hold. Persist every worker state change before issuing the subprocess action so restart reconciliation has a durable intent.
 
 - [ ] **Step 4: Implement restart reconciliation**
 
