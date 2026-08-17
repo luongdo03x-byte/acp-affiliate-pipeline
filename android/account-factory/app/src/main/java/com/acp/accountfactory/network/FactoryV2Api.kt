@@ -8,15 +8,38 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
-class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) {
+data class FactoryConnection(val baseUrl: String, val factoryKey: String) {
+    init {
+        require(baseUrl.isNotBlank()) { "ACP Base URL is required" }
+        require(factoryKey.isNotBlank()) { "Factory Key is required" }
+    }
+}
+
+interface FactoryV2ApiClient {
+    suspend fun dashboard(connection: FactoryConnection): DashboardDto
+    suspend fun accounts(connection: FactoryConnection): List<FactoryAccountDto>
+    suspend fun workers(connection: FactoryConnection): List<FactoryWorkerDto>
+    suspend fun checkpoints(connection: FactoryConnection): List<FactoryCheckpointDto>
+    suspend fun continueCheckpoint(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun retryCheckpoint(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun snoozeCheckpoint(connection: FactoryConnection, id: String, minutes: Int): CommandAcceptedDto
+    suspend fun pauseBatch(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun resumeBatch(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun stopAccount(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun retryAccount(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun drainWorker(connection: FactoryConnection, id: String): CommandAcceptedDto
+    suspend fun restartWorker(connection: FactoryConnection, id: String): CommandAcceptedDto
+}
+
+class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) : FactoryV2ApiClient {
     private val jsonType = "application/json".toMediaType()
 
     private fun endpoint(baseUrl: String, path: String): String = baseUrl.trimEnd('/') + path
 
-    private fun requestBuilder(baseUrl: String, factoryKey: String, path: String): Request.Builder =
+    private fun requestBuilder(connection: FactoryConnection, path: String): Request.Builder =
         Request.Builder()
-            .url(endpoint(baseUrl, path))
-            .header("X-ACP-Factory-Key", factoryKey)
+            .url(endpoint(connection.baseUrl, path))
+            .header("X-ACP-Factory-Key", connection.factoryKey)
 
     private fun safeError(code: Int, body: String): IllegalStateException {
         val allowlisted = runCatching {
@@ -29,9 +52,9 @@ class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) {
         return IllegalStateException("ACP request failed ($code)$suffix")
     }
 
-    private suspend fun get(baseUrl: String, factoryKey: String, path: String): String =
+    private suspend fun get(connection: FactoryConnection, path: String): String =
         withContext(Dispatchers.IO) {
-            val request = requestBuilder(baseUrl, factoryKey, path).get().build()
+            val request = requestBuilder(connection, path).get().build()
             client.newCall(request).execute().use { response ->
                 val body = response.body.string()
                 if (!response.isSuccessful) throw safeError(response.code, body)
@@ -40,12 +63,11 @@ class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) {
         }
 
     private suspend fun post(
-        baseUrl: String,
-        factoryKey: String,
+        connection: FactoryConnection,
         path: String,
         bodyJson: String = "{}",
     ): String = withContext(Dispatchers.IO) {
-        val request = requestBuilder(baseUrl, factoryKey, path)
+        val request = requestBuilder(connection, path)
             .post(bodyJson.toRequestBody(jsonType))
             .build()
         client.newCall(request).execute().use { response ->
@@ -55,51 +77,50 @@ class FactoryV2Api(private val client: OkHttpClient = OkHttpClient()) {
         }
     }
 
-    suspend fun dashboard(baseUrl: String, factoryKey: String): DashboardDto =
-        FactoryV2Json.parseDashboard(get(baseUrl, factoryKey, "/api/factory/v2/dashboard"))
+    override suspend fun dashboard(connection: FactoryConnection): DashboardDto =
+        FactoryV2Json.parseDashboard(get(connection, "/api/factory/v2/dashboard"))
 
-    suspend fun accounts(baseUrl: String, factoryKey: String): List<FactoryAccountDto> =
-        FactoryV2Json.parseAccounts(get(baseUrl, factoryKey, "/api/factory/v2/accounts"))
+    override suspend fun accounts(connection: FactoryConnection): List<FactoryAccountDto> =
+        FactoryV2Json.parseAccounts(get(connection, "/api/factory/v2/accounts"))
 
-    suspend fun workers(baseUrl: String, factoryKey: String): List<FactoryWorkerDto> =
-        FactoryV2Json.parseWorkers(get(baseUrl, factoryKey, "/api/factory/v2/workers"))
+    override suspend fun workers(connection: FactoryConnection): List<FactoryWorkerDto> =
+        FactoryV2Json.parseWorkers(get(connection, "/api/factory/v2/workers"))
 
-    suspend fun checkpoints(baseUrl: String, factoryKey: String): List<FactoryCheckpointDto> =
-        FactoryV2Json.parseCheckpoints(get(baseUrl, factoryKey, "/api/factory/v2/checkpoints"))
+    override suspend fun checkpoints(connection: FactoryConnection): List<FactoryCheckpointDto> =
+        FactoryV2Json.parseCheckpoints(get(connection, "/api/factory/v2/checkpoints"))
 
-    suspend fun continueCheckpoint(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/checkpoints/$id/continue"))
+    override suspend fun continueCheckpoint(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/checkpoints/$id/continue"))
 
-    suspend fun retryCheckpoint(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/checkpoints/$id/retry"))
+    override suspend fun retryCheckpoint(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/checkpoints/$id/retry"))
 
-    suspend fun snoozeCheckpoint(
-        baseUrl: String,
-        factoryKey: String,
+    override suspend fun snoozeCheckpoint(
+        connection: FactoryConnection,
         id: String,
         minutes: Int,
     ): CommandAcceptedDto {
         val body = JSONObject().put("minutes", minutes).toString()
         return FactoryV2Json.parseCommand(
-            post(baseUrl, factoryKey, "/api/factory/v2/checkpoints/$id/snooze", body)
+            post(connection, "/api/factory/v2/checkpoints/$id/snooze", body)
         )
     }
 
-    suspend fun pauseBatch(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/batches/$id/pause"))
+    override suspend fun pauseBatch(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/batches/$id/pause"))
 
-    suspend fun resumeBatch(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/batches/$id/resume"))
+    override suspend fun resumeBatch(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/batches/$id/resume"))
 
-    suspend fun stopAccount(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/accounts/$id/stop"))
+    override suspend fun stopAccount(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/accounts/$id/stop"))
 
-    suspend fun retryAccount(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/accounts/$id/retry"))
+    override suspend fun retryAccount(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/accounts/$id/retry"))
 
-    suspend fun drainWorker(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/workers/$id/drain"))
+    override suspend fun drainWorker(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/workers/$id/drain"))
 
-    suspend fun restartWorker(baseUrl: String, factoryKey: String, id: String): CommandAcceptedDto =
-        FactoryV2Json.parseCommand(post(baseUrl, factoryKey, "/api/factory/v2/workers/$id/restart"))
+    override suspend fun restartWorker(connection: FactoryConnection, id: String): CommandAcceptedDto =
+        FactoryV2Json.parseCommand(post(connection, "/api/factory/v2/workers/$id/restart"))
 }
