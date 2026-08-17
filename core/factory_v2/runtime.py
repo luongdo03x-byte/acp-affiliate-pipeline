@@ -1,9 +1,8 @@
-"""Controller runtime that leases accounts and drives safe runner checkpoints.
+"""Controller runtime for dual-runner Account Factory V2.
 
-The runtime never submits signup forms, credentials, OTP/CAPTCHA, identity
-checks, or Threads publishing. Runner automation is limited to preparing text,
-opening official apps/URLs, observing foreground package state, and waiting for
-the operator at explicit checkpoints.
+The controller remains authoritative for business stages. REMOTE_AVD workers may
+perform only the fail-closed UI actions defined by ui_automation; LOCAL_DEVICE
+keeps the explicit human-checkpoint flow.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ import threading
 
 from core.db import now, transaction, ulid
 
-from .models import AccountStage
+from .models import AccountStage, RunnerType
 from .runner_gateway import RunnerGateway
 
 
@@ -61,6 +60,28 @@ class FactoryControllerRuntime:
     def _command(self, job, action: str, payload: dict | None = None) -> dict:
         return self.runner_gateway.send(job, action, payload)
 
+    def _runner_type(self, job) -> str:
+        value = job.get("runner_type")
+        if value:
+            return str(value)
+        worker = self.repo.get_worker(job["worker_id"])
+        if worker is None:
+            raise KeyError(job["worker_id"])
+        return worker.get("runner_type") or RunnerType.REMOTE_AVD.value
+
+    def _is_remote(self, job) -> bool:
+        return self._runner_type(job) == RunnerType.REMOTE_AVD.value
+
+    @staticmethod
+    def _profile_payload(account) -> dict:
+        return {
+            "profile": {
+                "username": str(account.get("username") or ""),
+                "display_name": str(account.get("display_name") or ""),
+                "bio": str(account.get("bio") or ""),
+            }
+        }
+
     def _open_human_checkpoint(self, job, account, *, package: str, checkpoint_type: str) -> None:
         steps = (
             ("PREPARE_TEXT", {"text": f"@{account['username']}"}),
@@ -94,7 +115,6 @@ class FactoryControllerRuntime:
             elif account["stage"] == AccountStage.IG_CREATED.value:
                 self.service.transition_account(account["id"], AccountStage.THREADS_READY_FOR_HUMAN)
             self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
-
             self.repo.create_checkpoint({
                 "id": checkpoint_id,
                 "batch_id": account["batch_id"],
@@ -123,6 +143,278 @@ class FactoryControllerRuntime:
                ORDER BY created_at DESC, id DESC LIMIT 1""",
             (account_id,),
         ).fetchone()
+
+    def _remote_flow_for_checkpoint(self, checkpoint) -> str:
+        if checkpoint["type"] == "IG_POSTCHECK":
+            return "instagram"
+        if checkpoint["type"] == "THREADS_POSTCHECK":
+            return "threads"
+        raise ValueError(f"unsupported checkpoint type: {checkpoint['type']}")
+
+    def _set_remote_running(self, job, desired_action: str) -> None:
+        timestamp = now()
+        self.repo.conn.execute(
+            """UPDATE factory_job
+               SET state='RUNNING', desired_action=?, command_id=?, heartbeat_at=?, lease_expires_at=?
+               WHERE id=?""",
+            (desired_action, ulid(), timestamp, _lease_extension(), job["id"]),
+        )
+        self.repo.conn.execute(
+            "UPDATE factory_worker SET state='RUNNING', last_progress_at=? WHERE id=?",
+            (timestamp, job["worker_id"]),
+        )
+
+    def _set_remote_waiting(self, job) -> None:
+        timestamp = now()
+        self.repo.conn.execute(
+            """UPDATE factory_job
+               SET state='WAITING_HUMAN', desired_action='OBSERVE_CHECKPOINT', heartbeat_at=?, lease_expires_at=?
+               WHERE id=?""",
+            (timestamp, _lease_extension(), job["id"]),
+        )
+        self.repo.conn.execute(
+            "UPDATE factory_worker SET state='WAITING_HUMAN', last_progress_at=? WHERE id=?",
+            (timestamp, job["worker_id"]),
+        )
+
+    def _refresh_remote_waiting(self, job) -> None:
+        self._set_remote_waiting(job)
+
+    def _ensure_remote_checkpoint(
+        self,
+        job,
+        account,
+        *,
+        flow: str,
+        screen: str,
+        confirmation: bool,
+    ) -> None:
+        checkpoint_type = "IG_POSTCHECK" if flow == "instagram" else "THREADS_POSTCHECK"
+        checkpoint = self._checkpoint_for_account(account["id"])
+        if checkpoint is not None and checkpoint["type"] != checkpoint_type:
+            raise ValueError("active checkpoint does not match AVD flow")
+        if confirmation:
+            message = (
+                f"AVD chưa nhận diện chắc chắn UI ({screen}). Kiểm tra thủ công; "
+                "hệ thống chỉ tự tiếp tục khi thấy màn hình hợp lệ."
+            )
+        else:
+            message = (
+                f"AVD đang chờ thao tác thủ công tại {screen}. "
+                "Hệ thống sẽ tự tiếp tục khi nhận diện màn hình hợp lệ."
+            )
+
+        with transaction(self.repo.conn):
+            current = self.repo.get_account(account["id"])
+            if flow == "instagram":
+                if current["stage"] in {
+                    AccountStage.AVD_ASSIGNED.value,
+                    AccountStage.RUNNER_ASSIGNED.value,
+                }:
+                    self.service.transition_account(account["id"], AccountStage.IG_READY_FOR_HUMAN)
+                    current = self.repo.get_account(account["id"])
+                if current["stage"] == AccountStage.IG_READY_FOR_HUMAN.value:
+                    self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
+                    current = self.repo.get_account(account["id"])
+            else:
+                if current["stage"] == AccountStage.IG_CREATED.value:
+                    self.service.transition_account(account["id"], AccountStage.THREADS_READY_FOR_HUMAN)
+                    current = self.repo.get_account(account["id"])
+                if current["stage"] == AccountStage.THREADS_READY_FOR_HUMAN.value:
+                    self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
+                    current = self.repo.get_account(account["id"])
+
+            if confirmation and current["stage"] == AccountStage.WAITING_HUMAN.value:
+                self.service.transition_account(
+                    account["id"],
+                    AccountStage.NEEDS_CONFIRMATION,
+                    error_code="UI_CHANGED",
+                    error_message=f"Unrecognized {flow} UI: {screen}",
+                )
+
+            if checkpoint is None:
+                self.repo.create_checkpoint({
+                    "id": ulid(),
+                    "batch_id": account["batch_id"],
+                    "account_id": account["id"],
+                    "worker_id": job["worker_id"],
+                    "type": checkpoint_type,
+                    "status": "OPEN",
+                    "message": message,
+                    "created_at": now(),
+                })
+            else:
+                self.repo.conn.execute(
+                    "UPDATE factory_checkpoint SET status='OPEN', message=? WHERE id=?",
+                    (message, checkpoint["id"]),
+                )
+            self._set_remote_waiting(job)
+
+    def _resolve_remote_checkpoint(self, account_id: str, resolution: str) -> None:
+        checkpoint = self._checkpoint_for_account(account_id)
+        if checkpoint is not None:
+            self.repo.resolve_checkpoint(
+                checkpoint["id"], resolved_at=now(), resolution=resolution
+            )
+
+    def _complete_remote_flow(self, job, account, *, flow: str) -> None:
+        with transaction(self.repo.conn):
+            current = self.repo.get_account(account["id"])
+            if current["stage"] == AccountStage.NEEDS_CONFIRMATION.value:
+                self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
+                current = self.repo.get_account(account["id"])
+
+            if flow == "instagram":
+                if current["stage"] in {
+                    AccountStage.AVD_ASSIGNED.value,
+                    AccountStage.RUNNER_ASSIGNED.value,
+                }:
+                    self.service.transition_account(account["id"], AccountStage.IG_READY_FOR_HUMAN)
+                    current = self.repo.get_account(account["id"])
+                if current["stage"] in {
+                    AccountStage.IG_READY_FOR_HUMAN.value,
+                    AccountStage.WAITING_HUMAN.value,
+                }:
+                    self.service.transition_account(account["id"], AccountStage.IG_CREATED)
+                elif current["stage"] != AccountStage.IG_CREATED.value:
+                    raise ValueError(f"cannot complete Instagram from {current['stage']}")
+                self._resolve_remote_checkpoint(account["id"], "POSTCHECK_OK")
+                self._set_remote_running(job, "PREPARE_THREADS")
+                return
+
+            if current["stage"] == AccountStage.IG_CREATED.value:
+                self.service.transition_account(account["id"], AccountStage.THREADS_READY_FOR_HUMAN)
+                current = self.repo.get_account(account["id"])
+            if current["stage"] in {
+                AccountStage.THREADS_READY_FOR_HUMAN.value,
+                AccountStage.WAITING_HUMAN.value,
+            }:
+                self.service.transition_account(account["id"], AccountStage.THREADS_CREATED)
+            elif current["stage"] != AccountStage.THREADS_CREATED.value:
+                raise ValueError(f"cannot complete Threads from {current['stage']}")
+            self._resolve_remote_checkpoint(account["id"], "POSTCHECK_OK")
+            self._set_remote_running(job, "START_ACP")
+
+        refreshed_row = self.repo.conn.execute(
+            "SELECT * FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone()
+        refreshed_job = dict(refreshed_row) if refreshed_row is not None else dict(job)
+        self._start_activation(refreshed_job, self.repo.get_account(account["id"]))
+
+    def _transition_remote_terminal(
+        self,
+        job,
+        account,
+        *,
+        stage: AccountStage,
+        error_code: str,
+        message: str,
+    ) -> None:
+        with transaction(self.repo.conn):
+            self.service.transition_account(
+                account["id"], stage, error_code=error_code, error_message=message
+            )
+            self.scheduler.release_job_in_transaction(job["id"], "FAILED")
+
+    def _handle_remote_result(self, job, account, *, flow: str, response: dict) -> None:
+        status = str(response.get("status") or "needs_confirmation").lower()
+        detail = response.get("result") if isinstance(response.get("result"), dict) else {}
+        screen = str(detail.get("screen") or "UNKNOWN")[:120]
+        reason = str(detail.get("reason") or screen)[:120]
+
+        if status == "running":
+            self._set_remote_running(
+                job,
+                "AUTOMATE_INSTAGRAM" if flow == "instagram" else "AUTOMATE_THREADS",
+            )
+            return
+        if status == "waiting_human":
+            self._ensure_remote_checkpoint(
+                job, account, flow=flow, screen=screen, confirmation=False
+            )
+            return
+        if status == "needs_confirmation":
+            self._ensure_remote_checkpoint(
+                job, account, flow=flow, screen=screen, confirmation=True
+            )
+            return
+        if status == "completed":
+            self._complete_remote_flow(job, account, flow=flow)
+            return
+        if status == "retry_pending":
+            if "RATE_LIMITED" in {reason, screen}:
+                code = "RATE_LIMITED"
+            elif "ACTION_BLOCKED" in {reason, screen}:
+                code = "ACTION_BLOCKED"
+            elif "NETWORK_ERROR" in {reason, screen}:
+                code = "NETWORK_TRANSIENT"
+            else:
+                code = "UI_CHANGED"
+            self._transition_remote_terminal(
+                job,
+                account,
+                stage=AccountStage.RETRY_PENDING,
+                error_code=code,
+                message=reason,
+            )
+            return
+        if status == "error":
+            code = (
+                "ACCOUNT_DISABLED"
+                if "ACCOUNT_DISABLED" in {reason, screen}
+                else "UI_CHANGED"
+            )
+            self._transition_remote_terminal(
+                job,
+                account,
+                stage=AccountStage.ERROR,
+                error_code=code,
+                message=reason,
+            )
+            return
+
+        self._ensure_remote_checkpoint(
+            job, account, flow=flow, screen=screen, confirmation=True
+        )
+
+    def _drive_remote_instagram(self, job, account, *, prepare: bool) -> None:
+        if prepare:
+            prepared = self._command(job, "PREPARE_INSTAGRAM")
+            if _pending(prepared):
+                return
+            if str(prepared.get("status") or "completed").lower() != "completed":
+                self._handle_remote_result(
+                    job, account, flow="instagram", response=prepared
+                )
+                return
+            self._set_remote_running(job, "AUTOMATE_INSTAGRAM")
+
+        result = self._command(
+            job, "AUTOMATE_INSTAGRAM", self._profile_payload(account)
+        )
+        if _pending(result):
+            return
+        self._handle_remote_result(job, account, flow="instagram", response=result)
+
+    def _drive_remote_threads(self, job, account) -> None:
+        result = self._command(job, "AUTOMATE_THREADS", self._profile_payload(account))
+        if _pending(result):
+            return
+        self._handle_remote_result(job, account, flow="threads", response=result)
+
+    def _observe_remote_checkpoint(self, job, account) -> None:
+        checkpoint = self._checkpoint_for_account(account["id"])
+        if checkpoint is None:
+            raise ValueError("observation requested without checkpoint")
+        flow = self._remote_flow_for_checkpoint(checkpoint)
+        result = self._command(job, "OBSERVE_CHECKPOINT", {"flow": flow})
+        if _pending(result):
+            return
+        observed_status = str(result.get("status") or "").lower()
+        if observed_status in {"waiting_human", "running"}:
+            self._refresh_remote_waiting(job)
+            return
+        self._handle_remote_result(job, account, flow=flow, response=result)
 
     def _activation_checkpoint(self, account_id: str):
         return self.repo.conn.execute(
@@ -214,7 +506,9 @@ class FactoryControllerRuntime:
             self._release_preserving_account(job["id"], "FAILED")
             return
         if updated["stage"] == AccountStage.ERROR.value:
-            self._resolve_activation_checkpoint(account["id"], updated.get("last_error_code") or "ERROR")
+            self._resolve_activation_checkpoint(
+                account["id"], updated.get("last_error_code") or "ERROR"
+            )
             self._release_preserving_account(job["id"], "FAILED")
 
     def _verify_checkpoint(self, job, account) -> None:
@@ -301,16 +595,33 @@ class FactoryControllerRuntime:
         if account is None:
             return
         action = str(job["desired_action"] or "").upper()
+        remote = self._is_remote(job)
+
         if action == "PREPARE_INSTAGRAM":
-            self._open_human_checkpoint(
-                job, account, package=_INSTAGRAM_PACKAGE, checkpoint_type="IG_POSTCHECK"
-            )
+            if remote:
+                self._drive_remote_instagram(job, account, prepare=True)
+            else:
+                self._open_human_checkpoint(
+                    job, account, package=_INSTAGRAM_PACKAGE, checkpoint_type="IG_POSTCHECK"
+                )
+        elif action == "AUTOMATE_INSTAGRAM" and remote:
+            self._drive_remote_instagram(job, account, prepare=False)
         elif action == "PREPARE_THREADS":
-            self._open_human_checkpoint(
-                job, account, package=_THREADS_PACKAGE, checkpoint_type="THREADS_POSTCHECK"
-            )
+            if remote:
+                self._drive_remote_threads(job, account)
+            else:
+                self._open_human_checkpoint(
+                    job, account, package=_THREADS_PACKAGE, checkpoint_type="THREADS_POSTCHECK"
+                )
+        elif action == "AUTOMATE_THREADS" and remote:
+            self._drive_remote_threads(job, account)
+        elif action == "OBSERVE_CHECKPOINT" and remote:
+            self._observe_remote_checkpoint(job, account)
         elif action in {"VERIFY_CHECKPOINT", "RETRY_CHECKPOINT"}:
-            self._verify_checkpoint(job, account)
+            if remote:
+                self._observe_remote_checkpoint(job, account)
+            else:
+                self._verify_checkpoint(job, account)
         elif action == "START_ACP":
             self._start_activation(job, account)
         elif action == "WAIT_ACP":
@@ -341,8 +652,9 @@ class FactoryControllerRuntime:
             """SELECT * FROM factory_job
                WHERE state IN ('RUNNING','RECOVERING','WAITING_HUMAN')
                  AND desired_action IN (
-                     'PREPARE_INSTAGRAM','PREPARE_THREADS','VERIFY_CHECKPOINT','RETRY_CHECKPOINT',
-                     'START_ACP','WAIT_ACP'
+                     'PREPARE_INSTAGRAM','AUTOMATE_INSTAGRAM',
+                     'PREPARE_THREADS','AUTOMATE_THREADS','OBSERVE_CHECKPOINT',
+                     'VERIFY_CHECKPOINT','RETRY_CHECKPOINT','START_ACP','WAIT_ACP'
                  )
                ORDER BY leased_at, id"""
         ).fetchall()
