@@ -7,13 +7,22 @@ from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
 
 
 class FakeDriver:
-    def __init__(self, screens, available=("display_name", "bio", "continue", "join_threads")):
+    def __init__(
+        self,
+        screens,
+        available=("display_name", "bio", "continue", "join_threads"),
+        *,
+        tap_statuses=None,
+        set_statuses=None,
+    ):
         self.screens = list(screens)
         self.last = self.screens[-1] if self.screens else DetectedScreen("UNKNOWN", 0, ())
         self.available = set(available)
         self.mutations = []
         self.set_values = []
         self.opened = []
+        self.tap_statuses = list(tap_statuses or [])
+        self.set_statuses = list(set_statuses or [])
 
     def detect_screen(self):
         if self.screens:
@@ -26,11 +35,13 @@ class FakeDriver:
     def set_text(self, selector, value):
         self.mutations.append(("set_text", selector.semantic))
         self.set_values.append((selector.semantic, value))
-        return ActionResult("completed")
+        status = self.set_statuses.pop(0) if self.set_statuses else "completed"
+        return ActionResult(status)
 
     def tap(self, selector, **kwargs):
         self.mutations.append(("tap", selector.semantic))
-        return ActionResult("completed")
+        status = self.tap_statuses.pop(0) if self.tap_statuses else "completed"
+        return ActionResult(status)
 
     def open_package(self, package):
         self.mutations.append(("open_package", package))
@@ -52,6 +63,12 @@ class ThreadsFlowTests(unittest.TestCase):
         result = ThreadsFlow(driver).run(self.profile)
         self.assertEqual("running", result.status)
         self.assertEqual([("display_name", "Sample User"), ("bio", "Sample bio")], driver.set_values)
+        self.assertNotIn(("set_text", "password"), driver.mutations)
+
+    def test_normal_flow_has_no_publish_action(self):
+        driver = FakeDriver([DetectedScreen("THREADS_PROFILE_SETUP", 0.96, ("profile",), False)])
+        ThreadsFlow(driver).run(self.profile)
+        self.assertFalse(any(semantic == "publish" for _, semantic in driver.mutations))
 
     def test_onboarding_taps_known_join_control(self):
         driver = FakeDriver([DetectedScreen("THREADS_ONBOARDING", 0.94, ("join",), False)])
@@ -59,11 +76,33 @@ class ThreadsFlowTests(unittest.TestCase):
         self.assertEqual("running", result.status)
         self.assertEqual([("tap", "join_threads")], driver.mutations)
 
+    def test_onboarding_stops_after_three_failed_attempts(self):
+        driver = FakeDriver(
+            [DetectedScreen("THREADS_ONBOARDING", 0.94, ("join",), False)],
+            tap_statuses=["postcondition_failed", "postcondition_failed", "postcondition_failed", "completed"],
+        )
+        result = ThreadsFlow(driver).run(self.profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("UI_CHANGED", result.reason)
+        self.assertEqual(3, driver.mutations.count(("tap", "join_threads")))
+
+    def test_lost_ack_on_home_does_not_replay_onboarding(self):
+        driver = FakeDriver([DetectedScreen("THREADS_HOME", 0.96, ("home",), False)])
+        result = ThreadsFlow(driver).run(self.profile)
+        self.assertEqual("completed", result.status)
+        self.assertEqual([], driver.mutations)
+
     def test_unknown_never_mutates(self):
         unknown = DetectedScreen("UNKNOWN", 0.0, (), False)
         driver = FakeDriver([unknown, unknown, unknown])
         result = ThreadsFlow(driver).run(self.profile)
         self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual([], driver.mutations)
+
+    def test_rate_limited_never_mutates(self):
+        driver = FakeDriver([DetectedScreen("RATE_LIMITED", 0.95, ("rate",), False)])
+        result = ThreadsFlow(driver).run(self.profile)
+        self.assertEqual("retry_pending", result.status)
         self.assertEqual([], driver.mutations)
 
     def test_postcheck_is_completed(self):
