@@ -34,13 +34,15 @@ jobs:
           python -m unittest \
             tests.test_account_factory \
             tests.test_factory_v2_schema \
-            tests.test_factory_v2_identity \
             tests.test_factory_v2_state_machine \
+            tests.test_factory_v2_identity \
             tests.test_factory_v2_service \
             tests.test_factory_v2_resource_policy \
             tests.test_factory_v2_avd \
             tests.test_factory_v2_scheduler \
-            tests.test_factory_v2_supervisor -v
+            tests.test_factory_v2_supervisor \
+            tests.test_factory_v2_api \
+            tests.test_factory_v2_oauth_bridge -v
 
   android:
     runs-on: ubuntu-latest
@@ -57,7 +59,7 @@ jobs:
       - name: Install Android SDK 36
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Android unit tests and debug APK
-        run: gradle -p android/account-factory testDebugUnitTest assembleDebug --stacktrace
+        run: gradle -p android/account-factory testDebugUnitTest assembleDebug --no-daemon --max-workers=2 --console=plain
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
