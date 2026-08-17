@@ -1,12 +1,14 @@
 """Persistence boundary for Account Factory V2."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import sqlite3
 from typing import Any, Iterable, Mapping
 
 from core.db import transaction
 
 _ACTIVE_JOB_STATES = ("LEASED", "RUNNING", "WAITING_HUMAN", "RECOVERING")
+_RUNNER_COMMAND_REDELIVERY_SECONDS = 30
 
 
 def _dict(row):
@@ -20,6 +22,13 @@ def _insert(conn, table: str, row: Mapping[str, Any]) -> None:
         f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
         tuple(row[c] for c in cols),
     )
+
+
+def _redelivery_cutoff(delivered_at: str) -> str:
+    current = datetime.fromisoformat(delivered_at)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - timedelta(seconds=_RUNNER_COMMAND_REDELIVERY_SECONDS)).isoformat(timespec="seconds")
 
 
 class FactoryRepository:
@@ -176,21 +185,30 @@ class FactoryRepository:
         ).fetchone())
 
     def claim_next_runner_command(self, worker_id: str, *, delivered_at: str) -> dict | None:
+        stale_before = _redelivery_cutoff(delivered_at)
         with transaction(self.conn):
             row = self.conn.execute(
                 """SELECT * FROM factory_runner_command
-                   WHERE worker_id=? AND status='QUEUED'
+                   WHERE worker_id=?
+                     AND (
+                         status='QUEUED'
+                         OR (status='DELIVERED' AND delivered_at IS NOT NULL AND delivered_at<=?)
+                     )
                    ORDER BY created_at, id
                    LIMIT 1""",
-                (worker_id,),
+                (worker_id, stale_before),
             ).fetchone()
             if row is None:
                 return None
             self.conn.execute(
                 """UPDATE factory_runner_command
                    SET status='DELIVERED', delivered_at=?
-                   WHERE id=? AND status='QUEUED'""",
-                (delivered_at, row["id"]),
+                   WHERE id=?
+                     AND (
+                         status='QUEUED'
+                         OR (status='DELIVERED' AND delivered_at IS NOT NULL AND delivered_at<=?)
+                     )""",
+                (delivered_at, row["id"], stale_before),
             )
         return self.get_runner_command(row["id"])
 
