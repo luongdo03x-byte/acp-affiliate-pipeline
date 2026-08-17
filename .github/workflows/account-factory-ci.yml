@@ -41,8 +41,11 @@ jobs:
             tests.test_factory_v2_avd \
             tests.test_factory_v2_scheduler \
             tests.test_factory_v2_supervisor \
+            tests.test_factory_v2_worker_process \
+            tests.test_factory_v2_runtime \
             tests.test_factory_v2_api \
-            tests.test_factory_v2_oauth_bridge -v
+            tests.test_factory_v2_oauth_bridge \
+            tests.test_factory_v2_launcher -v
 
   android:
     runs-on: ubuntu-latest
