@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 echo "==> Python syntax check"
-python3 -m compileall -q core/factory_v2 web account_factory_server.py
+python3 -m compileall -q core/factory_v2 web workers account_factory_server.py
 
 echo "==> Account Factory backend tests"
 ACP_ADAPTER=mock \
@@ -26,10 +26,12 @@ python3 -m unittest \
   tests.test_factory_v2_supervisor_local \
   tests.test_factory_v2_worker_process \
   tests.test_factory_v2_runtime \
+  tests.test_factory_v2_runtime_remote \
   tests.test_factory_v2_runtime_atomicity \
   tests.test_factory_v2_runtime_resume \
   tests.test_factory_v2_runtime_activation \
   tests.test_factory_v2_restart_recovery \
+  tests.test_factory_v2_checkpoint_retry \
   tests.test_factory_v2_runner_schema \
   tests.test_factory_v2_runner_service \
   tests.test_factory_v2_dual_scheduler \
@@ -42,7 +44,13 @@ python3 -m unittest \
   tests.test_factory_v2_oauth_bridge \
   tests.test_factory_v2_oauth_expiry \
   tests.test_factory_v2_activation \
-  tests.test_factory_v2_launcher -v
+  tests.test_factory_v2_launcher \
+  tests.test_factory_v2_ui_hierarchy \
+  tests.test_factory_v2_ui_detector \
+  tests.test_factory_v2_ui_driver \
+  tests.test_factory_v2_instagram_flow \
+  tests.test_factory_v2_threads_flow \
+  tests.test_factory_v2_avd_worker_agent -v
 
 if [[ -x android/account-factory/gradlew ]]; then
   GRADLE=(android/account-factory/gradlew -p android/account-factory)
