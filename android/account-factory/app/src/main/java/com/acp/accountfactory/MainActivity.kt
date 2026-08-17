@@ -74,7 +74,12 @@ private fun FactoryApp(
     onControllerConfigured: () -> Unit,
 ) {
     val context = LocalContext.current
-    val viewModel = remember(api, settings) { FactoryViewModel(api) { settings.connection() } }
+    val viewModel = remember(api, settings) {
+        FactoryViewModel(
+            api = api,
+            connectionProvider = { settings.connection() },
+        )
+    }
     val state by viewModel.state.collectAsState()
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
     var showSettings by remember { mutableStateOf(false) }
