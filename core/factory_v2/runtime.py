@@ -77,37 +77,44 @@ class FactoryControllerRuntime:
                 AccountStage.RUNNER_ASSIGNED.value,
             }:
                 raise ValueError(f"cannot prepare Instagram from {account['stage']}")
-            self.service.transition_account(account["id"], AccountStage.IG_READY_FOR_HUMAN)
-            self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
             message = "Hoàn tất Instagram signup thủ công rồi bấm Continue để chạy post-check."
         else:
-            if account["stage"] != AccountStage.IG_CREATED.value:
+            if account["stage"] not in {
+                AccountStage.IG_CREATED.value,
+                AccountStage.THREADS_READY_FOR_HUMAN.value,
+            }:
                 raise ValueError(f"cannot prepare Threads from {account['stage']}")
-            self.service.transition_account(account["id"], AccountStage.THREADS_READY_FOR_HUMAN)
-            self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
             message = "Hoàn tất Threads profile thủ công rồi bấm Continue để chạy post-check."
 
         checkpoint_id = ulid()
-        self.repo.create_checkpoint({
-            "id": checkpoint_id,
-            "batch_id": account["batch_id"],
-            "account_id": account["id"],
-            "worker_id": job["worker_id"],
-            "type": checkpoint_type,
-            "status": "OPEN",
-            "message": message,
-            "created_at": now(),
-        })
-        self.repo.conn.execute(
-            """UPDATE factory_job
-               SET state='WAITING_HUMAN', desired_action='WAITING_HUMAN', heartbeat_at=?
-               WHERE id=?""",
-            (now(), job["id"]),
-        )
-        self.repo.conn.execute(
-            "UPDATE factory_worker SET state='WAITING_HUMAN', last_progress_at=? WHERE id=?",
-            (now(), job["worker_id"]),
-        )
+        timestamp = now()
+        with transaction(self.repo.conn):
+            if checkpoint_type == "IG_POSTCHECK":
+                self.service.transition_account(account["id"], AccountStage.IG_READY_FOR_HUMAN)
+            elif account["stage"] == AccountStage.IG_CREATED.value:
+                self.service.transition_account(account["id"], AccountStage.THREADS_READY_FOR_HUMAN)
+            self.service.transition_account(account["id"], AccountStage.WAITING_HUMAN)
+
+            self.repo.create_checkpoint({
+                "id": checkpoint_id,
+                "batch_id": account["batch_id"],
+                "account_id": account["id"],
+                "worker_id": job["worker_id"],
+                "type": checkpoint_type,
+                "status": "OPEN",
+                "message": message,
+                "created_at": timestamp,
+            })
+            self.repo.conn.execute(
+                """UPDATE factory_job
+                   SET state='WAITING_HUMAN', desired_action='WAITING_HUMAN', heartbeat_at=?
+                   WHERE id=?""",
+                (timestamp, job["id"]),
+            )
+            self.repo.conn.execute(
+                "UPDATE factory_worker SET state='WAITING_HUMAN', last_progress_at=? WHERE id=?",
+                (timestamp, job["worker_id"]),
+            )
 
     def _checkpoint_for_account(self, account_id: str):
         return self.repo.conn.execute(
