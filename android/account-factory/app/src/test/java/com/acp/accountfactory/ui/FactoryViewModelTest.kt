@@ -42,7 +42,10 @@ class FactoryViewModelTest {
     @Test
     fun refreshReplacesAccountStageWithControllerSnapshot() = runTest {
         val api = FakeFactoryApi()
-        val vm = FactoryViewModel(api) { FactoryConnection("https://acp.example", "test-key") }
+        val vm = FactoryViewModel(
+            api = api,
+            connectionProvider = { FactoryConnection("https://acp.example", "test-key") },
+        )
 
         vm.refresh().join()
         assertEquals("PROFILE_READY", vm.state.value.accounts.single().stage)
@@ -57,7 +60,10 @@ class FactoryViewModelTest {
     @Test
     fun continueDoesNotLocallyMarkInstagramCreated() = runTest {
         val api = FakeFactoryApi().apply { accountStage = "WAITING_HUMAN" }
-        val vm = FactoryViewModel(api) { FactoryConnection("https://acp.example", "test-key") }
+        val vm = FactoryViewModel(
+            api = api,
+            connectionProvider = { FactoryConnection("https://acp.example", "test-key") },
+        )
         vm.refresh().join()
 
         vm.continueCheckpoint("cp-1").join()
