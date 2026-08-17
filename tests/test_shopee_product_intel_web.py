@@ -110,6 +110,17 @@ class ShopeeProductIntelStaticWebTests(unittest.TestCase):
         self.assertNotIn("PUBLISH_POST", body)
         self.assertNotIn("INSERT INTO post", body)
 
+    def test_web_package_registers_phase3_between_helper_and_bulk(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        body = open(os.path.join(root, "web", "__init__.py"), encoding="utf-8").read()
+        self.assertIn("register_shopee_helper_hardening(app)", body)
+        self.assertIn("register_shopee_product_intel(app)", body)
+        self.assertIn("register_shopee_bulk_routes(app)", body)
+        self.assertLess(body.index("register_shopee_helper_hardening(app)"),
+                        body.index("register_shopee_product_intel(app)"))
+        self.assertLess(body.index("register_shopee_product_intel(app)"),
+                        body.index("register_shopee_bulk_routes(app)"))
+
 
 if __name__ == "__main__":
     unittest.main()
