@@ -64,9 +64,12 @@ class FactoryV2ApiTests(unittest.TestCase):
             os.environ["ACP_FACTORY_API_KEY"] = self.old_factory_key
         self.tmp.cleanup()
 
-    def seed_waiting_checkpoint(self):
+    def seed_running_job(self):
         scheduler = Scheduler(self.repo, self.service, lease_seconds=120)
-        job = scheduler.assign_next("worker-01")
+        return scheduler.assign_next("worker-01")
+
+    def seed_waiting_checkpoint(self):
+        job = self.seed_running_job()
         self.service.transition_account(job["account_id"], AccountStage.IG_READY_FOR_HUMAN)
         self.service.transition_account(job["account_id"], AccountStage.WAITING_HUMAN)
         self.conn.execute(
@@ -179,6 +182,27 @@ class FactoryV2ApiTests(unittest.TestCase):
         for response in responses:
             self.assertEqual(200, response.status_code)
             self.assert_no_sensitive_keys(response.get_json())
+
+    def test_drain_busy_worker_preserves_running_job_until_release(self):
+        job = self.seed_running_job()
+        res = self.client.post(
+            "/api/factory/v2/workers/worker-01/drain", headers=self.auth
+        )
+        self.assertEqual(202, res.status_code)
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("RUNNING", worker["state"])
+        self.assertEqual(1, worker["draining"])
+        self.assertEqual(job["id"], worker["current_job_id"])
+
+    def test_restart_rejects_worker_with_active_job(self):
+        self.seed_running_job()
+        res = self.client.post(
+            "/api/factory/v2/workers/worker-01/restart", headers=self.auth
+        )
+        self.assertEqual(409, res.status_code)
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("RUNNING", worker["state"])
+        self.assertIsNotNone(worker["current_job_id"])
 
 
 class FactoryV2LauncherTests(unittest.TestCase):
