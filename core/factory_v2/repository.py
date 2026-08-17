@@ -1,0 +1,152 @@
+"""Persistence boundary for Account Factory V2."""
+from __future__ import annotations
+
+import sqlite3
+from typing import Any, Iterable, Mapping
+
+from core.db import transaction
+
+_ACTIVE_JOB_STATES = ("LEASED", "RUNNING", "WAITING_HUMAN", "RECOVERING")
+
+
+def _dict(row):
+    return dict(row) if row is not None else None
+
+
+def _insert(conn, table: str, row: Mapping[str, Any]) -> None:
+    cols = list(row)
+    placeholders = ",".join("?" for _ in cols)
+    conn.execute(
+        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+        tuple(row[c] for c in cols),
+    )
+
+
+class FactoryRepository:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def create_batch(self, row: Mapping[str, Any]) -> dict:
+        _insert(self.conn, "factory_batch", row)
+        return self.get_batch(row["id"])
+
+    def get_batch(self, batch_id: str) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_batch WHERE id=?", (batch_id,)
+        ).fetchone())
+
+    def insert_accounts(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        rows = list(rows)
+        if not rows:
+            return
+        if self.conn.in_transaction:
+            for row in rows:
+                _insert(self.conn, "factory_account", row)
+            return
+        with transaction(self.conn):
+            for row in rows:
+                _insert(self.conn, "factory_account", row)
+
+    def get_account(self, account_id: str) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_account WHERE id=?", (account_id,)
+        ).fetchone())
+
+    def list_accounts(self, batch_id: str) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM factory_account WHERE batch_id=? ORDER BY sequence", (batch_id,)
+        ).fetchall()]
+
+    def update_account_stage(
+        self,
+        account_id: str,
+        *,
+        stage: str,
+        last_safe_stage: str,
+        updated_at: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        completed_at: str | None = None,
+    ) -> dict:
+        self.conn.execute(
+            """UPDATE factory_account
+               SET stage=?, last_safe_stage=?, updated_at=?,
+                   last_error_code=?, last_error_message=?,
+                   completed_at=COALESCE(?, completed_at)
+               WHERE id=?""",
+            (stage, last_safe_stage, updated_at, error_code, error_message, completed_at, account_id),
+        )
+        return self.get_account(account_id)
+
+    def insert_worker(self, row: Mapping[str, Any]) -> dict:
+        _insert(self.conn, "factory_worker", row)
+        return self.get_worker(row["id"])
+
+    def get_worker(self, worker_id: str) -> dict | None:
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_worker WHERE id=?", (worker_id,)
+        ).fetchone())
+
+    def upsert_worker_heartbeat(self, worker_id: str, **values) -> dict:
+        if not values:
+            return self.get_worker(worker_id)
+        allowed = {
+            "adb_serial", "state", "current_account_id", "current_job_id", "pid",
+            "last_heartbeat_at", "last_progress_at", "processed_count", "recovery_count",
+            "estimated_ram_mb", "current_ram_mb", "current_cpu_percent", "draining", "last_error",
+        }
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"unsupported worker fields: {sorted(unknown)}")
+        assignments = ",".join(f"{name}=?" for name in values)
+        self.conn.execute(
+            f"UPDATE factory_worker SET {assignments} WHERE id=?",
+            (*values.values(), worker_id),
+        )
+        return self.get_worker(worker_id)
+
+    def create_job_lease(self, row: Mapping[str, Any]) -> dict:
+        try:
+            with transaction(self.conn):
+                _insert(self.conn, "factory_job", row)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("account already has an active job lease") from exc
+        return _dict(self.conn.execute("SELECT * FROM factory_job WHERE id=?", (row["id"],)).fetchone())
+
+    def get_active_job_for_account(self, account_id: str) -> dict | None:
+        placeholders = ",".join("?" for _ in _ACTIVE_JOB_STATES)
+        return _dict(self.conn.execute(
+            f"SELECT * FROM factory_job WHERE account_id=? AND state IN ({placeholders}) ORDER BY leased_at DESC LIMIT 1",
+            (account_id, *_ACTIVE_JOB_STATES),
+        ).fetchone())
+
+    def create_checkpoint(self, row: Mapping[str, Any]) -> dict:
+        _insert(self.conn, "factory_checkpoint", row)
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_checkpoint WHERE id=?", (row["id"],)
+        ).fetchone())
+
+    def resolve_checkpoint(
+        self,
+        checkpoint_id: str,
+        *,
+        resolved_at: str,
+        resolution: str,
+        resolved_by_device_id: str | None = None,
+    ) -> dict | None:
+        self.conn.execute(
+            """UPDATE factory_checkpoint
+               SET status='RESOLVED', resolved_at=?, resolution=?, resolved_by_device_id=?
+               WHERE id=?""",
+            (resolved_at, resolution, resolved_by_device_id, checkpoint_id),
+        )
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_checkpoint WHERE id=?", (checkpoint_id,)
+        ).fetchone())
+
+    def insert_resource_sample(self, row: Mapping[str, Any]) -> dict:
+        _insert(self.conn, "factory_resource_sample", row)
+        sample_id = self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return _dict(self.conn.execute(
+            "SELECT * FROM factory_resource_sample WHERE id=?", (sample_id,)
+        ).fetchone())
