@@ -48,10 +48,12 @@ jobs:
             tests.test_factory_v2_supervisor_local \
             tests.test_factory_v2_worker_process \
             tests.test_factory_v2_runtime \
+            tests.test_factory_v2_runtime_remote \
             tests.test_factory_v2_runtime_atomicity \
             tests.test_factory_v2_runtime_resume \
             tests.test_factory_v2_runtime_activation \
             tests.test_factory_v2_restart_recovery \
+            tests.test_factory_v2_checkpoint_retry \
             tests.test_factory_v2_runner_schema \
             tests.test_factory_v2_runner_service \
             tests.test_factory_v2_dual_scheduler \
@@ -64,7 +66,13 @@ jobs:
             tests.test_factory_v2_oauth_bridge \
             tests.test_factory_v2_oauth_expiry \
             tests.test_factory_v2_activation \
-            tests.test_factory_v2_launcher -v
+            tests.test_factory_v2_launcher \
+            tests.test_factory_v2_ui_hierarchy \
+            tests.test_factory_v2_ui_detector \
+            tests.test_factory_v2_ui_driver \
+            tests.test_factory_v2_instagram_flow \
+            tests.test_factory_v2_threads_flow \
+            tests.test_factory_v2_avd_worker_agent -v
 
   android:
     runs-on: ubuntu-latest
