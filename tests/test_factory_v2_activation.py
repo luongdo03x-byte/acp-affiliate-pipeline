@@ -1,7 +1,5 @@
-import os
 import sqlite3
 import unittest
-from unittest.mock import patch
 
 from core.account_factory import ensure_schema as ensure_oauth_schema
 from core.factory_v2.activation import FactoryActivationService
@@ -87,6 +85,27 @@ class FactoryV2ActivationTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.activation.start(self.account["id"])
+
+    def test_explicit_retry_clears_failure_gate_then_starts_new_oauth(self):
+        self.conn.execute(
+            """UPDATE factory_account
+               SET stage='RETRY_PENDING', last_safe_stage='THREADS_CREATED', last_error_code='OAUTH_FAILED'
+               WHERE id=?""",
+            (self.account["id"],),
+        )
+
+        gated = self.repo.get_account(self.account["id"])
+        with self.assertRaises(ValueError):
+            self.activation.start(gated["id"])
+
+        approved = self.service.retry_account(self.account["id"])
+        self.assertIsNone(approved["last_error_code"])
+        result = self.activation.start(self.account["id"])
+
+        saved = self.repo.get_account(self.account["id"])
+        self.assertEqual("ACP_CONNECTING", saved["stage"])
+        self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
+        self.assertEqual(result["session_id"], saved["oauth_session_id"])
 
 
 if __name__ == "__main__":
