@@ -7,11 +7,32 @@ from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, SIGN_UP, USERNAM
 
 _SUCCESS = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK"})
+_IG_PROTECTED = (
+    "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
+    "EMAIL_OR_PHONE_VERIFICATION", "SELFIE_OR_IDENTITY_CHECK",
+    "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY", "CONSENT_WITH_SECURITY_IMPACT",
+)
+_IG_ERRORS = (
+    "NETWORK_ERROR", "RATE_LIMITED", "ACTION_BLOCKED", "ACCOUNT_DISABLED", "APP_CRASH",
+)
+_AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK",
+)
+_AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + ("IG_HOME", "IG_POSTCHECK_OK")
 
 
 class InstagramFlow:
     def __init__(self, driver):
         self.driver = driver
+
+    @staticmethod
+    def _attempt(action):
+        result = None
+        for _ in range(3):
+            result = action()
+            if result.status in {"completed", "noop"}:
+                return result
+        return result
 
     def _detect_bounded(self):
         detected = self.driver.detect_screen()
@@ -52,7 +73,13 @@ class InstagramFlow:
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
         if detected.kind == "IG_SIGNUP_ENTRY":
             selector = SIGN_UP if self.driver.find(SIGN_UP) is not None else CONTINUE
-            action = self.driver.tap(selector)
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    selector,
+                    expected_screens=_AFTER_SIGNUP,
+                    timeout=8.0,
+                )
+            )
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_SIGNUP_ENTRY")
@@ -65,11 +92,19 @@ class InstagramFlow:
             for selector, value in approved:
                 if not value or self.driver.find(selector) is None:
                     continue
-                action = self.driver.set_text(selector, value)
+                action = self._attempt(
+                    lambda selector=selector, value=value: self.driver.set_text(selector, value)
+                )
                 if action.status not in {"completed", "noop"}:
                     return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             if self.driver.find(CONTINUE) is not None:
-                action = self.driver.tap(CONTINUE)
+                action = self._attempt(
+                    lambda: self.driver.tap(
+                        CONTINUE,
+                        expected_screens=_AFTER_PROFILE,
+                        timeout=8.0,
+                    )
+                )
                 if action.status != "completed":
                     return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_PROFILE_SETUP")
