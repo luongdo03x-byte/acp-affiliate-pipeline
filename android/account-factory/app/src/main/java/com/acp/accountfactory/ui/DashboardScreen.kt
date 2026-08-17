@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 fun DashboardScreen(
     state: FactoryUiState,
     onRefresh: () -> Unit,
+    onCreateAccount: () -> Unit,
     onAccounts: () -> Unit,
     onCheckpoints: () -> Unit,
     onWorkers: () -> Unit,
@@ -52,6 +53,11 @@ fun DashboardScreen(
             if (state.error != null) {
                 item { Text(state.error, color = MaterialTheme.colorScheme.error) }
             }
+            item {
+                Button(onClick = onCreateAccount, modifier = Modifier.fillMaxWidth()) {
+                    Text("+ TẠO ACCOUNT")
+                }
+            }
             if (dashboard == null) {
                 item {
                     Card(Modifier.fillMaxWidth()) {
@@ -70,9 +76,9 @@ fun DashboardScreen(
                             Text("Active ${dashboard.accounts.active}/${dashboard.accounts.total}")
                             Text("Running ${dashboard.accounts.running} • Chờ người dùng ${dashboard.accounts.waitingHuman}")
                             Text("Queue ${dashboard.accounts.queued} • Error ${dashboard.accounts.error}")
-                            Text("Workers ${dashboard.workers.total} • Running ${dashboard.workers.running} • Waiting ${dashboard.workers.waitingHuman}")
+                            Text("Runners ${dashboard.workers.total} • Running ${dashboard.workers.running} • Waiting ${dashboard.workers.waitingHuman}")
                             dashboard.host?.let { host ->
-                                Text("Host: CPU ${host.cpuPercent.toInt()}% • RAM trống ${host.ramAvailableMb} MB • ${capacityLabel(host.capacityState)}")
+                                Text("Host AVD: CPU ${host.cpuPercent.toInt()}% • RAM trống ${host.ramAvailableMb} MB • ${capacityLabel(host.capacityState)}")
                             }
                         }
                     }
@@ -92,7 +98,7 @@ fun DashboardScreen(
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onCheckpoints, modifier = Modifier.weight(1f)) { Text("CHECKPOINTS (${actionable.size})") }
-                        OutlinedButton(onClick = onWorkers, modifier = Modifier.weight(1f)) { Text("WORKERS") }
+                        OutlinedButton(onClick = onWorkers, modifier = Modifier.weight(1f)) { Text("RUNNERS") }
                     }
                 }
                 if (actionable.isNotEmpty()) {
