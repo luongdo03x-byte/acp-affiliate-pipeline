@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 
 from core.db import now, ulid
 
@@ -15,6 +16,21 @@ _LOCAL_ACTIONS = frozenset({
     "REPORT_WAITING_HUMAN",
     "OBSERVE_FOREGROUND",
 })
+
+
+def validate_factory_authorization_url(value: str) -> str:
+    url = str(value or "").strip()
+    if not url or any(ord(character) < 32 for character in url):
+        raise ValueError("invalid authorization URL")
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError("invalid authorization URL") from exc
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("authorization URL must use https")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("authorization URL must not contain credentials")
+    return url
 
 
 class RunnerGateway:
@@ -34,6 +50,8 @@ class RunnerGateway:
     def send(self, job: dict, action: str, payload: dict | None = None) -> dict:
         action = str(action).upper()
         payload = {"job_id": job["id"], **(payload or {})}
+        if action == "OPEN_URL":
+            payload["url"] = validate_factory_authorization_url(payload.get("url"))
         runner_type = self._runner_type(job)
 
         if runner_type == RunnerType.REMOTE_AVD.value:
