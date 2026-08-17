@@ -3,17 +3,27 @@
 This module composes around existing routes. It never owns approve/publish state
 transitions and never logs raw affiliate URLs, tokens, cookies or provider bodies.
 """
+import json
 import re
+from urllib.parse import urlsplit
 
-from flask import request
+from flask import jsonify, request
 
 from ..adapters.safe_http import SafeHttpError
+from ..core import content
 from ..core.db import connect
+from ..core.shopee_helper import ShopeeHelperError, sanitize_helper_metadata
 from ..core.shopee_observability import ShopeeObservabilityError, record_shopee_event
+from ..core.shopee_products import CACHE_SOURCES, ShopeeProductError, identity_from_url
 
 
 _CAPTCHA_MARKERS = (b"captcha", b"shopee captcha")
 _PRODUCT_HIDDEN_RE = re.compile(r'name="product_url"\s+value="([^"]+)"')
+_AFFILIATE_HOSTS = {"shopee.vn", "www.shopee.vn", "s.shopee.vn"}
+
+
+class ShopeePreviewError(ValueError):
+    """Safe operator-facing validation error for non-persisted preview."""
 
 
 class ObservedShopeeHttpClient:
@@ -95,6 +105,102 @@ def _response_json(response):
         return {}
 
 
+def _validate_affiliate_url(value: str) -> str:
+    if not isinstance(value, str):
+        raise ShopeePreviewError("Affiliate link không hợp lệ.")
+    text = value.strip()
+    if not text or len(text) > 4096 or any(ord(ch) < 32 for ch in text):
+        raise ShopeePreviewError("Affiliate link không hợp lệ.")
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise ShopeePreviewError("Affiliate link không hợp lệ.") from exc
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or host not in _AFFILIATE_HOSTS:
+        raise ShopeePreviewError("Chỉ chấp nhận affiliate link Shopee HTTPS.")
+    if parsed.username is not None or parsed.password is not None or port not in (None, 443):
+        raise ShopeePreviewError("Affiliate link không hợp lệ.")
+    return text
+
+
+def _fmt_vnd(value: int) -> str:
+    return f"{int(value):,}đ".replace(",", ".")
+
+
+def build_preliminary_preview(*, name, current_price, original_price, image_url,
+                              affiliate_url, product_url, channels, metadata_source):
+    """Build a factual, non-persisted preview; final pipeline caption may differ."""
+    try:
+        amount = int(current_price)
+    except (TypeError, ValueError) as exc:
+        raise ShopeePreviewError("Giá hiện tại không hợp lệ.") from exc
+    if amount <= 0:
+        raise ShopeePreviewError("Giá hiện tại phải lớn hơn 0.")
+    original = None
+    if original_price not in (None, ""):
+        try:
+            original = int(original_price)
+        except (TypeError, ValueError) as exc:
+            raise ShopeePreviewError("Giá gốc không hợp lệ.") from exc
+        if original <= 0:
+            original = None
+
+    try:
+        identity = identity_from_url(product_url)
+        clean = sanitize_helper_metadata({
+            "name": name,
+            "current_price": amount,
+            "original_price": original,
+            "image_url": image_url,
+            "shop": None,
+        })
+    except (ShopeeProductError, ShopeeHelperError) as exc:
+        raise ShopeePreviewError(str(exc)) from exc
+    if not clean["name"] or not clean["image_url"]:
+        raise ShopeePreviewError("Preview cần tên và ảnh sản phẩm.")
+    affiliate = _validate_affiliate_url(affiliate_url)
+    if metadata_source not in CACHE_SOURCES:
+        metadata_source = "manual"
+    if not isinstance(channels, list) or not channels:
+        raise ShopeePreviewError("Chọn ít nhất một kênh để xem preview.")
+
+    safe_channels = []
+    for channel in channels:
+        if not isinstance(channel, dict) or not channel.get("code") or not channel.get("handle"):
+            raise ShopeePreviewError("Kênh preview không hợp lệ.")
+        safe_channels.append({
+            "code": str(channel["code"])[:80],
+            "handle": str(channel["handle"])[:120],
+            "platform": str(channel.get("platform") or "threads")[:32],
+        })
+
+    disclosure = content.DISCLOSURE_DEFAULT
+    tail = f"\n\nXem sản phẩm:\n{affiliate}\n\n{disclosure}"
+    if len(tail) >= 500:
+        raise ShopeePreviewError("Affiliate link quá dài để tạo caption preview an toàn.")
+    body = f"{clean['name'][:120]}\n\nGiá hiện tại {_fmt_vnd(amount)}."
+    budget = 500 - len(tail)
+    if len(body) > budget:
+        body = body[:budget].rstrip()
+    caption = body + tail
+
+    return {
+        "preliminary": True,
+        "caption": caption,
+        "disclosure": disclosure,
+        "name": clean["name"],
+        "current_price": amount,
+        "original_price": original,
+        "image_url": clean["image_url"],
+        "affiliate_url": affiliate,
+        "product_url": identity.canonical_url,
+        "channels": safe_channels,
+        "metadata_source": metadata_source,
+        "warnings": ["Preview sơ bộ; caption cuối vẫn do pipeline tạo và kiểm tra lại trước /duyet."],
+    }
+
+
 def _audit_after_request(response):
     path = request.path
     if path == "/api/helper/shopee-product" and request.method == "POST" and response.status_code == 200:
@@ -152,4 +258,73 @@ def register_shopee_polish(app) -> None:
         return _instrument_source(base_factory())
 
     app.config["SHOPEE_SOURCE_FACTORY"] = observed_source_factory
+
+    @app.post("/sanpham/affiliate/preview")
+    def shopee_affiliate_preview():
+        codes = [code for code in request.form.getlist("channel_codes") if code]
+        if not codes:
+            return jsonify(error="Chọn ít nhất một kênh để xem preview."), 400
+        placeholders = ",".join("?" for _ in codes)
+        conn = connect()
+        try:
+            rows = conn.execute(
+                f"SELECT code, handle, platform FROM channel WHERE status='ACTIVE' AND enabled=1 AND code IN ({placeholders})",
+                codes).fetchall()
+        finally:
+            conn.close()
+        by_code = {row["code"]: dict(row) for row in rows}
+        if any(code not in by_code for code in codes):
+            return jsonify(error="Có kênh không còn hoạt động."), 400
+        channels = [by_code[code] for code in codes]
+        try:
+            preview = build_preliminary_preview(
+                name=request.form.get("name", ""),
+                current_price=request.form.get("current_price", ""),
+                original_price=request.form.get("original_price", ""),
+                image_url=request.form.get("image_url", ""),
+                affiliate_url=request.form.get("affiliate_url", ""),
+                product_url=request.form.get("product_url", ""),
+                channels=channels,
+                metadata_source=request.form.get("metadata_source", "manual"),
+            )
+        except ShopeePreviewError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(preview)
+
+    @app.get("/api/review/shopee-context")
+    def shopee_review_context():
+        post_id = request.args.get("post_id", "").strip()
+        if not post_id or len(post_id) > 80:
+            return jsonify(error="post_id không hợp lệ"), 400
+        conn = connect()
+        try:
+            row = conn.execute("""SELECT p.id, p.post_type, p.affiliate_link, p.sub_id_payload,
+                                         pr.product_url, pr.source, pr.merchant, pr.external_product_id
+                                  FROM post p LEFT JOIN product pr ON pr.id=p.product_id
+                                  WHERE p.id=?""", (post_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return jsonify(error="Không tìm thấy bài"), 404
+        if row["source"] != "manual_shopee" or row["merchant"] != "shopee.vn":
+            return jsonify(shopee=False)
+        attribution = {}
+        try:
+            attribution = json.loads(row["sub_id_payload"] or "{}")
+        except (TypeError, ValueError):
+            pass
+        try:
+            canonical = identity_from_url(row["product_url"]).canonical_url
+            affiliate = _validate_affiliate_url(row["affiliate_link"])
+        except (ShopeeProductError, ShopeePreviewError):
+            return jsonify(shopee=True, safe_links=False)
+        return jsonify(
+            shopee=True,
+            safe_links=True,
+            product_url=canonical,
+            affiliate_url=affiliate,
+            source="shopee_direct",
+            link_mode=attribution.get("link_mode") if isinstance(attribution, dict) else None,
+        )
+
     app.after_request(_audit_after_request)
