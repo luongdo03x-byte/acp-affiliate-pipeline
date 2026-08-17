@@ -318,23 +318,27 @@ cùng 1 con số lặp lại 4 lần).
 
 ## 8. Regenerate actions (§50) — round-trip thật
 
-3 route mới trong `web/server.py`, tất cả yêu cầu `content_generation_run`
-đang `READY` cho bài đó:
+**Tái dùng route generic đã có** `POST /duyet/<post_id>/<action>` (hàm
+`review_action()` trong `web/server.py`, hiện xử lý `action in
+("approve", "reject")`) — thêm 3 giá trị `action` mới thay vì tạo route
+riêng, đúng kiến trúc "1 route, nhiều action" đã có sẵn. `variant_id` đọc
+từ `request.form.get("variant_id")` (hidden input trong form của từng
+variant card, xem §7), không phải URL segment. Tất cả yêu cầu
+`content_generation_run` đang `READY` cho bài đó:
 
-- `POST /duyet/<post_id>/variant/<variant_id>/doi-hook` — gọi lại
+- `action="doi-hook"` — gọi lại
   `content_hook.select_best_hook(variant.angle, facts)` (facts dựng lại
   từ `build_product_facts()`, cache hit vì description không đổi), cập
   nhật `content_variant_row.hook` + set `manual_edited=0` (đây là
   regenerate, không phải sửa tay — không tính là manual edit theo §52) →
   redirect lại `/duyet` với caption mới hiển thị.
-- `POST /duyet/<post_id>/variant/<variant_id>/lam-lai` ("regenerate
-  variant" — sinh lại toàn bộ variant cùng angle): gọi lại
-  `content_variant.generate_variant(angle, facts)`, cập nhật cả
-  `hook`/`main_message`/`body_json`/`cta`.
-- `POST /duyet/<post_id>/variant/<variant_id>/doi-angle` — lấy angle KẾ
-  TIẾP chưa dùng từ `content_angle.select_angle_candidates(product)` (nếu
-  còn), gọi `content_variant.generate_variant(angle_moi, facts)`, cập
-  nhật cả `angle`/`hook`/`main_message`/`body_json`/`cta`/`structure`.
+- `action="lam-lai"` ("regenerate variant" — sinh lại toàn bộ variant
+  cùng angle): gọi lại `content_variant.generate_variant(angle, facts)`,
+  cập nhật cả `hook`/`main_message`/`body_json`/`cta`.
+- `action="doi-angle"` — lấy angle KẾ TIẾP chưa dùng từ
+  `content_angle.select_angle_candidates(product)` (nếu còn), gọi
+  `content_variant.generate_variant(angle_moi, facts)`, cập nhật cả
+  `angle`/`hook`/`main_message`/`body_json`/`cta`/`structure`.
   Hết angle khả dụng (đã dùng hết candidates) → lỗi rõ, không đổi gì.
 
 Sau mỗi regenerate: **không tự động re-tính `is_best`** trong P0 (regenerate
