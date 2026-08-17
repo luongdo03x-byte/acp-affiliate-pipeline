@@ -37,6 +37,10 @@ def select_angle_candidates(product) -> list:
     if category in _USE_CASE_CATEGORIES:
         candidates.append("USE_CASE")
     elif category in _PERSONAL_REC_CATEGORIES:
+        # Hiện tại trùng hệt bước fallback dưới (PERSONAL_RECOMMENDATION cũng
+        # là fallback cuối cùng) -- giữ tách riêng có chủ đích để dễ đổi
+        # angle khác cho nhóm phong cách/cá nhân sau này (E3+/AudienceContext
+        # ở P1) mà không phải sửa lại rule fallback chung bên dưới.
         if "PERSONAL_RECOMMENDATION" not in candidates:
             candidates.append("PERSONAL_RECOMMENDATION")
 
