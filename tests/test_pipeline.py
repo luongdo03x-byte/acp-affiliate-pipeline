@@ -1106,6 +1106,84 @@ def test_select_best_variant_repetition_penalty_affects_choice():
     check("best là variant không trùng bài gần đây", result["best"] == v_fresh, result)
 
 
+def test_adapt_for_threads_includes_link_and_disclosure():
+    print("\nadapt_for_threads() có affiliate_link + disclosure, giới hạn <=500 ký tự")
+    from acp.core import content_platform, content
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    result = content_platform.adapt_for_threads(v, link)
+    check("có affiliate_link", link in result, result)
+    check("có disclosure", content.DISCLOSURE_DEFAULT in result, result)
+    check("hook ở đầu chuỗi", result.startswith(v.hook), result)
+    check("độ dài <= 500", len(result) <= content.PLATFORM_MAX_LEN["threads"], len(result))
+
+
+def test_adapt_for_threads_truncates_long_body_but_keeps_link_and_disclosure():
+    print("\nadapt_for_threads() cắt body dài nhưng vẫn giữ đủ link + disclosure")
+    from acp.core import content_platform, content
+    v = _mk_test_variant(main_message="m" * 600)
+    link = "https://go.isclix.com/x?sub1=abc"
+    result = content_platform.adapt_for_threads(v, link)
+    check("độ dài <= 500 dù body gốc rất dài", len(result) <= content.PLATFORM_MAX_LEN["threads"], len(result))
+    check("vẫn có link sau khi cắt", link in result, result)
+    check("vẫn có disclosure sau khi cắt", content.DISCLOSURE_DEFAULT in result, result)
+
+
+def test_adapt_for_facebook_merges_main_message_and_body_into_paragraph():
+    print("\nadapt_for_facebook() gộp main_message + body thành 1 đoạn văn liền, không xuống dòng giữa chúng")
+    from acp.core import content_platform, content
+    v = _mk_test_variant(main_message="Ý chính", body=["Điểm phụ 1", "Điểm phụ 2"])
+    link = "https://go.isclix.com/x?sub1=abc"
+    result = content_platform.adapt_for_facebook(v, link)
+    check("main_message và body[0] cùng 1 dòng (gộp đoạn văn)",
+          "Ý chính Điểm phụ 1 Điểm phụ 2" in result, result)
+    check("có affiliate_link", link in result, result)
+    check("có disclosure", content.DISCLOSURE_DEFAULT in result, result)
+    check("độ dài <= 63206", len(result) <= content.PLATFORM_MAX_LEN["facebook"], len(result))
+
+
+def test_adapt_for_instagram_includes_link_and_disclosure():
+    print("\nadapt_for_instagram() có affiliate_link + disclosure, giới hạn <=2200 ký tự")
+    from acp.core import content_platform, content
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    result = content_platform.adapt_for_instagram(v, link)
+    check("có affiliate_link", link in result, result)
+    check("có disclosure", content.DISCLOSURE_DEFAULT in result, result)
+    check("hook ở đầu chuỗi", result.startswith(v.hook), result)
+    check("độ dài <= 2200", len(result) <= content.PLATFORM_MAX_LEN["instagram"], len(result))
+
+
+def test_platform_adapters_never_add_hashtag():
+    print("\nCả 3 adapter không tự thêm hashtag nào ngoài disclosure (PTYC mục 24)")
+    from acp.core import content_platform, content
+    v = _mk_test_variant()
+    link = "https://go.isclix.com/x?sub1=abc"
+    for adapter in (content_platform.adapt_for_threads, content_platform.adapt_for_facebook,
+                    content_platform.adapt_for_instagram):
+        result = adapter(v, link)
+        without_disclosure = result.replace(content.DISCLOSURE_DEFAULT, "")
+        check(f"{adapter.__name__} không có # ngoài disclosure", "#" not in without_disclosure, result)
+
+
+def test_fit_to_length_no_truncation_when_body_fits():
+    print("\n_fit_to_length() không cắt khi body đã vừa budget")
+    from acp.core import content_platform
+    result = content_platform._fit_to_length("body ngắn", "https://link.test", "disclosure test", 500)
+    check("giữ nguyên body", result.startswith("body ngắn"), result)
+    check("có link + disclosure ở cuối", result.endswith("disclosure test") and "https://link.test" in result, result)
+
+
+def test_fit_to_length_truncates_when_body_too_long():
+    print("\n_fit_to_length() cắt đúng khi body vượt budget, vẫn giữ link + disclosure")
+    from acp.core import content_platform
+    long_body = "từ " * 200
+    result = content_platform._fit_to_length(long_body, "https://link.test", "disclosure test", 100)
+    check("độ dài đúng giới hạn", len(result) <= 100, len(result))
+    check("vẫn có link", "https://link.test" in result, result)
+    check("vẫn có disclosure", "disclosure test" in result, result)
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3597,6 +3675,13 @@ if __name__ == "__main__":
     test_select_best_variant_excludes_fact_unsafe()
     test_select_best_variant_all_rejected_when_all_fact_unsafe()
     test_select_best_variant_repetition_penalty_affects_choice()
+    test_adapt_for_threads_includes_link_and_disclosure()
+    test_adapt_for_threads_truncates_long_body_but_keeps_link_and_disclosure()
+    test_adapt_for_facebook_merges_main_message_and_body_into_paragraph()
+    test_adapt_for_instagram_includes_link_and_disclosure()
+    test_platform_adapters_never_add_hashtag()
+    test_fit_to_length_no_truncation_when_body_fits()
+    test_fit_to_length_truncates_when_body_too_long()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
