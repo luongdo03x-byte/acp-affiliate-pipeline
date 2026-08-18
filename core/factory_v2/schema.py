@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS factory_batch (
     paused_at TEXT,
     desired_max_workers INTEGER,
     reminder_interval_minutes INTEGER NOT NULL DEFAULT 10,
+    completion_mode TEXT NOT NULL DEFAULT 'ACP_ACTIVE',
     created_by_device_id TEXT
 );
 
@@ -55,6 +56,10 @@ CREATE TABLE IF NOT EXISTS factory_account (
     avatar_theme TEXT,
     avatar_prompt TEXT,
     avatar_file TEXT,
+    signup_contact_type TEXT,
+    phone TEXT,
+    email TEXT,
+    birth_date TEXT,
     stage TEXT NOT NULL,
     last_safe_stage TEXT NOT NULL,
     execution_target TEXT,
@@ -266,9 +271,39 @@ def _migrate_runner_columns(conn) -> None:
 
     _add_column_if_missing(
         conn,
+        "factory_batch",
+        "completion_mode",
+        "ALTER TABLE factory_batch ADD COLUMN completion_mode TEXT NOT NULL DEFAULT 'ACP_ACTIVE'",
+    )
+    _add_column_if_missing(
+        conn,
         "factory_account",
         "execution_target",
         "ALTER TABLE factory_account ADD COLUMN execution_target TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "signup_contact_type",
+        "ALTER TABLE factory_account ADD COLUMN signup_contact_type TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "phone",
+        "ALTER TABLE factory_account ADD COLUMN phone TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "email",
+        "ALTER TABLE factory_account ADD COLUMN email TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "birth_date",
+        "ALTER TABLE factory_account ADD COLUMN birth_date TEXT",
     )
     _add_column_if_missing(
         conn,
@@ -277,6 +312,11 @@ def _migrate_runner_columns(conn) -> None:
         "ALTER TABLE factory_job ADD COLUMN runner_type TEXT",
     )
 
+    conn.execute(
+        """UPDATE factory_batch
+           SET completion_mode='ACP_ACTIVE'
+           WHERE completion_mode IS NULL OR completion_mode=''"""
+    )
     conn.execute(
         """UPDATE factory_worker
            SET runner_type=CASE
