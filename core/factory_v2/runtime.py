@@ -733,3 +733,43 @@ class FactoryControllerRuntime:
                 except Exception as exc:
                     _LOG.warning("Factory controller tick failed (%s)", type(exc).__name__)
                 stop_event.wait(interval_seconds)
+        finally:
+            self.close()
+
+
+def build_default_runtime():
+    """Construct the local controller runtime in the thread that will own SQLite."""
+    from core.db import connect
+
+    from .avd import AvdManager
+    from .host_metrics import HostMetricsSampler
+    from .repository import FactoryRepository
+    from .scheduler import Scheduler
+    from .schema import ensure_schema
+    from .service import FactoryService
+    from .supervisor import WorkerSupervisor
+    from .worker_process import WorkerProcessManager
+
+    conn = connect()
+    ensure_schema(conn)
+    repo = FactoryRepository(conn)
+    service = FactoryService(repo)
+    worker_processes = WorkerProcessManager()
+    avd = AvdManager()
+    metrics = HostMetricsSampler()
+    scheduler = Scheduler(repo, service)
+    supervisor = WorkerSupervisor(
+        repo,
+        avd,
+        metrics,
+        worker_processes=worker_processes,
+    )
+    supervisor.reconcile_on_boot()
+    return FactoryControllerRuntime(
+        repo,
+        service,
+        scheduler,
+        supervisor,
+        worker_processes,
+        owned_connection=conn,
+    )
