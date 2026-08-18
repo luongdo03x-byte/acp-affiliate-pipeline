@@ -26,6 +26,15 @@ class FakeGateway:
 
     def send(self, job, action, payload=None):
         self.commands.append((action, payload or {}))
+        if action == "OBSERVE_CHECKPOINT":
+            return {
+                "ok": True,
+                "status": "completed",
+                "result": {
+                    "screen": "THREADS_POSTCHECK_OK",
+                    "last_safe_step": "THREADS_POSTCHECK_OK",
+                },
+            }
         if action == "OBSERVE_FOREGROUND":
             return {"package": "com.instagram.barcelona"}
         return {"ok": True}
