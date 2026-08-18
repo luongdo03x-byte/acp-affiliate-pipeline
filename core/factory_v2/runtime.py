@@ -74,13 +74,22 @@ class FactoryControllerRuntime:
 
     @staticmethod
     def _profile_payload(account) -> dict:
-        return {
-            "profile": {
-                "username": str(account.get("username") or ""),
-                "display_name": str(account.get("display_name") or ""),
-                "bio": str(account.get("bio") or ""),
-            }
+        profile = {
+            "username": str(account.get("username") or ""),
+            "display_name": str(account.get("display_name") or ""),
+            "bio": str(account.get("bio") or ""),
         }
+        contact_type = str(account.get("signup_contact_type") or "").strip().lower()
+        if contact_type in {"phone", "email"}:
+            selected = account.get(contact_type)
+            if selected:
+                profile["signup_contact_type"] = contact_type
+                profile["signup_contact"] = str(selected)
+        if account.get("birth_date"):
+            profile["birth_date"] = str(account["birth_date"])
+        if account.get("avatar_file"):
+            profile["avatar_file"] = str(account["avatar_file"])
+        return {"profile": profile}
 
     def _open_human_checkpoint(self, job, account, *, package: str, checkpoint_type: str) -> None:
         steps = (
