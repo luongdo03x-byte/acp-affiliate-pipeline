@@ -901,8 +901,16 @@ def create_app():
                     res = content_engine.switch_angle(conn, post_id, variant_id)
             except Exception as exc:
                 res = {"ok": False, "error": "Không tạo được nội dung mới, thử lại sau"}
-                pipeline.audit(conn, "content_variant_row", variant_id or post_id, f"{action}_failed",
-                               actor="system", detail={"error": str(exc)})
+                # audit() cũng ghi DB nên có thể tự ném (lỗi gốc là khoá DB /
+                # connection đã đóng chẳng hạn) -- nuốt luôn, đây chỉ là
+                # telemetry best-effort. res đã gán ở trên nên operator vẫn
+                # nhận redirect có lỗi tử tế, không rơi về 500 -- đúng thứ
+                # mà except block này sinh ra để tránh.
+                try:
+                    pipeline.audit(conn, "content_variant_row", variant_id or post_id, f"{action}_failed",
+                                   actor="system", detail={"error": str(exc)})
+                except Exception:
+                    pass
         else:
             conn.close()
             abort(404)
