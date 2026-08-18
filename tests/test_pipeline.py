@@ -1294,6 +1294,73 @@ def test_is_content_engine_v2_enabled_default_false():
     conn.close()
 
 
+def _mk_content_engine_fixture():
+    """Trả (conn, product, channel_id) -- product có discount rõ + category
+    gia-dung (đã kiểm chứng cho đủ 3 angle distinct từ E3), channel Threads
+    riêng cho test này (không dùng ch1 chung, tránh nhiễu _recent_variants
+    giữa các test khác nhau)."""
+    conn = connect()
+    ch_id = ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+        VALUES (?,?,?,?,?,?,?)""", (ch_id, f"ce_test_{ch_id}", "threads", "@cetest", "ACTIVE", 1, now()))
+    product = conn.execute("""SELECT * FROM product WHERE original_price IS NOT NULL
+        AND original_price > current_price
+        AND (original_price - current_price) * 1.0 / original_price >= 0.05
+        AND category_code = 'gia-dung' LIMIT 1""").fetchone()
+    return conn, product, ch_id
+
+
+def test_compute_variants_ready_status_has_captions():
+    print("\ncompute_variants() sản phẩm bình thường -> status READY, có đủ caption theo platform yêu cầu")
+    from acp.core import content_engine
+    conn, product, ch_id = _mk_content_engine_fixture()
+    computed = content_engine.compute_variants(conn, product, ch_id, ["threads", "facebook"], "https://link.test")
+    check("status READY", computed["status"] == "READY", computed["status"])
+    check("đúng 3 variant", len(computed["variants"]) == 3, len(computed["variants"]))
+    check("có caption threads", "threads" in computed["captions"], computed["captions"].keys())
+    check("có caption facebook", "facebook" in computed["captions"], computed["captions"].keys())
+    check("không có caption instagram (không yêu cầu)", "instagram" not in computed["captions"], computed["captions"].keys())
+    conn.close()
+
+
+def test_persist_run_writes_one_run_and_three_variant_rows():
+    print("\npersist_run() ghi đúng 1 content_generation_run + 3 content_variant_row, đúng 1 is_best")
+    from acp.core import content_engine
+    conn, product, ch_id = _mk_content_engine_fixture()
+    computed = content_engine.compute_variants(conn, product, ch_id, ["threads"], "https://link.test")
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code, caption_body,
+        disclosure_text, caption_final, affiliate_link, status, created_at, updated_at)
+        VALUES (?,?,?,(SELECT id FROM campaign LIMIT 1),'A','x',?,'x','https://link.test','PENDING_REVIEW',?,?)""",
+        (post_id, product["id"], ch_id, content.DISCLOSURE_DEFAULT, now(), now()))
+    persisted = content_engine.persist_run(conn, post_id, computed)
+    rows = conn.execute("SELECT * FROM content_variant_row WHERE run_id=?", (persisted["run_id"],)).fetchall()
+    check("đúng 3 dòng variant", len(rows) == 3, len(rows))
+    check("đúng 1 dòng is_best=1", sum(r["is_best"] for r in rows) == 1, [r["is_best"] for r in rows])
+    check("best_label khớp dòng is_best", persisted["best_label"] in [r["label"] for r in rows if r["is_best"]])
+    run_row = conn.execute("SELECT * FROM content_generation_run WHERE id=?", (persisted["run_id"],)).fetchone()
+    check("run status khớp computed", run_row["status"] == computed["status"], run_row["status"])
+    conn.close()
+
+
+def test_recent_variants_scoped_by_channel_and_ordered():
+    print("\n_recent_variants() chỉ lấy theo đúng channel_id, sắp mới nhất trước, giới hạn limit")
+    from acp.core import content_engine
+    conn, product, ch_id = _mk_content_engine_fixture()
+    check("chưa có run nào -> []", content_engine._recent_variants(conn, ch_id) == [])
+    computed = content_engine.compute_variants(conn, product, ch_id, ["threads"], "https://link.test")
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code, caption_body,
+        disclosure_text, caption_final, affiliate_link, status, created_at, updated_at)
+        VALUES (?,?,?,(SELECT id FROM campaign LIMIT 1),'A','x',?,'x','https://link.test','PENDING_REVIEW',?,?)""",
+        (post_id, product["id"], ch_id, content.DISCLOSURE_DEFAULT, now(), now()))
+    content_engine.persist_run(conn, post_id, computed)
+    recent = content_engine._recent_variants(conn, ch_id)
+    check("có đúng 1 recent variant sau 1 lần persist", len(recent) == 1, len(recent))
+    check("recent variant là ContentVariant thật", hasattr(recent[0], "angle"), recent[0])
+    conn.close()
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3802,6 +3869,9 @@ if __name__ == "__main__":
     test_set_setting_then_get_roundtrip()
     test_set_setting_overwrites_existing()
     test_is_content_engine_v2_enabled_default_false()
+    test_compute_variants_ready_status_has_captions()
+    test_persist_run_writes_one_run_and_three_variant_rows()
+    test_recent_variants_scoped_by_channel_and_ordered()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
