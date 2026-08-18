@@ -3,6 +3,8 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.ACPSeedingParser = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  const FACEBOOK_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com']);
+
   function normalizeText(value) {
     return String(value || '')
       .replace(/\u00a0/g, ' ')
@@ -29,10 +31,40 @@
     return Array.from(rootNode.querySelectorAll(selector)).filter(isVisible);
   }
 
-  function findTargetArticle(rootNode) {
+  function facebookResourceKey(value) {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol !== 'https:' || !FACEBOOK_HOSTS.has(url.hostname.toLowerCase())) return null;
+      const path = url.pathname.replace(/\/+$/, '') || '/';
+      // Modern post/group permalinks are identified by their path. Facebook may
+      // append volatile tracking query parameters while rendering anchors.
+      if (/\/posts\/[^/]+$/i.test(path)) return path;
+      return `${path}${url.search}`;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function articleLinksToTarget(article, targetUrl) {
+    const targetKey = facebookResourceKey(targetUrl);
+    if (!targetKey || !article || typeof article.querySelectorAll !== 'function') return false;
+    return Array.from(article.querySelectorAll('a[href]')).some((anchor) => {
+      const href = anchor && (anchor.href || (typeof anchor.getAttribute === 'function' && anchor.getAttribute('href')));
+      return facebookResourceKey(href) === targetKey;
+    });
+  }
+
+  function findTargetArticle(rootNode, targetUrl) {
     const articles = visibleCandidates(rootNode, '[role="article"]')
       .filter((node) => normalizeText(node.innerText || node.textContent).length > 0);
     if (!articles.length) return null;
+
+    if (targetUrl) {
+      const permalinkMatches = articles.filter((node) => articleLinksToTarget(node, targetUrl));
+      if (permalinkMatches.length === 1) return permalinkMatches[0];
+      if (permalinkMatches.length > 1) return null;
+    }
+
     if (articles.length === 1) return articles[0];
 
     const feedUnits = articles.filter((node) => {
@@ -43,7 +75,7 @@
   }
 
   function extractPostContext(rootNode, url) {
-    const article = findTargetArticle(rootNode);
+    const article = findTargetArticle(rootNode, url);
     if (!article) return { ok: false, error: 'ambiguous_or_missing_article' };
     const postText = normalizeText(article.innerText || article.textContent);
     if (!postText) return { ok: false, error: 'empty_article' };
