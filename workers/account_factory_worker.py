@@ -12,7 +12,7 @@ import json
 import re
 import sys
 from datetime import date, datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from core.factory_v2.avd import AvdManager
 from core.factory_v2.ui_automation.adb import AdbClient
@@ -26,6 +26,8 @@ from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, Worker
 
 _INSTAGRAM_PACKAGE = "com.instagram.android"
 _THREADS_PACKAGE = "com.instagram.barcelona"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_AVATAR_DEVICE_PATH = "/sdcard/Pictures/ACP/avatar.jpg"
 _APPROVED_PROFILE_KEYS = (
     "username",
     "display_name",
@@ -138,11 +140,15 @@ class WorkerAgent:
         avd: AvdManager | None = None,
         instagram_flow=None,
         threads_flow=None,
+        adb_client=None,
     ):
         self.worker_id = worker_id
         self.avd_name = avd_name
         self.serial = serial
         self.avd = avd or AvdManager()
+        self.adb_client = adb_client or AdbClient(
+            serial, adb_path=self.avd.adb, runner=self.avd.runner
+        )
         self.ledger = CommandLedger()
         self.state = "READY"
         self.current_account_id = None
@@ -154,12 +160,14 @@ class WorkerAgent:
         self.last_known_screen = None
         self.last_safe_step = None
 
-        if instagram_flow is None or threads_flow is None:
-            adb = AdbClient(serial, adb_path=self.avd.adb, runner=self.avd.runner)
-            if instagram_flow is None:
-                instagram_flow = InstagramFlow(SafeUiDriver(adb, build_instagram_detector()))
-            if threads_flow is None:
-                threads_flow = ThreadsFlow(SafeUiDriver(adb, build_threads_detector()))
+        if instagram_flow is None:
+            instagram_flow = InstagramFlow(
+                SafeUiDriver(self.adb_client, build_instagram_detector())
+            )
+        if threads_flow is None:
+            threads_flow = ThreadsFlow(
+                SafeUiDriver(self.adb_client, build_threads_detector())
+            )
         self.instagram_flow = instagram_flow
         self.threads_flow = threads_flow
 
@@ -189,6 +197,20 @@ class WorkerAgent:
             return None
         match = re.search(r"mCurrentFocus=.*? ([A-Za-z0-9_.]+)/", result.stdout)
         return match.group(1) if match else None
+
+    def _stage_avatar(self, profile: dict[str, str]) -> None:
+        avatar_file = profile.get("avatar_file")
+        if not avatar_file:
+            return
+        root = _REPO_ROOT.resolve()
+        source = (root / avatar_file).resolve()
+        try:
+            source.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("invalid profile field: avatar_file") from exc
+        if not source.is_file():
+            raise ValueError("invalid profile field: avatar_file")
+        self.adb_client.push_file(source, _AVATAR_DEVICE_PATH)
 
     def _flow_response(self, flow_name: str, result) -> dict:
         screen = _safe_text(getattr(result, "screen", None)) or "UNKNOWN"
@@ -282,9 +304,11 @@ class WorkerAgent:
             if action == "PREPARE_INSTAGRAM":
                 return self._prepare_instagram()
             if action == "AUTOMATE_INSTAGRAM":
+                profile = _safe_profile(command.payload)
+                self._stage_avatar(profile)
                 return self._flow_response(
                     "instagram",
-                    self.instagram_flow.run(_safe_profile(command.payload)),
+                    self.instagram_flow.run(profile),
                 )
             if action == "AUTOMATE_THREADS":
                 self.threads_flow.driver.open_package(_THREADS_PACKAGE)
