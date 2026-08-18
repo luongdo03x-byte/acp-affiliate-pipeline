@@ -51,6 +51,36 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         self.assertEqual("RECOVERING", active["state"])
         self.assertEqual("RECOVERING", self.repo.get_worker("worker-01")["state"])
 
+    def test_expired_human_checkpoint_with_live_heartbeat_stays_waiting_human(self):
+        assigned = self.scheduler.assign_next("worker-01")
+        self.service.transition_account(assigned["account_id"], AccountStage.IG_READY_FOR_HUMAN)
+        self.service.transition_account(assigned["account_id"], AccountStage.WAITING_HUMAN)
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """UPDATE factory_job
+               SET state='WAITING_HUMAN', desired_action='WAITING_HUMAN', lease_expires_at=?
+               WHERE id=?""",
+            ((now - timedelta(seconds=5)).isoformat(timespec="seconds"), assigned["id"]),
+        )
+        self.conn.execute(
+            """UPDATE factory_worker
+               SET state='WAITING_HUMAN', last_heartbeat_at=?
+               WHERE id='worker-01'""",
+            ((now - timedelta(seconds=5)).isoformat(timespec="seconds"),),
+        )
+
+        reconciled = self.scheduler.reconcile_expired_leases(now.isoformat(timespec="seconds"))
+
+        self.assertEqual([assigned["id"]], reconciled)
+        job = self.conn.execute("SELECT * FROM factory_job WHERE id=?", (assigned["id"],)).fetchone()
+        account = self.repo.get_account(assigned["account_id"])
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("WAITING_HUMAN", job["state"])
+        self.assertGreater(datetime.fromisoformat(job["lease_expires_at"]), now)
+        self.assertEqual(AccountStage.WAITING_HUMAN.value, account["stage"])
+        self.assertEqual("WAITING_HUMAN", worker["state"])
+        self.assertEqual(assigned["id"], worker["current_job_id"])
+
     def test_expired_human_checkpoint_with_dead_worker_requires_confirmation(self):
         assigned = self.scheduler.assign_next("worker-01")
         self.service.transition_account(assigned["account_id"], AccountStage.IG_READY_FOR_HUMAN)
@@ -78,6 +108,35 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         self.assertIsNone(account["assigned_worker_id"])
         self.assertIsNone(account["current_job_id"])
         self.assertEqual("RECOVERING", worker["state"])
+        self.assertIsNone(worker["current_account_id"])
+        self.assertIsNone(worker["current_job_id"])
+
+    def test_expired_job_does_not_resurrect_stopped_worker(self):
+        assigned = self.scheduler.assign_next("worker-01")
+        now = datetime.now(timezone.utc)
+        stale = now - timedelta(minutes=5)
+        self.conn.execute(
+            """UPDATE factory_job
+               SET state='RECOVERING', lease_expires_at=?
+               WHERE id=?""",
+            ((now - timedelta(seconds=5)).isoformat(timespec="seconds"), assigned["id"]),
+        )
+        self.conn.execute(
+            """UPDATE factory_worker
+               SET state='STOPPED', last_heartbeat_at=?
+               WHERE id='worker-01'""",
+            (stale.isoformat(timespec="seconds"),),
+        )
+
+        reconciled = self.scheduler.reconcile_expired_leases(now.isoformat(timespec="seconds"))
+
+        self.assertEqual([assigned["id"]], reconciled)
+        job = self.conn.execute("SELECT * FROM factory_job WHERE id=?", (assigned["id"],)).fetchone()
+        account = self.repo.get_account(assigned["account_id"])
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual("EXPIRED", job["state"])
+        self.assertEqual(AccountStage.RETRY_PENDING.value, account["stage"])
+        self.assertEqual("STOPPED", worker["state"])
         self.assertIsNone(worker["current_account_id"])
         self.assertIsNone(worker["current_job_id"])
 
