@@ -1568,6 +1568,59 @@ def test_regenerate_hook_rejects_missing_or_wrong_post_variant():
     _cleanup_regen_fixture(conn, post_id, ch_id)
 
 
+def test_rescore_variant_after_regenerate_produces_real_scores():
+    print("\n_rescore_variant() sau regenerate_hook() -> điểm thực, không phải NULL/điểm cũ để nguyên")
+    from acp.core import content_engine
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    check("có điểm ban đầu (persist_run() đã chấm)", variant["final_score"] is not None, variant)
+    res = content_engine.regenerate_hook(conn, post_id, variant["id"])
+    check("regenerate_hook thành công", res.get("ok") is True, res)
+    after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+    check("rule_score vẫn có giá trị thực (không NULL)", after["rule_score"] is not None, after["rule_score"])
+    check("hybrid_score vẫn có giá trị thực (không NULL)", after["hybrid_score"] is not None, after["hybrid_score"])
+    check("final_score vẫn có giá trị thực (không NULL)", after["final_score"] is not None, after["final_score"])
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_rescore_variant_excludes_self_from_repetition_check():
+    print("\n_recent_variants(exclude_variant_id=...) không tự so variant với chính nó -- final_score = hybrid_score")
+    from acp.core import content_engine
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    res = content_engine.regenerate_hook(conn, post_id, variant["id"])
+    check("regenerate_hook thành công", res.get("ok") is True, res)
+    after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+    check("final_score bằng hybrid_score (không bị tự trừ penalty vì so với chính mình)",
+          after["final_score"] == after["hybrid_score"], (after["final_score"], after["hybrid_score"]))
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_rescore_variant_unsafe_content_nulls_scores_and_audits():
+    print("\n_rescore_variant() khi nội dung mới fact-unsafe -> 3 cột điểm NULL, is_best=0, có audit rescore_unsafe")
+    from acp.core import content_engine, content_variant as _cv
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+
+    def unsafe_gen(prompt):
+        return json.dumps({"main_message": "Mình đã dùng 2 tuần rồi, thấy rất ổn.", "body": []}, ensure_ascii=False)
+
+    _cv.set_body_generator(unsafe_gen)
+    try:
+        res = content_engine.regenerate_variant(conn, post_id, variant["id"])
+        check("regenerate_variant vẫn báo thành công (ghi được nội dung, chỉ điểm bị NULL)",
+              res.get("ok") is True, res)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        check("rule_score NULL", after["rule_score"] is None, after["rule_score"])
+        check("hybrid_score NULL", after["hybrid_score"] is None, after["hybrid_score"])
+        check("final_score NULL", after["final_score"] is None, after["final_score"])
+        check("is_best = 0", after["is_best"] == 0, after["is_best"])
+        audit_row = conn.execute(
+            "SELECT * FROM audit_log WHERE entity='content_variant_row' AND entity_id=? AND action='rescore_unsafe' "
+            "ORDER BY created_at DESC LIMIT 1", (variant["id"],)).fetchone()
+        check("có audit rescore_unsafe", audit_row is not None, audit_row)
+    finally:
+        _cv.set_body_generator(None)
+        _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
 def test_create_post_flag_off_behaves_exactly_like_before():
     print("\n_create_post_from_raw_product() flag TẮT -> không có content_generation_run, caption từ v1")
     from acp.core import system_settings
@@ -4358,6 +4411,9 @@ if __name__ == "__main__":
     test_regenerate_variant_keeps_angle_changes_content()
     test_switch_angle_moves_to_unused_angle()
     test_regenerate_hook_rejects_missing_or_wrong_post_variant()
+    test_rescore_variant_after_regenerate_produces_real_scores()
+    test_rescore_variant_excludes_self_from_repetition_check()
+    test_rescore_variant_unsafe_content_nulls_scores_and_audits()
     test_create_post_flag_off_behaves_exactly_like_before()
     test_create_post_flag_on_uses_v2_caption_and_persists_run()
     test_create_post_v2_exception_falls_back_to_v1_without_crashing()
