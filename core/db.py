@@ -271,6 +271,87 @@ CREATE TABLE IF NOT EXISTS system_setting (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS seeding_campaign (
+    id                    TEXT PRIMARY KEY,
+    name                  TEXT NOT NULL,
+    brand                 TEXT,
+    brief                 TEXT NOT NULL,
+    allowed_claims        TEXT NOT NULL DEFAULT '[]',
+    prohibited_topics     TEXT NOT NULL DEFAULT '[]',
+    disclosure_policy     TEXT,
+    status                TEXT NOT NULL DEFAULT 'ACTIVE',
+    auto_submit           INTEGER NOT NULL DEFAULT 0,
+    confidence_threshold  REAL NOT NULL DEFAULT 0.90,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS seeding_template (
+    id              TEXT PRIMARY KEY,
+    campaign_id     TEXT NOT NULL REFERENCES seeding_campaign(id),
+    intent          TEXT NOT NULL,
+    source_text     TEXT NOT NULL,
+    allowed_claims  TEXT NOT NULL DEFAULT '[]',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seed_template_campaign
+    ON seeding_template(campaign_id, intent, enabled);
+
+CREATE TABLE IF NOT EXISTS seeding_target (
+    id                TEXT PRIMARY KEY,
+    campaign_id       TEXT NOT NULL REFERENCES seeding_campaign(id),
+    url               TEXT NOT NULL,
+    position          INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'READY',
+    context_summary   TEXT,
+    intent            TEXT,
+    risk_level        TEXT,
+    risk_labels       TEXT NOT NULL DEFAULT '[]',
+    confidence        REAL,
+    last_error        TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    completed_at      TEXT,
+    UNIQUE(campaign_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_seed_target_queue
+    ON seeding_target(campaign_id, status, position);
+
+CREATE TABLE IF NOT EXISTS seeding_shift (
+    id                TEXT PRIMARY KEY,
+    campaign_id       TEXT NOT NULL REFERENCES seeding_campaign(id),
+    status            TEXT NOT NULL DEFAULT 'ACTIVE',
+    started_at        TEXT NOT NULL,
+    ended_at          TEXT,
+    target_count      INTEGER NOT NULL DEFAULT 0,
+    posted_count      INTEGER NOT NULL DEFAULT 0,
+    review_count      INTEGER NOT NULL DEFAULT 0,
+    skipped_count     INTEGER NOT NULL DEFAULT 0,
+    unknown_count     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_seed_shift_campaign
+    ON seeding_shift(campaign_id, status, started_at);
+
+CREATE TABLE IF NOT EXISTS seeding_activity (
+    id                TEXT PRIMARY KEY,
+    target_id         TEXT NOT NULL REFERENCES seeding_target(id),
+    shift_id          TEXT REFERENCES seeding_shift(id),
+    action            TEXT NOT NULL,
+    intent            TEXT,
+    template_id       TEXT REFERENCES seeding_template(id),
+    generated_text    TEXT,
+    final_text        TEXT,
+    mode              TEXT,
+    result            TEXT,
+    proof_ref         TEXT,
+    error_detail      TEXT,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seed_activity_shift
+    ON seeding_activity(shift_id, created_at);
 """
 
 
