@@ -5,6 +5,7 @@ from core.factory_v2.ui_automation.instagram.screens import build_instagram_dete
 from core.factory_v2.ui_automation.selectors import Selector
 
 USERNAME = Selector(semantic="username", resource_ids=("com.instagram.android:id/username",))
+SIGNUP_CONTACT = Selector(semantic="signup_contact", resource_ids=("com.instagram.android:id/username",))
 MISSING = Selector(semantic="bio", resource_ids=("missing:id",))
 
 
@@ -45,6 +46,12 @@ class SafeUiDriverTests(unittest.TestCase):
         self.assertEqual("noop", result.status)
         self.assertEqual([], adb.input_calls)
         self.assertEqual([], adb.tap_calls)
+
+    def test_signup_contact_semantic_is_approved(self):
+        driver, adb = self.make_driver("old@example.com")
+        result = driver.set_text(SIGNUP_CONTACT, "owner@example.com")
+        self.assertEqual("completed", result.status)
+        self.assertEqual(["owner@example.com"], adb.input_calls)
 
     def test_missing_selector_never_taps(self):
         driver, adb = self.make_driver()
