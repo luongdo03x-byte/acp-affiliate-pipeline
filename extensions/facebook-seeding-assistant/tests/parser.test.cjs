@@ -164,10 +164,10 @@ test('facebook safety/trust UI is detected and forces a stop', () => {
   assert.equal(runner.hasFacebookSafetyBlock('Bài viết bình thường'), false);
 });
 
-test('target URLs compare across supported Facebook host aliases', () => {
+test('post permalink target ignores volatile tracking query across Facebook host aliases', () => {
   assert.equal(
     runner.isSameFacebookTarget(
-      'https://www.facebook.com/groups/demo/posts/123/',
+      'https://www.facebook.com/groups/demo/posts/123/?__cft__=abc',
       'https://m.facebook.com/groups/demo/posts/123/',
     ),
     true,
@@ -176,6 +176,16 @@ test('target URLs compare across supported Facebook host aliases', () => {
     runner.isSameFacebookTarget(
       'https://www.facebook.com/groups/demo/posts/123/',
       'https://www.facebook.com/groups/demo/posts/999/',
+    ),
+    false,
+  );
+});
+
+test('query-based Facebook targets still require matching query', () => {
+  assert.equal(
+    runner.isSameFacebookTarget(
+      'https://www.facebook.com/story.php?story_fbid=111&id=222',
+      'https://www.facebook.com/story.php?story_fbid=999&id=222',
     ),
     false,
   );
