@@ -3,6 +3,7 @@ import unittest
 from core.factory_v2.ui_automation.detector import DetectedScreen
 from core.factory_v2.ui_automation.hierarchy import UiBounds, UiNode, UiSnapshot
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
+from core.factory_v2.ui_automation.instagram.selectors import SIGN_UP
 from core.factory_v2.ui_automation.threads.screens import build_threads_detector
 from core.factory_v2.ui_automation.selectors import Selector
 
@@ -27,6 +28,14 @@ class SelectorTests(unittest.TestCase):
         selector = Selector(semantic="continue", texts=("Tiếp tục",), require_clickable=True)
         self.assertEqual("  tiếp   TỤC  ", selector.find(snapshot).text)
 
+    def test_initial_signup_selector_does_not_match_final_sign_up_submit(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (node(text="Sign up", class_name="android.widget.Button", clickable=True),),
+        )
+        self.assertIsNone(SIGN_UP.find(snapshot))
+
 
 class DetectorTests(unittest.TestCase):
     def test_otp_wins_over_continue_button(self):
@@ -36,11 +45,49 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(detected.protected)
         self.assertFalse(detected.automation_allowed)
 
-    def test_contact_input_screen_waits_for_human(self):
-        snapshot = UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Mobile number or email"),))
+    def test_contact_entry_is_safe_normal_screen(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (
+                node(
+                    text="Mobile number or email",
+                    resource_id="com.instagram.android:id/email_or_phone",
+                    class_name="android.widget.EditText",
+                    clickable=True,
+                ),
+                node(text="Continue", resource_id="com.instagram.android:id/continue_button", clickable=True),
+            ),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_CONTACT_ENTRY", detected.kind)
+        self.assertFalse(detected.protected)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_actual_contact_verification_remains_protected(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (node(text="Confirm your phone number"), node(text="Continue", clickable=True)),
+        )
         detected = build_instagram_detector().detect(snapshot)
         self.assertEqual("EMAIL_OR_PHONE_VERIFICATION", detected.kind)
         self.assertTrue(detected.protected)
+        self.assertFalse(detected.automation_allowed)
+
+    def test_final_signup_submit_is_protected(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (
+                node(text="Create account", class_name="android.widget.Button", clickable=True),
+                node(text="By signing up, you agree to our Terms"),
+            ),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_FINAL_SIGNUP_SUBMIT", detected.kind)
+        self.assertTrue(detected.protected)
+        self.assertFalse(detected.automation_allowed)
 
     def test_unknown_never_allows_automation(self):
         detected = build_instagram_detector().detect(UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Unexpected screen"),)))
