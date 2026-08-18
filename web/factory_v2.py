@@ -110,7 +110,12 @@ def _dashboard(repo: FactoryRepository) -> dict:
     workers = [w for w in repo.list_workers() if w["state"] in _ACTIVE_WORKER_STATES]
     host = repo.latest_resource_sample()
 
-    active = sum(a["stage"] == "ACP_ACTIVE" for a in accounts)
+    completion_mode = str((batch or {}).get("completion_mode") or "ACP_ACTIVE").upper()
+    active = sum(
+        a["stage"] == "ACP_ACTIVE"
+        or (completion_mode == "SOCIAL_ONLY" and a["stage"] == "THREADS_CREATED")
+        for a in accounts
+    )
     running = sum(a["stage"] in _RUNNING_STAGES for a in accounts)
     waiting = sum(a["stage"] in _WAITING_STAGES for a in accounts)
     errors = sum(a["stage"] == "ERROR" for a in accounts)
@@ -369,7 +374,7 @@ def register_factory_v2_routes(app):
                 return jsonify(ok=False, error="Runner không tồn tại"), 404
             except ValueError as exc:
                 return jsonify(ok=False, error=str(exc)), 409
-            return jsonify(ok=True, runner=_pick(runner, _RUNNER_FIELDS))
+            return jsonify(ok=True, runner=_pick(runner, _RUNNER_FIELDS)), 201
         finally:
             conn.close()
 
