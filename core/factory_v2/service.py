@@ -1,7 +1,8 @@
 """Controller services for Account Factory V2."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from core.db import now, transaction, ulid
 
@@ -23,6 +24,9 @@ _ALLOWED_ERROR_CODES = frozenset({
     "USERNAME_UNAVAILABLE",
     "WORKER_TIMEOUT",
 })
+_ALLOWED_COMPLETION_MODES = frozenset({"ACP_ACTIVE", "SOCIAL_ONLY"})
+_ALLOWED_SIGNUP_CONTACT_TYPES = frozenset({"phone", "email"})
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _clean_error(error_code: str | None, error_message: str | None) -> tuple[str | None, str | None]:
@@ -48,6 +52,58 @@ def _clean_runner_text(value: str, field: str, *, max_length: int = 120) -> str:
     return text
 
 
+def _clean_optional_signup_text(value, field: str, *, max_length: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        raise ValueError(f"{field} is too long")
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValueError(f"{field} contains control characters")
+    return text
+
+
+def _validate_completion_mode(value: str | None) -> str:
+    mode = str(value or "ACP_ACTIVE").strip().upper()
+    if mode not in _ALLOWED_COMPLETION_MODES:
+        raise ValueError("completion_mode must be ACP_ACTIVE or SOCIAL_ONLY")
+    return mode
+
+
+def _validate_birth_date(value) -> str | None:
+    text = _clean_optional_signup_text(value, "birth_date", max_length=10)
+    if text is None:
+        return None
+    try:
+        born = date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("birth_date must be YYYY-MM-DD") from exc
+    today = date.today()
+    if born > today:
+        raise ValueError("birth_date cannot be in the future")
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    if age < 18:
+        raise ValueError("birth_date must be at least 18 years ago")
+    return born.isoformat()
+
+
+def _validate_avatar_file(value) -> str | None:
+    text = _clean_optional_signup_text(value, "avatar_file", max_length=300)
+    if text is None:
+        return None
+    relative = Path(text)
+    if relative.is_absolute():
+        raise ValueError("avatar_file must be a repository-relative path")
+    resolved = (_REPO_ROOT / relative).resolve()
+    try:
+        resolved.relative_to(_REPO_ROOT)
+    except ValueError as exc:
+        raise ValueError("avatar_file must stay inside the repository") from exc
+    return relative.as_posix()
+
+
 class FactoryService:
     def __init__(self, repository):
         self.repo = repository
@@ -59,9 +115,11 @@ class FactoryService:
         seed: int | None = None,
         *,
         execution_target: str | None = None,
+        completion_mode: str = "ACP_ACTIVE",
     ) -> dict:
         if count <= 0:
             raise ValueError("count must be positive")
+        completion_mode = _validate_completion_mode(completion_mode)
         batch_id = ulid()
         created_at = now()
         profiles = generate_profiles(count, seed=seed)
@@ -72,6 +130,7 @@ class FactoryService:
             "status": BatchStatus.READY.value,
             "created_at": created_at,
             "reminder_interval_minutes": 10,
+            "completion_mode": completion_mode,
         }
         account_rows = []
         for sequence, profile in enumerate(profiles, start=1):
@@ -126,13 +185,57 @@ class FactoryService:
         *,
         execution_target: str,
         batch_name: str = "Phone/AVD Pilot",
+        completion_mode: str = "ACP_ACTIVE",
+        signup_contact_type: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+        birth_date: str | None = None,
+        avatar_file: str | None = None,
     ) -> dict:
         target = self._validate_execution_target(execution_target)
         name = " ".join(str(batch_name or "").split()) or "Phone/AVD Pilot"
         if len(name) > 120:
             raise ValueError("batch_name is too long")
-        batch = self.create_batch(name, count=1, execution_target=target)
+
+        mode = _validate_completion_mode(completion_mode)
+        contact_type = None
+        if signup_contact_type is not None:
+            contact_type = str(signup_contact_type).strip().lower()
+            if contact_type not in _ALLOWED_SIGNUP_CONTACT_TYPES:
+                raise ValueError("signup_contact_type must be phone or email")
+
+        clean_phone = _clean_optional_signup_text(phone, "phone", max_length=64)
+        clean_email = _clean_optional_signup_text(email, "email", max_length=320)
+        if contact_type == "phone" and clean_phone is None:
+            raise ValueError("phone is required when signup_contact_type=phone")
+        if contact_type == "email" and clean_email is None:
+            raise ValueError("email is required when signup_contact_type=email")
+
+        clean_birth_date = _validate_birth_date(birth_date)
+        clean_avatar_file = _validate_avatar_file(avatar_file)
+
+        batch = self.create_batch(
+            name,
+            count=1,
+            execution_target=target,
+            completion_mode=mode,
+        )
         account = self.repo.list_accounts(batch["id"])[0]
+        self.repo.conn.execute(
+            """UPDATE factory_account
+               SET signup_contact_type=?, phone=?, email=?, birth_date=?, avatar_file=?, updated_at=?
+               WHERE id=?""",
+            (
+                contact_type,
+                clean_phone,
+                clean_email,
+                clean_birth_date,
+                clean_avatar_file,
+                now(),
+                account["id"],
+            ),
+        )
+        account = self.repo.get_account(account["id"])
         return {"batch": batch, "account": account}
 
     def register_local_runner(self, device_id: str, device_name: str) -> dict:
