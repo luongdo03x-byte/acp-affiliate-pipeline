@@ -222,18 +222,24 @@ class Scheduler:
         reconciled: list[str] = []
         for row in rows:
             heartbeat = _parse_iso(row["last_heartbeat_at"])
-            heartbeat_live = heartbeat is not None and (now_dt - heartbeat) <= timedelta(seconds=self.live_heartbeat_seconds)
+            worker_stopped = row["worker_state"] == "STOPPED"
+            heartbeat_live = (
+                not worker_stopped
+                and heartbeat is not None
+                and (now_dt - heartbeat) <= timedelta(seconds=self.live_heartbeat_seconds)
+            )
             human_ambiguous = row["state"] == "WAITING_HUMAN" or row["worker_state"] == "WAITING_HUMAN"
             with transaction(conn):
                 if heartbeat_live:
                     extended = _iso(now_dt + timedelta(seconds=self.live_heartbeat_seconds))
+                    next_state = "WAITING_HUMAN" if human_ambiguous else "RECOVERING"
                     conn.execute(
-                        "UPDATE factory_job SET state='RECOVERING', lease_expires_at=? WHERE id=?",
-                        (extended, row["id"]),
+                        "UPDATE factory_job SET state=?, lease_expires_at=? WHERE id=?",
+                        (next_state, extended, row["id"]),
                     )
                     conn.execute(
-                        "UPDATE factory_worker SET state='RECOVERING' WHERE id=?",
-                        (row["worker_id"],),
+                        "UPDATE factory_worker SET state=? WHERE id=?",
+                        (next_state, row["worker_id"]),
                     )
                 else:
                     conn.execute(
@@ -255,7 +261,8 @@ class Scheduler:
                         )
                     conn.execute(
                         """UPDATE factory_worker
-                           SET state='RECOVERING', current_account_id=NULL, current_job_id=NULL,
+                           SET state=CASE WHEN state='STOPPED' THEN 'STOPPED' ELSE 'RECOVERING' END,
+                               current_account_id=NULL, current_job_id=NULL,
                                recovery_count=recovery_count+1
                            WHERE id=?""",
                         (row["worker_id"],),
