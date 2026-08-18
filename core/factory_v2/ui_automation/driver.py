@@ -9,7 +9,7 @@ from .hierarchy import UiHierarchyReader, UiNode, UiSnapshot
 from .selectors import Selector
 
 _PROTECTED_TEXT_SEMANTICS = frozenset({"password", "otp", "verification_code", "recovery_code"})
-_APPROVED_TEXT_SEMANTICS = frozenset({"username", "display_name", "bio", "signup_contact"})
+_APPROVED_TEXT_SEMANTICS = frozenset({"username", "display_name", "bio", "signup_contact", "birth_date"})
 _APPROVED_PACKAGES = frozenset({"com.instagram.android", "com.instagram.barcelona"})
 
 
