@@ -1,9 +1,14 @@
-"""Gọi Gemini free tier để viết lại caption tự nhiên hơn từ bản nháp
-deterministic của core/content.py.
+"""Gọi Gemini free tier để viết lại caption/nội dung tự nhiên hơn từ bản
+nháp deterministic, cho 2 nơi dùng độc lập:
 
-Bật bằng ACP_CAPTION_LLM=gemini + ACP_GEMINI_API_KEY (lấy miễn phí ở
-aistudio.google.com, không cần thẻ thanh toán) trong shared/.env.local.
-Không bật thì content.py chỉ dùng template tĩnh -- không có gì đổi.
+- ACP_CAPTION_LLM=gemini -- rewrite() (v1), core/content.py dùng.
+- ACP_CONTENT_ENGINE_LLM=gemini -- rewrite_json() (G1), 6 hook của Content
+  Engine v2 (E1-E4: content_facts/content_angle/content_hook/
+  content_variant/content_checker/content_scoring) dùng.
+
+Cả 2 cờ đều cần ACP_GEMINI_API_KEY (lấy miễn phí ở aistudio.google.com,
+không cần thẻ thanh toán) trong shared/.env.local; tắt cờ nào thì phần đó
+chỉ dùng template/logic tĩnh -- không có gì đổi.
 
 Hàm rewrite() ở đây ĐƯỢC PHÉP raise -- core/content.py::generate() là nơi
 bắt exception và rơi về bản nháp deterministic (xem docstring generate()),
@@ -47,13 +52,22 @@ def rewrite_json(prompt: str) -> str:
     from google.genai import types
     client = _client()
     if client is None:
+        print("  ! Content Engine v2 LLM lỗi: ACP_GEMINI_API_KEY chưa được đặt")
         raise RuntimeError("ACP_GEMINI_API_KEY chưa được đặt")
     model = os.environ.get("ACP_GEMINI_MODEL", "gemini-flash-latest")
+    # timeout=30000ms -- SDK cài trong .venv mặc định KHÔNG timeout; không
+    # chặn thì 1 request tạo bài có thể xếp hàng tới ~13 lần gọi hook x tối
+    # đa 3 lần retry mỗi hook, treo cả tiến trình Flask đơn luồng nếu Gemini
+    # bị đứng.
     response = client.models.generate_content(
         model=model, contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=30000),
+        ),
     )
     text = (response.text or "").strip()
     if not text:
+        print("  ! Content Engine v2 LLM lỗi: Gemini trả về rỗng")
         raise RuntimeError("Gemini trả về rỗng")
     return text
