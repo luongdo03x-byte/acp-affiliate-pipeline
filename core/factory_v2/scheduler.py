@@ -53,6 +53,8 @@ def _resume_action(account) -> tuple[str, AccountStage | None] | None:
     if safe == AccountStage.IG_CREATED.value:
         return "PREPARE_THREADS", AccountStage.THREADS_READY_FOR_HUMAN
     if safe == AccountStage.THREADS_CREATED.value:
+        if account["completion_mode"] == "SOCIAL_ONLY":
+            return None
         # OAuth failures are deliberately gated until the operator requests a
         # retry. FactoryService/API clears OAUTH_FAILED before this becomes
         # schedulable; no Instagram/Threads work is replayed.
@@ -80,7 +82,7 @@ class Scheduler:
 
             placeholders = ",".join("?" for _ in _ACTIVE_JOB_STATES)
             candidates = conn.execute(
-                f"""SELECT a.*
+                f"""SELECT a.*, b.completion_mode AS completion_mode
                     FROM factory_account a
                     JOIN factory_batch b ON b.id=a.batch_id
                     WHERE b.status IN ('READY','RUNNING')
