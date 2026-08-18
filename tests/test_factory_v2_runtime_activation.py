@@ -97,8 +97,10 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def seed_threads_verifying(self):
-        batch = self.service.create_batch("activation", count=1, seed=9)
+    def seed_threads_verifying(self, *, completion_mode="ACP_ACTIVE"):
+        batch = self.service.create_batch(
+            "activation", count=1, seed=9, completion_mode=completion_mode
+        )
         account = self.repo.list_accounts(batch["id"])[0]
         worker = self.repo.insert_worker({
             "id": "avd-1",
@@ -147,6 +149,24 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
         self.assertEqual("WAIT_ACP", job["desired_action"])
         self.assertEqual("WAITING_HUMAN", job["state"])
+
+    def test_social_only_threads_postcheck_completes_without_oauth(self):
+        account, _ = self.seed_threads_verifying(completion_mode="SOCIAL_ONLY")
+
+        self.runtime.tick()
+
+        saved = self.repo.get_account(account["id"])
+        job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
+        worker = self.repo.get_worker("avd-1")
+        self.assertEqual("THREADS_CREATED", saved["stage"])
+        self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
+        self.assertTrue(saved["completed_at"])
+        self.assertEqual("COMPLETED", job["state"])
+        self.assertEqual("READY", worker["state"])
+        self.assertIsNone(worker["current_job_id"])
+        self.assertEqual(0, self.activation.start_calls)
+        self.assertNotIn("OPEN_URL", [action for action, _ in self.gateway.commands])
+        self.assertIsNone(saved["oauth_session_id"])
 
     def test_oauth_active_releases_runner_and_completes_account(self):
         account, _ = self.seed_threads_verifying()
