@@ -39,7 +39,7 @@ class FactoryV2AvdTests(unittest.TestCase):
         )
         self.assertEqual(["acp-worker-01", "acp-worker-02"], manager.list_avds())
 
-    def test_start_uses_stable_software_graphics_without_snapshots(self):
+    def test_start_uses_low_memory_pilot_profile_and_stable_graphics(self):
         captured = {}
         process = object()
 
@@ -63,9 +63,11 @@ class FactoryV2AvdTests(unittest.TestCase):
                 "emulator",
                 "-avd", "acp-worker-01",
                 "-port", "5554",
+                "-memory", "1536",
                 "-gpu", "swiftshader",
                 "-feature", "-Vulkan",
                 "-no-snapshot",
+                "-noaudio",
             ],
             captured["argv"],
         )
