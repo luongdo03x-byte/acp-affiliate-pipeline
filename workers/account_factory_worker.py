@@ -11,7 +11,8 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from pathlib import PurePosixPath
 
 from core.factory_v2.avd import AvdManager
 from core.factory_v2.ui_automation.adb import AdbClient
@@ -25,7 +26,16 @@ from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, Worker
 
 _INSTAGRAM_PACKAGE = "com.instagram.android"
 _THREADS_PACKAGE = "com.instagram.barcelona"
-_APPROVED_PROFILE_KEYS = ("username", "display_name", "bio")
+_APPROVED_PROFILE_KEYS = (
+    "username",
+    "display_name",
+    "bio",
+    "signup_contact_type",
+    "signup_contact",
+    "birth_date",
+    "avatar_file",
+)
+_ALLOWED_CONTACT_TYPES = frozenset({"phone", "email"})
 
 
 def _now() -> str:
@@ -39,19 +49,82 @@ def _safe_text(value, *, max_length: int = 120) -> str | None:
     return text[:max_length] if text else None
 
 
+def _clean_profile_text(value, key: str, *, max_length: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        raise ValueError(f"invalid profile field: {key}")
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValueError(f"invalid profile field: {key}")
+    return text
+
+
+def _safe_birth_date(value) -> str | None:
+    text = _clean_profile_text(value, "birth_date", max_length=10)
+    if text is None:
+        return None
+    try:
+        born = date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("invalid profile field: birth_date") from exc
+    today = date.today()
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    if born > today or age < 18:
+        raise ValueError("invalid profile field: birth_date")
+    return born.isoformat()
+
+
+def _safe_avatar_file(value) -> str | None:
+    text = _clean_profile_text(value, "avatar_file", max_length=300)
+    if text is None:
+        return None
+    if "\\" in text:
+        raise ValueError("invalid profile field: avatar_file")
+    path = PurePosixPath(text)
+    if path.is_absolute() or ".." in path.parts or text.startswith("./"):
+        raise ValueError("invalid profile field: avatar_file")
+    return path.as_posix()
+
+
 def _safe_profile(payload: dict) -> dict[str, str]:
     profile = payload.get("profile")
     if not isinstance(profile, dict):
         return {}
+
     clean: dict[str, str] = {}
-    for key in _APPROVED_PROFILE_KEYS:
-        value = profile.get(key)
-        if value is None:
-            continue
-        text = str(value)
-        if len(text) > 500 or any(ord(character) < 32 or ord(character) == 127 for character in text):
-            raise ValueError(f"invalid profile field: {key}")
-        clean[key] = text
+    for key in ("username", "display_name", "bio"):
+        text = _clean_profile_text(profile.get(key), key, max_length=500)
+        if text is not None:
+            clean[key] = text
+
+    contact_type = _clean_profile_text(
+        profile.get("signup_contact_type"), "signup_contact_type", max_length=5
+    )
+    if contact_type is not None:
+        contact_type = contact_type.lower()
+        if contact_type not in _ALLOWED_CONTACT_TYPES:
+            raise ValueError("invalid profile field: signup_contact_type")
+        contact = _clean_profile_text(
+            profile.get("signup_contact"), "signup_contact", max_length=320
+        )
+        if contact is None:
+            raise ValueError("invalid profile field: signup_contact")
+        clean["signup_contact_type"] = contact_type
+        clean["signup_contact"] = contact
+    elif profile.get("signup_contact") not in {None, ""}:
+        raise ValueError("invalid profile field: signup_contact_type")
+
+    birth_date = _safe_birth_date(profile.get("birth_date"))
+    if birth_date is not None:
+        clean["birth_date"] = birth_date
+
+    avatar_file = _safe_avatar_file(profile.get("avatar_file"))
+    if avatar_file is not None:
+        clean["avatar_file"] = avatar_file
+
     return clean
 
 
