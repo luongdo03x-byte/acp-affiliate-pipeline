@@ -21,6 +21,7 @@ test('context extraction returns normalized visible article text', () => {
     innerText: '  Xin chỗ\n tư vấn uy tín  ',
     textContent: '  Xin chỗ\n tư vấn uy tín  ',
     getAttribute: (name) => (name === 'data-pagelet' ? 'FeedUnit_123' : null),
+    querySelectorAll: () => [],
   };
   const root = { querySelectorAll: () => [article] };
   const result = parser.extractPostContext(
@@ -30,6 +31,32 @@ test('context extraction returns normalized visible article text', () => {
   assert.equal(result.ok, true);
   assert.equal(result.context.post_text, 'Xin chỗ tư vấn uy tín');
   assert.equal(result.context.url.endsWith('/posts/123/'), true);
+});
+
+test('context extraction prefers the only article containing a matching target permalink', () => {
+  const article = (text, href) => ({
+    hidden: false,
+    innerText: text,
+    textContent: text,
+    getAttribute: () => null,
+    querySelectorAll: (selector) => selector === 'a[href]' ? [{ href }] : [],
+  });
+  const other = article(
+    'Bài khác',
+    'https://www.facebook.com/groups/demo/posts/999/',
+  );
+  const target = article(
+    'Đúng bài cần xử lý',
+    'https://www.facebook.com/groups/demo/posts/123/?__cft__=abc',
+  );
+  const root = { querySelectorAll: () => [other, target] };
+  const result = parser.extractPostContext(
+    root,
+    'https://www.facebook.com/groups/demo/posts/123/',
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.article, target);
+  assert.equal(result.context.post_text, 'Đúng bài cần xử lý');
 });
 
 test('auto submit requires AUTO_READY, unpaused status, and matching active shift', () => {
