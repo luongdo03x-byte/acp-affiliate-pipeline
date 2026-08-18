@@ -58,8 +58,15 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "username": "sample_user",
             "display_name": "Sample User",
             "bio": "Sample bio",
+            "signup_contact_type": "phone",
+            "signup_contact": "+84901234567",
+            "birth_date": "2000-05-20",
+            "avatar_file": "var/factory_avatars/sample.jpg",
             "password": "secret-must-not-pass",
             "otp": "123456",
+            "verification_code": "654321",
+            "recovery_code": "recover-me",
+            "arbitrary": "must-not-pass",
         }
 
     def make_agent(self, instagram_result=None, threads_result=None):
@@ -95,9 +102,43 @@ class AvdWorkerAgentTests(unittest.TestCase):
         for key in ("password", "code", "raw_xml", "token", "otp"):
             self.assertNotIn(key, response["result"])
         self.assertEqual(
-            {"username", "display_name", "bio"},
+            {
+                "username", "display_name", "bio", "signup_contact_type",
+                "signup_contact", "birth_date", "avatar_file",
+            },
             set(instagram.run_calls[0]),
         )
+        for forbidden in (
+            "password", "otp", "verification_code", "recovery_code", "arbitrary"
+        ):
+            self.assertNotIn(forbidden, instagram.run_calls[0])
+
+    def test_invalid_contact_type_is_rejected_before_flow_mutation(self):
+        agent, instagram, _ = self.make_agent()
+        profile = dict(self.profile, signup_contact_type="username")
+        with self.assertRaisesRegex(ValueError, "signup_contact_type"):
+            agent.execute(WorkerCommand(
+                "invalid-contact", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": profile}
+            ))
+        self.assertEqual([], instagram.run_calls)
+
+    def test_invalid_birth_date_is_rejected_before_flow_mutation(self):
+        agent, instagram, _ = self.make_agent()
+        profile = dict(self.profile, birth_date="20/05/2000")
+        with self.assertRaisesRegex(ValueError, "birth_date"):
+            agent.execute(WorkerCommand(
+                "invalid-birthday", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": profile}
+            ))
+        self.assertEqual([], instagram.run_calls)
+
+    def test_unsafe_avatar_path_is_rejected_before_flow_mutation(self):
+        agent, instagram, _ = self.make_agent()
+        profile = dict(self.profile, avatar_file="../outside.jpg")
+        with self.assertRaisesRegex(ValueError, "avatar_file"):
+            agent.execute(WorkerCommand(
+                "invalid-avatar", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": profile}
+            ))
+        self.assertEqual([], instagram.run_calls)
 
     def test_duplicate_command_is_at_most_once(self):
         agent, instagram, _ = self.make_agent(
@@ -139,6 +180,8 @@ class AvdWorkerAgentTests(unittest.TestCase):
         self.assertEqual("running", response["status"])
         self.assertEqual(["com.instagram.barcelona"], threads.driver.opened)
         self.assertNotIn("password", threads.run_calls[0])
+        self.assertNotIn("otp", threads.run_calls[0])
+        self.assertNotIn("arbitrary", threads.run_calls[0])
 
     def test_heartbeat_contains_only_sanitized_recovery_metadata(self):
         agent, _, _ = self.make_agent(FlowResult("running", "IG_PROFILE_SETUP"))
@@ -152,6 +195,7 @@ class AvdWorkerAgentTests(unittest.TestCase):
         self.assertNotIn("secret-must-not-pass", serialized)
         self.assertNotIn("123456", serialized)
         self.assertNotIn("Sample bio", serialized)
+        self.assertNotIn("+84901234567", serialized)
 
 
 if __name__ == "__main__":
