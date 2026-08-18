@@ -269,6 +269,8 @@ class FactoryService:
             raise KeyError(checkpoint["account_id"])
         job = self.repo.get_active_job_for_account(account["id"])
         if job is None:
+            if action == "RETRY_CHECKPOINT":
+                return self.retry_checkpoint(checkpoint_id)
             raise ValueError("checkpoint has no active worker job")
 
         command_id = ulid()
