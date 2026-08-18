@@ -335,6 +335,23 @@ def seeding_api_analyze():
         conn.close()
 
 
+@bp.post("/api/seeding/pause-shift")
+def seeding_api_pause_shift():
+    _require_extension_token()
+    body = _json_body()
+    shift_id = str(body.get("shift_id") or "").strip()
+    if not shift_id:
+        abort(400, "shift_id là bắt buộc")
+    conn = connect()
+    try:
+        seeding.pause_shift(conn, shift_id)
+        return jsonify(ok=True, shift_id=shift_id, status="PAUSED")
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 409
+    finally:
+        conn.close()
+
+
 def _record_api_result(*, force_reviewed=False):
     _require_extension_token()
     body = _json_body()
