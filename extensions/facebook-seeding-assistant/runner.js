@@ -43,9 +43,13 @@
     try {
       const url = new URL(String(value || ''));
       if (url.protocol !== 'https:' || !FACEBOOK_HOSTS.has(url.hostname.toLowerCase())) return null;
+      const path = url.pathname.replace(/\/+$/, '') || '/';
       return {
-        path: url.pathname.replace(/\/+$/, '') || '/',
-        query: url.search,
+        path,
+        // Facebook frequently appends volatile tracking query parameters to
+        // rendered /posts/<id> URLs. The path already uniquely identifies
+        // those post permalinks; query-based legacy targets still need query.
+        query: /\/posts\/[^/]+$/i.test(path) ? '' : url.search,
       };
     } catch (_) {
       return null;
