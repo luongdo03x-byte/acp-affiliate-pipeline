@@ -26,13 +26,16 @@ class FakeConn:
 
 
 class FakeRepo:
-    def __init__(self, account, worker_type="REMOTE_AVD"):
+    def __init__(self, account, worker_type="REMOTE_AVD", completion_mode="ACP_ACTIVE"):
         self.conn = FakeConn()
         self.account = account
         self.worker = {"id": "worker-1", "runner_type": worker_type}
+        self.batch = {"id": account["batch_id"], "completion_mode": completion_mode}
         self.checkpoint = None
     def get_account(self, account_id):
         return self.account
+    def get_batch(self, batch_id):
+        return self.batch if batch_id == self.batch["id"] else None
     def get_worker(self, worker_id):
         return self.worker
     def create_checkpoint(self, row):
@@ -239,6 +242,23 @@ class RemoteRuntimeTests(unittest.TestCase):
             [transition[1] for transition in service.transitions],
         )
         self.assertEqual(["acc-1"], runtime.activation)
+
+    def test_remote_threads_completion_social_only_releases_without_activation(self):
+        acc = account("IG_CREATED")
+        repo = FakeRepo(acc, completion_mode="SOCIAL_ONLY")
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{"ok": True, "status": "completed", "result": {"screen": "THREADS_POSTCHECK_OK"}}]),
+        )
+
+        runtime._drive_job(job("PREPARE_THREADS"))
+
+        self.assertEqual("THREADS_CREATED", acc["stage"])
+        self.assertEqual([], runtime.activation)
+        self.assertNotIn("START_ACP", runtime.running_actions)
+        self.assertEqual([("job-1", "COMPLETED")], runtime.released)
 
     def test_local_device_keeps_existing_manual_checkpoint_path(self):
         acc = account()
