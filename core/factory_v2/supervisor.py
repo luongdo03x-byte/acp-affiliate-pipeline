@@ -99,9 +99,10 @@ class WorkerSupervisor:
                     (now(), worker["id"]),
                 )
 
-    def _sync_worker_agents(self) -> None:
+    def _sync_worker_agents(self) -> set[str]:
+        freshly_attached: set[str] = set()
         if self.worker_processes is None:
-            return
+            return freshly_attached
         online = set(self.avd.list_online_devices())
         workers = self.repo.conn.execute(
             """SELECT * FROM factory_worker
@@ -116,9 +117,11 @@ class WorkerSupervisor:
             if not serial or serial not in online or not self.avd.is_boot_completed(serial):
                 continue
             worker_id = worker["id"]
+            started_here = False
             try:
                 if not self.worker_processes.is_running(worker_id):
                     self.worker_processes.start(worker_id, worker["avd_name"], serial)
+                    started_here = True
                 heartbeat = self.worker_processes.heartbeat(worker_id)
                 if heartbeat.get("worker_id") != worker_id or heartbeat.get("adb_serial") != serial:
                     raise RuntimeError("worker heartbeat identity mismatch")
@@ -136,8 +139,11 @@ class WorkerSupervisor:
                        WHERE id=?""",
                     (recovered_state, now(), progress, worker_id),
                 )
+                if started_here:
+                    freshly_attached.add(worker_id)
             except Exception:
                 self.reconcile_missing_heartbeat(worker_id)
+        return freshly_attached
 
     def _stop_persisted_worker(self, worker, *, action: str, capacity, target) -> SupervisorDecision:
         worker_id = worker["id"]
@@ -195,7 +201,7 @@ class WorkerSupervisor:
 
     def tick(self) -> SupervisorDecision:
         self._promote_booted_starting_workers()
-        self._sync_worker_agents()
+        freshly_attached = self._sync_worker_agents()
         sample = self.metrics.sample()
         capacity = classify_capacity(sample)
         workers = self._workers()
@@ -218,7 +224,12 @@ class WorkerSupervisor:
                 return SupervisorDecision("HOLD", capacity, len(workers))
             return self._start_one(capacity, target, workers)
         if target < len(workers):
-            return self._drain_one(capacity, target, workers)
+            return self._drain_one(
+                capacity,
+                target,
+                workers,
+                protected_worker_ids=freshly_attached,
+            )
         return SupervisorDecision("HOLD", capacity, target)
 
     def _start_one(self, capacity, target, workers):
@@ -255,7 +266,8 @@ class WorkerSupervisor:
             return SupervisorDecision("START_FAILED", capacity, len(workers), worker_id, avd_name)
         return SupervisorDecision("START", capacity, target, worker_id, avd_name)
 
-    def _drain_one(self, capacity, target, workers):
+    def _drain_one(self, capacity, target, workers, *, protected_worker_ids=()):
+        protected = set(protected_worker_ids)
         by_priority = {
             "READY": 0,
             "RECOVERING": 1,
@@ -267,7 +279,8 @@ class WorkerSupervisor:
         candidates = sorted(workers, key=lambda w: (by_priority.get(w["state"], 50), w["id"]))
         candidate = next((
             w for w in candidates
-            if w["state"] != "WAITING_HUMAN"
+            if w["id"] not in protected
+            and w["state"] != "WAITING_HUMAN"
             and not w["current_job_id"]
             and not w["current_account_id"]
         ), None)
