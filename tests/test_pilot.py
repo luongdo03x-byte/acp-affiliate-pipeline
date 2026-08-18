@@ -2478,6 +2478,56 @@ def test_review_action_doi_hook_missing_variant_id_errors_gracefully():
         os.environ.pop(var, None)
 
 
+def test_review_action_doi_hook_rejects_variant_from_other_post():
+    print("\nPOST /duyet/<post_A>/doi-hook với variant_id thuộc post_B -> bị chặn, không đổi hook của post_B")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    candidates = [p for p in src.fetch_products(limit=80) if p.product_url]
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res_a = pipeline.create_post_for_product(conn, ctx, candidates[0].external_product_id, "gd2026")
+    res_b = pipeline.create_post_for_product(conn, ctx, candidates[1].external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+
+    if res_a.get("ok") and res_b.get("ok"):
+        post_a_id, post_b_id = res_a["post_id"], res_b["post_id"]
+        run_a = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (post_a_id,)).fetchone()
+        run_b = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (post_b_id,)).fetchone()
+        if run_a and run_a["status"] == "READY" and run_b and run_b["status"] == "READY":
+            variant_b_before = conn.execute(
+                "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label LIMIT 1", (run_b["id"],)).fetchone()
+            conn.close()
+
+            resp = c.post(f"/duyet/{post_a_id}/doi-hook",
+                          data={"variant_id": variant_b_before["id"], "_csrf": csrf})
+            check("không crash (không phải 500)", resp.status_code != 500, resp.status_code)
+
+            conn = connect()
+            variant_b_after = conn.execute(
+                "SELECT * FROM content_variant_row WHERE id=?", (variant_b_before["id"],)).fetchone()
+            conn.close()
+            check("hook của variant post_B không đổi (bị chặn trộn nội dung giữa 2 bài)",
+                  variant_b_after["hook"] == variant_b_before["hook"],
+                  (variant_b_after["hook"], variant_b_before["hook"]))
+        else:
+            conn.close()
+    else:
+        conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2534,6 +2584,7 @@ if __name__ == "__main__":
     test_review_action_doi_angle_changes_angle()
     test_review_action_invalid_action_still_404()
     test_review_action_doi_hook_missing_variant_id_errors_gracefully()
+    test_review_action_doi_hook_rejects_variant_from_other_post()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

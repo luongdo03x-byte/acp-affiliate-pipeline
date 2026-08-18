@@ -563,8 +563,8 @@ def create_app():
                 run = conn.execute("SELECT * FROM content_generation_run WHERE id=?", (variant_row["run_id"],)).fetchone()
                 post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
                 product = conn.execute("SELECT * FROM product WHERE id=?", (post["product_id"],)).fetchone() if post else None
-                if not (run and run["status"] == "READY" and product):
-                    res = {"ok": False, "error": "Bài này không ở trạng thái có thể regenerate"}
+                if not (run and run["status"] == "READY" and run["post_id"] == post_id and product):
+                    res = {"ok": False, "error": "Variant không thuộc về bài này"}
                 else:
                     facts = content_facts.build_product_facts(conn, product)
                     if action == "doi-hook":
