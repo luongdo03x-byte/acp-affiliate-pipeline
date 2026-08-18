@@ -41,6 +41,40 @@ NULL) bằng cách set cả 3 cột về NULL.
 
 **2.1. `core/content_engine.py`: `_rescore_variant()` + tích hợp vào 3 hàm regenerate**
 
+**Phát hiện lúc smoke-test thiết kế (trước khi viết plan):** `_recent_variants()`
+(đã có từ E6) lấy TOÀN BỘ variant `is_best=1` gần nhất của channel, KHÔNG
+loại trừ chính variant đang được chấm lại. Với variant đã từng
+`is_best=1` từ lần `persist_run()` đầu (rất thường gặp — operator hay bấm
+"Đổi hook"/"Làm lại" trên chính variant tốt nhất), `_recent_variants()`
+sẽ lấy về CHÍNH row đó, khiến `repetition_penalty()` so nội dung với
+chính nó, tạo penalty giả (đã tái hiện trực tiếp: `final_score` tụt từ
+1.0 xuống 0.1 dù nội dung không đổi). Sửa: `_recent_variants()` nhận
+thêm tham số tuỳ chọn `exclude_variant_id` (mặc định `None`, không đổi
+hành vi của caller cũ `compute_variants()`), `_rescore_variant()` luôn
+truyền `exclude_variant_id=variant_id`. Đã smoke-test lại: `final_score`
+giữ đúng bằng `hybrid_score` khi không có repetition thật.
+
+`_recent_variants()` sửa (mở rộng, tương thích ngược với `compute_variants()`):
+
+```python
+def _recent_variants(conn, channel_id: str, limit: int = 5, exclude_variant_id: str = None) -> list:
+    """N variant BEST gần nhất đã dùng cho cùng channel_id -- input cho
+    Anti-Repetition (E4). post.channel_id là kênh chính (D1).
+    exclude_variant_id: loại chính variant đang được chấm lại ra khỏi tập
+    so sánh (G3) -- tránh so 1 variant với chính nó sau regenerate, gây
+    repetition_penalty giả tạo (variant đã từng is_best=1 sẽ tự khớp
+    chính nó nếu không loại trừ)."""
+    rows = conn.execute("""
+        SELECT cv.* FROM content_variant_row cv
+        JOIN content_generation_run cgr ON cv.run_id = cgr.id
+        JOIN post p ON cgr.post_id = p.id
+        WHERE p.channel_id = ? AND cv.is_best = 1
+              AND (? IS NULL OR cv.id != ?)
+        ORDER BY cv.created_at DESC LIMIT ?
+    """, (channel_id, exclude_variant_id, exclude_variant_id, limit)).fetchall()
+    return [_row_to_variant(r) for r in rows]
+```
+
 `_load_regen_context()` (đã có từ G2) mở rộng trả thêm `post` (để lấy
 `channel_id` cho `_recent_variants()`):
 
@@ -86,7 +120,7 @@ def _rescore_variant(conn, variant_id: str, channel_id: str) -> None:
         audit(conn, "content_variant_row", variant_id, "rescore_unsafe", actor="system",
               detail={"violations": hybrid["rules"].violations})
         return
-    recent = _recent_variants(conn, channel_id)
+    recent = _recent_variants(conn, channel_id, exclude_variant_id=variant_id)
     penalty = content_scoring.repetition_penalty(variant_obj, recent)
     final_score = max(0.0, round(hybrid["hybrid_score"] - penalty, 4))
     conn.execute("""UPDATE content_variant_row SET rule_score=?, hybrid_score=?, final_score=?,
@@ -151,6 +185,10 @@ chỉ đọc code bằng mắt.
 
 - `_rescore_variant()` sau `regenerate_hook()`: điểm thực sự đổi so với
   trước regenerate (không còn là điểm cũ).
+- `_recent_variants(exclude_variant_id=...)`: variant đang chấm lại
+  (đã từng `is_best=1`) KHÔNG tự so với chính nó — `final_score` phải
+  bằng `hybrid_score` khi không có variant nào khác thật sự giống (khoá
+  lại đúng bug đã tìm thấy lúc smoke-test thiết kế).
 - `_rescore_variant()` khi nội dung mới fact-unsafe: tái dùng đúng khuôn
   `test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card()`
   (`tests/test_pilot.py:3167`) — monkeypatch tạm thời
