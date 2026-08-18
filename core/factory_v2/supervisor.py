@@ -67,6 +67,12 @@ class WorkerSupervisor:
             self._stable_since is not None and current - self._stable_since >= self.stability_seconds
         )
 
+    def _limit_target_for_batch(self, target: int) -> int:
+        batch = self.repo.latest_batch()
+        if batch is not None and str(batch.get("completion_mode") or "").upper() == "SOCIAL_ONLY":
+            return min(int(target), 1)
+        return int(target)
+
     def _persist_sample(self, sample, capacity, workers, target):
         self.repo.insert_resource_sample({
             "timestamp": now(),
@@ -209,6 +215,7 @@ class WorkerSupervisor:
         ram_values = [w["estimated_ram_mb"] for w in workers if w["estimated_ram_mb"]]
         learned_ram = int(sum(ram_values) / len(ram_values)) if ram_values else 2048
         target = next_worker_target(len(workers), waiting, capacity, learned_ram)
+        target = self._limit_target_for_batch(target)
         stable = self._is_stable(capacity)
         self._persist_sample(sample, capacity, workers, target)
 
