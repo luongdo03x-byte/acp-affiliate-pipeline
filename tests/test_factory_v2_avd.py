@@ -39,6 +39,37 @@ class FactoryV2AvdTests(unittest.TestCase):
         )
         self.assertEqual(["acp-worker-01", "acp-worker-02"], manager.list_avds())
 
+    def test_start_uses_stable_software_graphics_without_snapshots(self):
+        captured = {}
+        process = object()
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return process
+
+        manager = AvdManager(
+            runner=FakeRunner({}),
+            adb_path="adb",
+            emulator_path="emulator",
+            popen_factory=fake_popen,
+        )
+
+        result = manager.start("acp-worker-01", 5554)
+
+        self.assertIs(process, result)
+        self.assertEqual(
+            [
+                "emulator",
+                "-avd", "acp-worker-01",
+                "-port", "5554",
+                "-gpu", "swiftshader",
+                "-feature", "-Vulkan",
+                "-no-snapshot",
+            ],
+            captured["argv"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
