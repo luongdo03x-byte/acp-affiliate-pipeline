@@ -32,17 +32,37 @@ test('context extraction returns normalized visible article text', () => {
   assert.equal(result.context.url.endsWith('/posts/123/'), true);
 });
 
-test('auto submit requires AUTO_READY and an unpaused server status', () => {
+test('auto submit requires AUTO_READY, unpaused status, and matching active shift', () => {
   assert.equal(
-    runner.shouldAttemptAutoSubmit({ decision: 'AUTO_READY' }, { paused: false }),
+    runner.shouldAttemptAutoSubmit(
+      { decision: 'AUTO_READY' },
+      { paused: false, active_shift_id: 'SHIFT1' },
+      'SHIFT1',
+    ),
     true,
   );
   assert.equal(
-    runner.shouldAttemptAutoSubmit({ decision: 'REVIEW_REQUIRED' }, { paused: false }),
+    runner.shouldAttemptAutoSubmit(
+      { decision: 'REVIEW_REQUIRED' },
+      { paused: false, active_shift_id: 'SHIFT1' },
+      'SHIFT1',
+    ),
     false,
   );
   assert.equal(
-    runner.shouldAttemptAutoSubmit({ decision: 'AUTO_READY' }, { paused: true }),
+    runner.shouldAttemptAutoSubmit(
+      { decision: 'AUTO_READY' },
+      { paused: true, active_shift_id: 'SHIFT1' },
+      'SHIFT1',
+    ),
+    false,
+  );
+  assert.equal(
+    runner.shouldAttemptAutoSubmit(
+      { decision: 'AUTO_READY' },
+      { paused: false, active_shift_id: null },
+      'SHIFT1',
+    ),
     false,
   );
 });
@@ -52,9 +72,10 @@ test('single submit returns UNKNOWN after one click when verification fails', as
   let statusChecks = 0;
   const result = await runner.performSingleSubmit({
     decision: { decision: 'AUTO_READY' },
+    expectedShiftId: 'SHIFT1',
     getStatus: async () => {
       statusChecks += 1;
-      return { paused: false };
+      return { paused: false, active_shift_id: 'SHIFT1' };
     },
     submit: async () => {
       clicks += 1;
@@ -70,7 +91,23 @@ test('single submit rechecks pause before click and does not submit while paused
   let clicks = 0;
   const result = await runner.performSingleSubmit({
     decision: { decision: 'AUTO_READY' },
-    getStatus: async () => ({ paused: true }),
+    expectedShiftId: 'SHIFT1',
+    getStatus: async () => ({ paused: true, active_shift_id: 'SHIFT1' }),
+    submit: async () => {
+      clicks += 1;
+    },
+    verify: async () => true,
+  });
+  assert.equal(clicks, 0);
+  assert.equal(result, 'PAUSED');
+});
+
+test('single submit stops if the expected shift is no longer active', async () => {
+  let clicks = 0;
+  const result = await runner.performSingleSubmit({
+    decision: { decision: 'AUTO_READY' },
+    expectedShiftId: 'SHIFT1',
+    getStatus: async () => ({ paused: false, active_shift_id: null }),
     submit: async () => {
       clicks += 1;
     },
