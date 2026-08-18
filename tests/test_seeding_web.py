@@ -37,6 +37,14 @@ class SeedingWebStaticTests(unittest.TestCase):
         self.assertIn("_require_extension_token()", source)
         self.assertIn("seeding.pause_shift", source)
 
+    def test_result_endpoint_uses_exact_shift_even_after_pause(self) -> None:
+        source = (ROOT / "web" / "seeding_routes.py").read_text(encoding="utf-8")
+        start = source.index("def _record_api_result")
+        end = source.index('@bp.post("/api/seeding/result")', start)
+        body = source[start:end]
+        self.assertIn("_find_shift(conn, shift_id)", body)
+        self.assertNotIn("_find_active_shift(conn", body)
+
 
 @unittest.skipUnless(HAS_FLASK, "Flask is not installed in the minimal local harness")
 class SeedingWebFunctionalTests(unittest.TestCase):
