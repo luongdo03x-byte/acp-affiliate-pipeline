@@ -86,4 +86,23 @@
 {% for r in recent %}<tr><td>{{ r.product_name }}</td><td><span class="tag {{ 'ok' if r.status=='PUBLISHED' else ('bad' if r.status=='REJECTED' else 'warn') }}">{{ r.status }}</span></td><td class="dim mono">{{ (r.published_at or r.scheduled_at or '')[:16]|replace('T',' ') }}</td></tr>{% endfor %}
 </tbody></table></div></div>
 {% endif %}
+
+<script>
+// Chọn variant khác -- đổi giá trị textarea tại chỗ, KHÔNG round-trip
+// server (Content Engine v2, E6). Operator vẫn sửa tiếp được sau khi bấm,
+// rồi Duyệt như luồng đã có -- không đụng approve_post().
+function acpUseVariant(postId, captionByPlatform) {
+  var mapping = {
+    "threads": "caption-" + postId,
+    "facebook": "caption-fb-" + postId,
+    "instagram": "caption-ig-" + postId,
+  };
+  for (var platform in mapping) {
+    if (captionByPlatform[platform] !== undefined) {
+      var el = document.getElementById(mapping[platform]);
+      if (el) el.value = captionByPlatform[platform];
+    }
+  }
+}
+</script>
 {% endblock %}

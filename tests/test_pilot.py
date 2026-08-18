@@ -2363,6 +2363,21 @@ def test_duyet_variant_card_embeds_use_variant_button():
         os.environ.pop(var, None)
 
 
+def test_duyet_page_defines_acp_use_variant_function():
+    print("\nGET /duyet có định nghĩa function acpUseVariant trong <script>")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    body = c.get("/duyet").get_data(as_text=True)
+    check("có function acpUseVariant", "function acpUseVariant(" in body, "không tìm thấy")
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2413,6 +2428,7 @@ if __name__ == "__main__":
     test_duyet_shows_variants_block_when_generation_run_exists()
     test_duyet_no_variants_block_when_no_generation_run()
     test_duyet_variant_card_embeds_use_variant_button()
+    test_duyet_page_defines_acp_use_variant_function()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
