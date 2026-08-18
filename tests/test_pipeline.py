@@ -1340,6 +1340,9 @@ def test_persist_run_writes_one_run_and_three_variant_rows():
     check("best_label khớp dòng is_best", persisted["best_label"] in [r["label"] for r in rows if r["is_best"]])
     run_row = conn.execute("SELECT * FROM content_generation_run WHERE id=?", (persisted["run_id"],)).fetchone()
     check("run status khớp computed", run_row["status"] == computed["status"], run_row["status"])
+    conn.execute("DELETE FROM content_variant_row WHERE run_id=?", (persisted["run_id"],))
+    conn.execute("DELETE FROM content_generation_run WHERE id=?", (persisted["run_id"],))
+    conn.execute("DELETE FROM post WHERE id=?", (post_id,))
     conn.close()
 
 
@@ -1358,6 +1361,12 @@ def test_recent_variants_scoped_by_channel_and_ordered():
     recent = content_engine._recent_variants(conn, ch_id)
     check("có đúng 1 recent variant sau 1 lần persist", len(recent) == 1, len(recent))
     check("recent variant là ContentVariant thật", hasattr(recent[0], "angle"), recent[0])
+    run_row = conn.execute("SELECT id FROM content_generation_run WHERE post_id=?", (post_id,)).fetchone()
+    if run_row:
+        run_id = run_row["id"]
+        conn.execute("DELETE FROM content_variant_row WHERE run_id=?", (run_id,))
+        conn.execute("DELETE FROM content_generation_run WHERE id=?", (run_id,))
+    conn.execute("DELETE FROM post WHERE id=?", (post_id,))
     conn.close()
 
 
