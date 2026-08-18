@@ -310,6 +310,50 @@ class FactoryService:
         )
         return self.repo.get_checkpoint(checkpoint_id)
 
+    def _resolve_actionable_checkpoints_for_retry(self, account_id: str, *, resolved_at: str) -> None:
+        checkpoints = self.repo.conn.execute(
+            """SELECT id FROM factory_checkpoint
+               WHERE account_id=? AND status IN ('OPEN','SNOOZED','VERIFYING')
+               ORDER BY created_at, id""",
+            (account_id,),
+        ).fetchall()
+        for checkpoint in checkpoints:
+            self.repo.resolve_checkpoint(
+                checkpoint["id"],
+                resolved_at=resolved_at,
+                resolution="RETRY_REQUESTED",
+            )
+
+    def retry_checkpoint(self, checkpoint_id: str) -> dict:
+        checkpoint = self.repo.get_checkpoint(checkpoint_id)
+        if checkpoint is None:
+            raise KeyError(checkpoint_id)
+        if checkpoint["status"] not in {"OPEN", "SNOOZED", "VERIFYING"}:
+            raise ValueError(f"checkpoint cannot retry from {checkpoint['status']}")
+        account = self.repo.get_account(checkpoint["account_id"])
+        if account is None:
+            raise KeyError(checkpoint["account_id"])
+
+        job = self.repo.get_active_job_for_account(account["id"])
+        if job is not None:
+            return self.request_checkpoint_verification(
+                checkpoint_id,
+                action="RETRY_CHECKPOINT",
+            )
+
+        command_id = ulid()
+        retried_at = now()
+        with transaction(self.repo.conn):
+            current = self.repo.get_account(account["id"])
+            if current["stage"] != AccountStage.RETRY_PENDING.value:
+                self.transition_account(account["id"], AccountStage.RETRY_PENDING)
+            self.repo.resolve_checkpoint(
+                checkpoint_id,
+                resolved_at=retried_at,
+                resolution="RETRY_REQUESTED",
+            )
+        return {"command_id": command_id, "status": AccountStage.RETRY_PENDING.value}
+
     def retry_account(self, account_id: str) -> dict:
         account = self.repo.get_account(account_id)
         if account is None:
@@ -327,8 +371,22 @@ class FactoryService:
                     (now(), account_id),
                 )
                 return self.repo.get_account(account_id)
-            return account
-        return self.transition_account(account_id, AccountStage.RETRY_PENDING)
+            retried_at = now()
+            with transaction(self.repo.conn):
+                self._resolve_actionable_checkpoints_for_retry(
+                    account_id,
+                    resolved_at=retried_at,
+                )
+            return self.repo.get_account(account_id)
+
+        retried_at = now()
+        with transaction(self.repo.conn):
+            self.transition_account(account_id, AccountStage.RETRY_PENDING)
+            self._resolve_actionable_checkpoints_for_retry(
+                account_id,
+                resolved_at=retried_at,
+            )
+        return self.repo.get_account(account_id)
 
     def stop_account(self, account_id: str) -> dict:
         account = self.repo.get_account(account_id)
