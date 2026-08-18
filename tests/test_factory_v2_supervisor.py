@@ -149,6 +149,28 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         self.assertEqual("job-1", worker["current_job_id"])
         self.assertEqual("account-1", worker["current_account_id"])
 
+    def test_red_does_not_drain_ready_worker_on_same_tick_agent_is_attached(self):
+        self.repo.insert_worker({
+            "id": "fresh-ready",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "READY",
+        })
+        self.avd.online = ["emulator-5554"]
+        self.avd.booted.add("emulator-5554")
+        supervisor = self._supervisor(HostSample(20, 2200, 0, 1, 1, 1))
+
+        decision = supervisor.tick()
+
+        self.assertEqual("HOLD", decision.action)
+        self.assertEqual(
+            [("fresh-ready", "acp-worker-01", "emulator-5554")],
+            self.worker_processes.started,
+        )
+        self.assertEqual([], self.worker_processes.stopped)
+        self.assertEqual([], self.avd.stopped)
+        self.assertEqual("READY", self.repo.get_worker("fresh-ready")["state"])
+
     def test_emergency_preserves_waiting_human_when_ready_can_drain(self):
         self.repo.insert_worker({"id": "ready", "avd_name": "acp-worker-01", "adb_serial": "emulator-5554", "state": "READY"})
         self.repo.insert_worker({"id": "human", "avd_name": "acp-worker-02", "adb_serial": "emulator-5556", "state": "WAITING_HUMAN"})
