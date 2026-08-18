@@ -29,7 +29,7 @@ from ..adapters.shopee_affiliate import (
 )
 from ..core import attribution, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
-from ..core import content_angle, content_checker, content_facts, content_hook, content_platform, content_variant
+from ..core import content_angle, content_checker, content_facts, content_hook, content_platform, content_scoring, content_variant
 from ..core.db import connect, now
 from ..core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
 from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
@@ -120,6 +120,20 @@ def create_app():
     # lại. content._llm_fn là biến module-level, set một lần ở đây là đủ cho
     # mọi route.
     content.set_llm(factory.get_caption_llm())
+
+    # Gắn LLM thật cho Content Engine v2 (G1) -- cùng lý do đặt ở
+    # create_app() như dòng content.set_llm() ở trên: luồng nhập Shopee
+    # affiliate thủ công không gọi build_context(), đặt ở đây đảm bảo
+    # mọi route đều thấy. ACP_CONTENT_ENGINE_LLM=gemini bật, mặc định
+    # tắt (None) -- toàn bộ E1-E6 giữ nguyên hành vi rule-based/template
+    # khi không bật, không đổi baseline test hiện có.
+    content_engine_llm = factory.get_content_engine_llm()
+    content_facts.set_extractor(content_engine_llm)
+    content_hook.set_hook_generator(content_engine_llm)
+    content_hook.set_hook_judge(content_engine_llm)
+    content_variant.set_body_generator(content_engine_llm)
+    content_checker.set_variant_judge(content_engine_llm)
+    content_scoring.set_hybrid_judge(content_engine_llm)
 
     # ------------------------------------------------------------ xác thực
 

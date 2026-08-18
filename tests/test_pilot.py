@@ -24,7 +24,7 @@ from acp.adapters.live import AT_BASE, AccessTradeSource  # noqa: E402
 from acp.adapters.mock import MockAccessTrade  # noqa: E402
 from acp.adapters.tiktokshop import AT_ROOT, AccessTradeTikTokShopSource  # noqa: E402
 from acp.core import crypto, jobs, niche, pipeline, scoring  # noqa: E402
-from acp.core import content, playbook, valuepost  # noqa: E402
+from acp.core import content, content_checker, content_facts, content_hook, content_scoring, content_variant, playbook, valuepost  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -548,6 +548,84 @@ def test_caption_llm_wired_regardless_of_manual_flow():
     finally:
         content.set_llm(None)
         os.environ.pop("ACP_CAPTION_LLM", None)
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_content_engine_llm_wired_at_create_app():
+    """create_app() phải bật đủ 6 hook Content Engine v2 (extractor,
+    hook_generator, hook_judge, body_generator, variant_judge,
+    hybrid_judge) khi ACP_CONTENT_ENGINE_LLM=gemini -- cùng lý do đặt ở
+    create_app() như content.set_llm() phía trên (G1)."""
+    print("\nLLM Content Engine v2 được bật đủ 6 hook tại create_app()")
+    _saved = {k: os.environ.get(k) for k in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY")}
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    os.environ["ACP_CONTENT_ENGINE_LLM"] = "gemini"
+    content_facts.set_extractor(None)
+    content_hook.set_hook_generator(None)
+    content_hook.set_hook_judge(None)
+    content_variant.set_body_generator(None)
+    content_checker.set_variant_judge(None)
+    content_scoring.set_hybrid_judge(None)
+    try:
+        from acp.web.server import create_app
+        create_app()
+        check("extractor được bật", content_facts._extractor_fn is not None
+              and content_facts._extractor_fn.__name__ == "rewrite_json")
+        check("hook_generator được bật", content_hook._hook_generator_fn is not None
+              and content_hook._hook_generator_fn.__name__ == "rewrite_json")
+        check("hook_judge được bật", content_hook._hook_judge_fn is not None
+              and content_hook._hook_judge_fn.__name__ == "rewrite_json")
+        check("body_generator được bật", content_variant._body_generator_fn is not None
+              and content_variant._body_generator_fn.__name__ == "rewrite_json")
+        check("variant_judge được bật", content_checker._variant_judge_fn is not None
+              and content_checker._variant_judge_fn.__name__ == "rewrite_json")
+        check("hybrid_judge được bật", content_scoring._hybrid_judge_fn is not None
+              and content_scoring._hybrid_judge_fn.__name__ == "rewrite_json")
+    finally:
+        content_facts.set_extractor(None)
+        content_hook.set_hook_generator(None)
+        content_hook.set_hook_judge(None)
+        content_variant.set_body_generator(None)
+        content_checker.set_variant_judge(None)
+        content_scoring.set_hybrid_judge(None)
+        os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_content_engine_llm_not_wired_when_flag_off():
+    """Không set ACP_CONTENT_ENGINE_LLM -- create_app() không đụng gì tới
+    6 hook (giữ nguyên None), không đổi baseline rule-based/template
+    của toàn bộ E1-E6."""
+    print("\ncreate_app() KHÔNG bật hook nào khi ACP_CONTENT_ENGINE_LLM không set")
+    _saved = {k: os.environ.get(k) for k in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY")}
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+    content_facts.set_extractor(None)
+    content_hook.set_hook_generator(None)
+    content_hook.set_hook_judge(None)
+    content_variant.set_body_generator(None)
+    content_checker.set_variant_judge(None)
+    content_scoring.set_hybrid_judge(None)
+    try:
+        from acp.web.server import create_app
+        create_app()
+        check("extractor vẫn None", content_facts._extractor_fn is None)
+        check("hook_generator vẫn None", content_hook._hook_generator_fn is None)
+        check("hook_judge vẫn None", content_hook._hook_judge_fn is None)
+        check("body_generator vẫn None", content_variant._body_generator_fn is None)
+        check("variant_judge vẫn None", content_checker._variant_judge_fn is None)
+        check("hybrid_judge vẫn None", content_scoring._hybrid_judge_fn is None)
+    finally:
         for k, v in _saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -3235,6 +3313,8 @@ if __name__ == "__main__":
     test_shopee_edge_hardening()
     test_shopee_helper_pairing()
     test_caption_llm_wired_regardless_of_manual_flow()
+    test_content_engine_llm_wired_at_create_app()
+    test_content_engine_llm_not_wired_when_flag_off()
     test_web_security()
     test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
     test_publish_target_retry_route()
