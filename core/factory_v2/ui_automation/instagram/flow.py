@@ -4,7 +4,9 @@ from __future__ import annotations
 from ..flow_result import FlowResult
 from .screens import PACKAGE
 from .selectors import (
+    ADD_PROFILE_PHOTO,
     BIO_INPUT,
+    BIRTH_DATE_INPUT,
     CONTINUE,
     DISPLAY_NAME_INPUT,
     SIGN_UP,
@@ -34,16 +36,30 @@ _IG_ERRORS = (
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
     "IG_CONTACT_ENTRY",
+    "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
     "IG_HOME",
     "IG_POSTCHECK_OK",
 )
 _AFTER_CONTACT = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
     "IG_HOME",
     "IG_POSTCHECK_OK",
 )
-_AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + ("IG_HOME", "IG_POSTCHECK_OK")
+_AFTER_BIRTHDAY = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
+_AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_AVATAR_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
 
 
 class InstagramFlow:
@@ -134,6 +150,37 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_CONTACT_ENTRY")
+        if detected.kind == "IG_BIRTHDAY_ENTRY":
+            birth_date = str(profile.get("birth_date") or "").strip()
+            if not birth_date:
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_BIRTH_DATE")
+            if self.driver.find(BIRTH_DATE_INPUT) is None or self.driver.find(CONTINUE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.set_text(BIRTH_DATE_INPUT, birth_date)
+            )
+            if action.status not in {"completed", "noop"}:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    CONTINUE,
+                    expected_screens=_AFTER_BIRTHDAY,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_BIRTHDAY_ENTRY")
+        if detected.kind == "IG_AVATAR_SETUP":
+            avatar_file = str(profile.get("avatar_file") or "").strip()
+            if not avatar_file:
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+            if self.driver.find(ADD_PROFILE_PHOTO) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(ADD_PROFILE_PHOTO))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_AVATAR_SETUP")
         if detected.kind == "IG_PROFILE_SETUP":
             approved = (
                 (USERNAME_INPUT, str(profile.get("username") or "")),
