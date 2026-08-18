@@ -4084,6 +4084,76 @@ def test_list_account_groups_returns_channels_and_codes():
     conn.close()
 
 
+class _FakeGeminiResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeGeminiClient:
+    """Giả genai.Client -- ghi lại đúng tham số generate_content() nhận
+    được để test xác nhận rewrite_json() gọi đúng, không gọi API thật."""
+    def __init__(self, *a, **kw):
+        self.models = self
+        self.last_call = None
+        self._response_text = '{"ok": true}'
+
+    def generate_content(self, model, contents, config=None):
+        self.last_call = {"model": model, "contents": contents, "config": config}
+        return _FakeGeminiResponse(self._response_text)
+
+
+def test_rewrite_json_uses_gemini_json_mode():
+    print("\nrewrite_json() gọi Gemini với response_mime_type=application/json")
+    from acp.core import llm_gemini
+    import google.genai as genai_module
+    os.environ["ACP_GEMINI_API_KEY"] = "fake-key-test"
+    original_client_cls = genai_module.Client
+    fake = _FakeGeminiClient()
+    genai_module.Client = lambda api_key=None: fake
+    try:
+        result = llm_gemini.rewrite_json("prompt kiểm thử")
+        check("trả đúng text từ response", result == '{"ok": true}', result)
+        check("gọi đúng model mặc định", fake.last_call["model"] == "gemini-flash-latest", fake.last_call)
+        check("dùng đúng prompt truyền vào", fake.last_call["contents"] == "prompt kiểm thử")
+        check("dùng Gemini JSON mode",
+              fake.last_call["config"].response_mime_type == "application/json",
+              fake.last_call["config"])
+    finally:
+        genai_module.Client = original_client_cls
+        os.environ.pop("ACP_GEMINI_API_KEY", None)
+
+
+def test_rewrite_json_raises_when_api_key_missing():
+    print("\nrewrite_json() raise rõ khi thiếu ACP_GEMINI_API_KEY, không nuốt câm")
+    from acp.core import llm_gemini
+    os.environ.pop("ACP_GEMINI_API_KEY", None)
+    try:
+        llm_gemini.rewrite_json("prompt")
+        check("phải raise RuntimeError khi thiếu API key", False)
+    except RuntimeError as e:
+        check("raise đúng thông báo", "ACP_GEMINI_API_KEY" in str(e), str(e))
+
+
+def test_rewrite_json_raises_when_response_empty():
+    print("\nrewrite_json() raise rõ khi Gemini trả rỗng, không trả chuỗi rỗng câm lặng")
+    from acp.core import llm_gemini
+    import google.genai as genai_module
+    os.environ["ACP_GEMINI_API_KEY"] = "fake-key-test"
+    original_client_cls = genai_module.Client
+    fake = _FakeGeminiClient()
+    fake._response_text = ""
+    genai_module.Client = lambda api_key=None: fake
+    try:
+        try:
+            llm_gemini.rewrite_json("prompt")
+            check("phải raise RuntimeError khi response rỗng", False)
+        except RuntimeError as e:
+            check("raise đúng thông báo rỗng", "rỗng" in str(e), str(e))
+    finally:
+        genai_module.Client = original_client_cls
+        os.environ.pop("ACP_GEMINI_API_KEY", None)
+
+
 if __name__ == "__main__":
     conn = setup(); conn.close()
     test_crypto()
@@ -4280,6 +4350,9 @@ if __name__ == "__main__":
     test_delete_account_group_removes_group_and_members()
     test_delete_account_group_not_found_rejected()
     test_list_account_groups_returns_channels_and_codes()
+    test_rewrite_json_uses_gemini_json_mode()
+    test_rewrite_json_raises_when_api_key_missing()
+    test_rewrite_json_raises_when_response_empty()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

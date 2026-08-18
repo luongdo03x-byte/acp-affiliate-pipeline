@@ -34,3 +34,26 @@ def rewrite(prompt: str) -> str:
     if not text:
         raise RuntimeError("Gemini trả về rỗng")
     return text
+
+
+def rewrite_json(prompt: str) -> str:
+    """fn(prompt) -> str theo đúng chữ ký các set_*() của Content Engine
+    v2 (E1-E4) yêu cầu -- model PHẢI trả JSON hợp lệ, dùng Gemini JSON
+    mode thay vì text thô như rewrite() (v1) để giảm rủi ro model bọc
+    markdown code-fence (```json ... ```) làm vỡ json.loads() ở phía gọi.
+    Callers (E1-E4) đã tự retry tối đa 3 lần + fallback khi parse lỗi --
+    hàm này KHÔNG tự retry, ĐƯỢC PHÉP raise, giống rewrite() ở trên.
+    """
+    from google.genai import types
+    client = _client()
+    if client is None:
+        raise RuntimeError("ACP_GEMINI_API_KEY chưa được đặt")
+    model = os.environ.get("ACP_GEMINI_MODEL", "gemini-flash-latest")
+    response = client.models.generate_content(
+        model=model, contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini trả về rỗng")
+    return text
