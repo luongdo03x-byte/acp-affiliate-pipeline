@@ -2290,6 +2290,79 @@ def test_vanhanh_shows_multi_channel_post_breakdown():
         os.environ.pop(var, None)
 
 
+def test_duyet_shows_variants_block_when_generation_run_exists():
+    print("\nGET /duyet hiện khối CONTENT VARIANTS khi bài có content_generation_run READY")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        if run and run["status"] == "READY":
+            body = c.get("/duyet").get_data(as_text=True)
+            check("có chữ CONTENT VARIANTS trong trang", "CONTENT VARIANTS" in body, "không tìm thấy")
+            check("có nhãn Variant hoặc Bản tốt nhất", ("Variant" in body or "Bản tốt nhất" in body))
+    conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_no_variants_block_when_no_generation_run():
+    print("\nGET /duyet KHÔNG hiện khối CONTENT VARIANTS cho bài tạo lúc flag tắt")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        check("không có content_generation_run", run is None, run)
+    conn.close()
+
+
+def test_duyet_variant_card_embeds_use_variant_button():
+    print("\nGET /duyet mỗi variant card có nút acpUseVariant với data caption_by_platform nhúng qua tojson")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res.get("post_id"),)).fetchone() if res.get("ok") else None
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    if res.get("ok") and run and run["status"] == "READY":
+        body = c.get("/duyet").get_data(as_text=True)
+        check("có acpUseVariant( trong trang (nút chọn variant)", "acpUseVariant(" in body, "không tìm thấy")
+    conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2337,6 +2410,9 @@ if __name__ == "__main__":
     test_kenh_account_group_crud_end_to_end()
     test_sanpham_shows_account_group_quick_select_both_modes()
     test_vanhanh_shows_multi_channel_post_breakdown()
+    test_duyet_shows_variants_block_when_generation_run_exists()
+    test_duyet_no_variants_block_when_no_generation_run()
+    test_duyet_variant_card_embeds_use_variant_button()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))

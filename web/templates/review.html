@@ -21,6 +21,32 @@
       <span class="tag">{{ p.rating or '—' }}★ · {{ p.review_count|num }} đánh giá · bán {{ p.sold_count|num }}</span>
     </div>
     {% if p.status == 'DRAFT' and p.reject_reason %}<div class="alert alert--error"><strong>Không đạt kiểm tra tự động.</strong><span>{{ p.reject_reason }}</span></div>{% endif %}
+    {% if p.variants %}
+    <section class="content-variants">
+      <h4>CONTENT VARIANTS</h4>
+      {% for v in p.variants %}
+      <div class="variant-card {{ 'variant-card--best' if v.is_best }}">
+        <strong>{{ '★ Bản tốt nhất' if v.is_best else 'Variant ' + v.label }}</strong>
+        <div class="dim">Angle: {{ v.angle }} · Score: {{ (v.final_score * 100) | round | int if v.final_score is not none else '—' }}</div>
+        <div>Hook: {{ v.hook }}</div>
+        <button type="button" class="btn btn--small"
+          onclick="acpUseVariant('{{ p.id }}', {{ v.caption_by_platform | tojson | forceescape }})">
+          Chọn variant này
+        </button>
+        <form method="post" action="/duyet/{{ p.id }}/doi-hook" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Đổi hook</button>
+        </form>
+        {% if v.violations %}
+        <details><summary>Xem phân tích ({{ v.violations|length }} lưu ý)</summary>
+          <ul>{% for msg in v.violations %}<li>{{ msg }}</li>{% endfor %}</ul>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <div class="field"><label for="caption-{{ p.id }}">Caption (gốc)</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>

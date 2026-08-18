@@ -10,6 +10,7 @@ trên web vẫn chạy giả lập dù ACP_ADAPTER=live. Giờ dùng chung facto
 """
 import hashlib
 import hmac
+import json
 import os
 import secrets
 
@@ -24,6 +25,7 @@ from ..adapters.shopee_affiliate import (
 )
 from ..core import attribution, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
+from ..core import content_checker, content_platform, content_variant
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -493,6 +495,28 @@ def create_app():
             channel_overrides = overrides_by_post.get(r["id"], {})
             for sel in r["selected_channels"]:
                 sel["prior_override"] = channel_overrides.get(sel["id"], "")
+        run_by_post = {r["post_id"]: dict(r) for r in conn.execute(
+            "SELECT * FROM content_generation_run WHERE post_id IN ({}) AND status='READY'".format(
+                ",".join("?" * len(rows))), [r["id"] for r in rows]).fetchall()} if rows else {}
+        for r in rows:
+            run = run_by_post.get(r["id"])
+            r["variants"] = []
+            if not run:
+                continue
+            variant_rows = conn.execute(
+                "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label", (run["id"],)).fetchall()
+            platforms = sorted({sel["platform"] for sel in r["selected_channels"]} & {"threads", "facebook", "instagram"})
+            for vr in variant_rows:
+                variant_obj = content_variant.ContentVariant(
+                    angle=vr["angle"], hook=vr["hook"], main_message=vr["main_message"],
+                    body=json.loads(vr["body_json"]), cta=vr["cta"], structure=vr["structure"])
+                r["variants"].append({
+                    "id": vr["id"], "label": vr["label"], "angle": vr["angle"], "hook": vr["hook"],
+                    "is_best": bool(vr["is_best"]), "final_score": vr["final_score"],
+                    "caption_by_platform": content_platform.adapt_for_platforms(
+                        variant_obj, platforms, r["affiliate_link"]) if platforms else {},
+                    "violations": [v["message"] for v in content_checker.check_variant_rules(variant_obj)],
+                })
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p JOIN product pr ON pr.id = p.product_id
