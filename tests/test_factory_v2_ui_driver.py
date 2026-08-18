@@ -6,6 +6,7 @@ from core.factory_v2.ui_automation.selectors import Selector
 
 USERNAME = Selector(semantic="username", resource_ids=("com.instagram.android:id/username",))
 SIGNUP_CONTACT = Selector(semantic="signup_contact", resource_ids=("com.instagram.android:id/username",))
+BIRTH_DATE = Selector(semantic="birth_date", resource_ids=("com.instagram.android:id/username",))
 MISSING = Selector(semantic="bio", resource_ids=("missing:id",))
 
 
@@ -52,6 +53,12 @@ class SafeUiDriverTests(unittest.TestCase):
         result = driver.set_text(SIGNUP_CONTACT, "owner@example.com")
         self.assertEqual("completed", result.status)
         self.assertEqual(["owner@example.com"], adb.input_calls)
+
+    def test_birth_date_semantic_is_approved(self):
+        driver, adb = self.make_driver("1999-01-01")
+        result = driver.set_text(BIRTH_DATE, "2000-05-20")
+        self.assertEqual("completed", result.status)
+        self.assertEqual(["2000-05-20"], adb.input_calls)
 
     def test_missing_selector_never_taps(self):
         driver, adb = self.make_driver()
