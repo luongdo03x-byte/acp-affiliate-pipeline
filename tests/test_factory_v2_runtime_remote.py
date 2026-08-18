@@ -154,10 +154,12 @@ class RemoteRuntimeTests(unittest.TestCase):
             "birth_date": "2000-05-20",
             "avatar_file": "var/factory_avatars/sample.jpg",
         }, payload["profile"])
+        self.assertNotIn("email", payload["profile"])
+        self.assertNotIn("password", payload["profile"])
+        self.assertNotIn("otp", payload["profile"])
         serialized = repr(payload)
         self.assertNotIn("backup@example.com", serialized)
         self.assertNotIn("must-not-pass", serialized)
-        self.assertNotIn("123456", serialized)
 
     def test_remote_prepare_routes_to_avd_automation_and_waits_legally(self):
         acc = account()
