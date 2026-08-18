@@ -65,6 +65,12 @@ def create_fake_release(root: Path, version: str, port: int) -> Path:
     (app / "tests" / "test_pilot.py").write_text(
         "print('101 đạt, 0 hỏng')\n", encoding="utf-8"
     )
+    (app / "tests" / "test_seeding.py").write_text(
+        "print('SEEDING_TEST_OK')\n", encoding="utf-8"
+    )
+    (app / "tests" / "test_seeding_web.py").write_text(
+        "print('SEEDING_WEB_TEST_OK')\n", encoding="utf-8"
+    )
     (app / "core" / "__init__.py").write_text("", encoding="utf-8")
     (app / "core" / "db.py").write_text(
         "def init_db():\n    print('SCHEMA_OK')\n", encoding="utf-8"
@@ -145,6 +151,12 @@ class ManageScriptTests(unittest.TestCase):
         r = self.run_manage("wat", check=False)
         self.assertNotEqual(0, r.returncode)
         self.assertIn("Cách dùng", r.stdout + r.stderr)
+
+    def test_test_command_runs_seeding_suites(self) -> None:
+        result = self.run_manage("test")
+        self.assertIn("SEEDING_TEST_OK", result.stdout)
+        self.assertIn("SEEDING_WEB_TEST_OK", result.stdout)
+        self.assertIn("TEST_OK", result.stdout)
 
     def make_upgrade_zip(self, version: str) -> Path:
         src_root = self.tmp / f"zip-{version}"
