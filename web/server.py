@@ -495,6 +495,29 @@ def create_app():
             channel_overrides = overrides_by_post.get(r["id"], {})
             for sel in r["selected_channels"]:
                 sel["prior_override"] = channel_overrides.get(sel["id"], "")
+        try:
+            _attach_content_variants(conn, rows)
+        except Exception:
+            # Bảng content_generation_run/content_variant_row có thể chưa tồn
+            # tại (CSDL cũ chưa migrate qua E6). /duyet là trang vận hành chính
+            # -- phần hiển thị Content Engine v2 hỏng thì bỏ trống khối variant,
+            # tuyệt đối không được làm cả trang 500.
+            for r in rows:
+                r["variants"] = []
+        recent = [dict(r) for r in conn.execute("""
+            SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
+            FROM post p JOIN product pr ON pr.id = p.product_id
+            WHERE p.status IN ('SCHEDULED','PUBLISHED','REJECTED')
+            ORDER BY p.updated_at DESC LIMIT 8""").fetchall()]
+        conn.close()
+        return render_template("review.html", page="duyet", posts=rows, recent=recent,
+                               platform_labels=PLATFORM_LABELS)
+
+    def _attach_content_variants(conn, rows):
+        """Gắn rows[i]["variants"] từ content_generation_run/content_variant_row
+        (Content Engine v2, E6). Tách hàm riêng để caller bọc try/except gọn --
+        lỗi ở đây không được làm hỏng cả trang /duyet.
+        """
         run_by_post = {r["post_id"]: dict(r) for r in conn.execute(
             "SELECT * FROM content_generation_run WHERE post_id IN ({}) AND status='READY'".format(
                 ",".join("?" * len(rows))), [r["id"] for r in rows]).fetchall()} if rows else {}
@@ -507,6 +530,13 @@ def create_app():
                 "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label", (run["id"],)).fetchall()
             platforms = sorted({sel["platform"] for sel in r["selected_channels"]} & {"threads", "facebook", "instagram"})
             for vr in variant_rows:
+                # persist_run() ghi NULL cả 3 cột điểm cho đúng những variant bị
+                # select_best_variant() (E4) loại vì KHÔNG đạt fact safety -- đó
+                # là dấu hiệu tin cậy duy nhất phân biệt variant bị loại với
+                # variant hợp lệ. Không render thành card chọn được, để operator
+                # không thể chọn/duyệt nhầm nội dung đã bị chặn.
+                if vr["rule_score"] is None and vr["hybrid_score"] is None and vr["final_score"] is None:
+                    continue
                 variant_obj = content_variant.ContentVariant(
                     angle=vr["angle"], hook=vr["hook"], main_message=vr["main_message"],
                     body=json.loads(vr["body_json"]), cta=vr["cta"], structure=vr["structure"])
@@ -517,14 +547,6 @@ def create_app():
                         variant_obj, platforms, r["affiliate_link"]) if platforms else {},
                     "violations": [v["message"] for v in content_checker.check_variant_rules(variant_obj)],
                 })
-        recent = [dict(r) for r in conn.execute("""
-            SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
-            FROM post p JOIN product pr ON pr.id = p.product_id
-            WHERE p.status IN ('SCHEDULED','PUBLISHED','REJECTED')
-            ORDER BY p.updated_at DESC LIMIT 8""").fetchall()]
-        conn.close()
-        return render_template("review.html", page="duyet", posts=rows, recent=recent,
-                               platform_labels=PLATFORM_LABELS)
 
     @app.route("/duyet/<post_id>/<action>", methods=["POST"])
     def review_action(post_id, action):
@@ -580,7 +602,17 @@ def create_app():
                                       json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta, now(), variant_id))
                         res = {"ok": True}
                     else:  # doi-angle
-                        candidates = content_angle.select_angle_candidates(product)
+                        # Lấy từ TOÀN BỘ content_angle.ANGLES, không phải
+                        # select_angle_candidates(product): hàm đó chỉ tự động
+                        # chọn 1-3 angle và generate_variants() đã dùng hết đúng
+                        # danh sách đó cho 3 variant ban đầu -- lấy lại nó thì
+                        # "đổi angle" không bao giờ còn candidate nào (chết cứng).
+                        # select_angle_candidates() quản chọn angle TỰ ĐỘNG (E2),
+                        # còn "đổi angle" là cửa thoát THỦ CÔNG của operator --
+                        # 2 mối quan tâm khác nhau. generate_variant() chạy an
+                        # toàn với mọi angle trong ANGLES nhờ ANGLE_TO_STRUCTURE/
+                        # ANGLE_TO_CTA_TYPE có default (.get(angle, ...)).
+                        candidates = content_angle.ANGLES
                         used_angles = {r["angle"] for r in conn.execute(
                             "SELECT angle FROM content_variant_row WHERE run_id=?", (run["id"],)).fetchall()}
                         next_angle = next((a for a in candidates if a not in used_angles), None)

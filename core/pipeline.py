@@ -417,7 +417,14 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
     image_url = ctx.get("storage", storage.get_storage()).put(image_path)
 
     v2_computed = None
-    if system_settings.is_content_engine_v2_enabled(conn):
+    try:
+        v2_enabled = system_settings.is_content_engine_v2_enabled(conn)
+    except Exception:
+        # Bảng system_setting có thể chưa tồn tại (CSDL cũ chưa migrate qua
+        # E6) -- ngay cả việc ĐỌC cờ cũng không được làm crash việc tạo bài,
+        # coi như cờ tắt và chạy đúng luồng v1 như trước E6.
+        v2_enabled = False
+    if v2_enabled:
         try:
             platforms = sorted({ch["platform"] for ch in channels} & {"threads", "facebook", "instagram"})
             v2_computed = content_engine.compute_variants(conn, product, channel["id"], platforms, link)

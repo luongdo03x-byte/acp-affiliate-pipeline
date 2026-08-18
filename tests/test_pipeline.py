@@ -1501,6 +1501,52 @@ def test_create_post_persist_run_exception_does_not_crash_post_creation():
     conn.close()
 
 
+def test_create_post_flag_read_failure_does_not_crash():
+    print("\n_create_post_from_raw_product() đọc cờ content_engine_v2_enabled lỗi (bảng chưa có) -> vẫn tạo bài bằng v1")
+    import sqlite3
+    from acp.core import system_settings
+    conn = connect()
+    original = system_settings.is_content_engine_v2_enabled
+
+    def crashing_flag_read(*a, **kw):
+        # Giả lập đúng lỗi CSDL cũ chưa migrate: bảng system_setting không tồn tại.
+        raise sqlite3.OperationalError("no such table: system_setting")
+
+    system_settings.is_content_engine_v2_enabled = crashing_flag_read
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+        check("tạo bài vẫn thành công dù đọc cờ lỗi", res.get("ok"), res.get("error"))
+        check("caption không rỗng (dùng v1)", bool(res.get("caption")), res.get("caption"))
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?",
+                           (res.get("post_id"),)).fetchone()
+        check("không có content_generation_run (coi như cờ tắt)", run is None, run)
+    finally:
+        system_settings.is_content_engine_v2_enabled = original
+    conn.close()
+
+
+def test_content_engine_v2_default_disabled_end_to_end():
+    print("\nContent Engine v2 mặc định TẮT toàn hệ thống -- xác nhận tường minh trước khi kết thúc E6")
+    from acp.core import system_settings
+    conn = connect()
+    # Xoá key nếu test trước đó lỡ để lại (không tin cậy thứ tự chạy) --
+    # kiểm tra đúng trạng thái "chưa từng cấu hình" như 1 CSDL mới.
+    conn.execute("DELETE FROM system_setting WHERE key='content_engine_v2_enabled'")
+    check("mặc định tắt khi chưa từng set", system_settings.is_content_engine_v2_enabled(conn) is False)
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+    check("tạo bài thành công với cấu hình mặc định", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        check("không có content_generation_run nào khi chưa từng bật flag", run is None, run)
+    conn.close()
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -4017,6 +4063,8 @@ if __name__ == "__main__":
     test_create_post_v2_exception_falls_back_to_v1_without_crashing()
     test_create_post_fact_check_failed_falls_back_to_v1_caption()
     test_create_post_persist_run_exception_does_not_crash_post_creation()
+    test_create_post_flag_read_failure_does_not_crash()
+    test_content_engine_v2_default_disabled_end_to_end()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()

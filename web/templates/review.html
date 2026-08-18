@@ -38,6 +38,16 @@
           <input type="hidden" name="variant_id" value="{{ v.id }}">
           <button class="btn btn--small btn--ghost" type="submit">Đổi hook</button>
         </form>
+        <form method="post" action="/duyet/{{ p.id }}/lam-lai" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Làm lại</button>
+        </form>
+        <form method="post" action="/duyet/{{ p.id }}/doi-angle" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Đổi angle</button>
+        </form>
         {% if v.violations %}
         <details><summary>Xem phân tích ({{ v.violations|length }} lưu ý)</summary>
           <ul>{% for msg in v.violations %}<li>{{ msg }}</li>{% endfor %}</ul>
