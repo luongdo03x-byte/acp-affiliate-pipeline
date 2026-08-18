@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,9 @@ class CommandRunner:
 
 
 class AdbClient:
+    _AVATAR_DEVICE_DIR = "/sdcard/Pictures/ACP"
+    _AVATAR_DEVICE_PATH = "/sdcard/Pictures/ACP/avatar.jpg"
+
     def __init__(self, serial: str, *, adb_path: str | None = None, runner=None):
         serial = str(serial or "").strip()
         if not serial or any(character.isspace() for character in serial):
@@ -94,6 +98,16 @@ class AdbClient:
             "shell", "input", "swipe",
             str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)), str(duration),
         ])
+
+    def push_file(self, source, destination: str) -> None:
+        source_path = Path(source).resolve()
+        if not source_path.is_file():
+            raise ValueError("ADB push source must be an existing file")
+        destination = str(destination or "").strip()
+        if destination != self._AVATAR_DEVICE_PATH:
+            raise ValueError("unsupported ADB push destination")
+        self._run(["shell", "mkdir", "-p", self._AVATAR_DEVICE_DIR])
+        self._run(["push", str(source_path), destination], timeout=60)
 
     def open_package(self, package: str) -> None:
         package = str(package or "").strip()
