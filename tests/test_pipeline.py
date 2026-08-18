@@ -1373,6 +1373,105 @@ def test_recent_variants_scoped_by_channel_and_ordered():
     conn.close()
 
 
+def test_create_post_flag_off_behaves_exactly_like_before():
+    print("\n_create_post_from_raw_product() flag TẮT -> không có content_generation_run, caption từ v1")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+    check("không có content_generation_run nào", run is None, run)
+    conn.close()
+
+
+def test_create_post_flag_on_uses_v2_caption_and_persists_run():
+    print("\n_create_post_from_raw_product() flag BẬT -> có content_generation_run READY, caption_facebook/instagram được điền")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    fb_id, ig_id = ulid(), ulid()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+        VALUES (?,?,?,?,?,?,?)""", (fb_id, f"e6_fb_{fb_id[:6]}", "facebook", "FB E6 Test", "ACTIVE", 1, now()))
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+        VALUES (?,?,?,?,?,?,?)""", (ig_id, f"e6_ig_{ig_id[:6]}", "instagram", "IG E6 Test", "ACTIVE", 1, now()))
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}}
+    res = pipeline.create_post_for_product(
+        conn, ctx, target.external_product_id, "test",
+        channel_codes=["ch1", f"e6_fb_{fb_id[:6]}", f"e6_ig_{ig_id[:6]}"])
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        check("có content_generation_run", run is not None, run)
+        if run:
+            check("status READY hoặc FACT_CHECK_FAILED (hợp lệ cả 2)",
+                  run["status"] in ("READY", "FACT_CHECK_FAILED"), run["status"])
+        post = conn.execute("SELECT * FROM post WHERE id=?", (res["post_id"],)).fetchone()
+        if run and run["status"] == "READY":
+            check("caption_facebook được điền", bool(post["caption_facebook"]), post["caption_facebook"])
+            check("caption_instagram được điền", bool(post["caption_instagram"]), post["caption_instagram"])
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    conn.close()
+
+
+def test_create_post_v2_exception_falls_back_to_v1_without_crashing():
+    print("\n_create_post_from_raw_product() v2 raise exception -> fallback v1, tạo bài vẫn thành công")
+    from acp.core import system_settings, content_engine
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    original = content_engine.compute_variants
+
+    def crashing_compute(*a, **kw):
+        raise RuntimeError("giả lập lỗi Content Engine v2")
+
+    content_engine.compute_variants = crashing_compute
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+        check("tạo bài vẫn thành công dù v2 crash", res.get("ok"), res.get("error"))
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res.get("post_id"),)).fetchone()
+        check("không có content_generation_run (v2 crash trước khi persist)", run is None, run)
+        audit_row = conn.execute(
+            "SELECT * FROM audit_log WHERE entity='post' AND action='content_engine_v2_failed' "
+            "AND entity_id=? ORDER BY created_at DESC LIMIT 1", (res.get("post_id"),)).fetchone()
+        check("có audit content_engine_v2_failed", audit_row is not None, audit_row)
+    finally:
+        content_engine.compute_variants = original
+        system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    conn.close()
+
+
+def test_create_post_fact_check_failed_falls_back_to_v1_caption():
+    print("\n_create_post_from_raw_product() v2 trả FACT_CHECK_FAILED -> caption vẫn dùng v1, không crash")
+    from acp.core import system_settings, content_engine
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    original = content_engine.compute_variants
+
+    def failed_compute(*a, **kw):
+        return {"status": "FACT_CHECK_FAILED", "variants": [], "result": {"all_rejected": True, "candidates": []}, "captions": {}}
+
+    content_engine.compute_variants = failed_compute
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+        check("tạo bài vẫn thành công", res.get("ok"), res.get("error"))
+        check("caption không rỗng (rơi về v1)", bool(res.get("caption")), res.get("caption"))
+    finally:
+        content_engine.compute_variants = original
+        system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    conn.close()
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3884,6 +3983,10 @@ if __name__ == "__main__":
     test_compute_variants_ready_status_has_captions()
     test_persist_run_writes_one_run_and_three_variant_rows()
     test_recent_variants_scoped_by_channel_and_ordered()
+    test_create_post_flag_off_behaves_exactly_like_before()
+    test_create_post_flag_on_uses_v2_caption_and_persists_run()
+    test_create_post_v2_exception_falls_back_to_v1_without_crashing()
+    test_create_post_fact_check_failed_falls_back_to_v1_caption()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
