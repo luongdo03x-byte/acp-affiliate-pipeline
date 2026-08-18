@@ -156,13 +156,14 @@
 
     const result = await runner.performSingleSubmit({
       decision: { decision: 'AUTO_READY' },
+      expectedShiftId: assignment.shift_id,
       getStatus: async () => api(`/api/seeding/status?shift_id=${encodeURIComponent(assignment.shift_id)}`),
       submit: async () => submitControl.click(),
       verify: async () => waitForVerification(finalText, composer),
     });
 
     if (result === 'PAUSED') {
-      setPanel('PAUSED', '<div>Global pause đang bật. Không submit.</div>', 'danger');
+      setPanel('PAUSED', '<div>Global pause hoặc shift pause đang bật. Không submit.</div>', 'danger');
       return;
     }
     if (result === 'UNKNOWN') {
