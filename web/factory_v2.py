@@ -19,14 +19,16 @@ FACTORY_KEY_HEADER = "X-ACP-Factory-Key"
 _BATCH_FIELDS = (
     "id", "name", "target_count", "status", "created_at", "started_at",
     "completed_at", "paused_at", "desired_max_workers", "reminder_interval_minutes",
+    "completion_mode",
 )
 _ACCOUNT_FIELDS = (
     "id", "batch_id", "sequence", "group_no", "username", "display_name", "bio",
     "gender_profile", "primary_niche", "secondary_interest", "personality_style",
-    "content_tone", "avatar_type", "avatar_theme", "avatar_file", "stage",
-    "last_safe_stage", "execution_target", "assigned_worker_id", "current_job_id",
-    "threads_user_id", "channel_id", "channel_code", "retry_count", "last_error_code",
-    "last_error_message", "created_at", "updated_at", "completed_at",
+    "content_tone", "avatar_type", "avatar_theme", "avatar_file", "signup_contact_type",
+    "phone", "email", "birth_date", "stage", "last_safe_stage", "execution_target",
+    "assigned_worker_id", "current_job_id", "threads_user_id", "channel_id", "channel_code",
+    "retry_count", "last_error_code", "last_error_message", "created_at", "updated_at",
+    "completed_at",
 )
 _RUNNER_FIELDS = (
     "id", "runner_type", "device_id", "device_name", "avd_name", "state",
@@ -47,7 +49,10 @@ _HOST_FIELDS = (
 _ALLOWED_RUNNER_RESULT_KEYS = frozenset({
     "package", "activity", "waiting_human", "error_code", "prepared",
 })
-_ALLOWED_CREATE_ACCOUNT_FIELDS = frozenset({"execution_target", "batch_name"})
+_ALLOWED_CREATE_ACCOUNT_FIELDS = frozenset({
+    "execution_target", "batch_name", "completion_mode", "signup_contact_type",
+    "phone", "email", "birth_date", "avatar_file",
+})
 
 _WAITING_STAGES = {
     "WAITING_HUMAN", "NEEDS_VERIFICATION", "NEEDS_CONFIRMATION", "USERNAME_UNAVAILABLE",
@@ -230,6 +235,12 @@ def register_factory_v2_routes(app):
                 result = service.create_single_account(
                     execution_target=execution_target,
                     batch_name=batch_name,
+                    completion_mode=data.get("completion_mode") or "ACP_ACTIVE",
+                    signup_contact_type=data.get("signup_contact_type"),
+                    phone=data.get("phone"),
+                    email=data.get("email"),
+                    birth_date=data.get("birth_date"),
+                    avatar_file=data.get("avatar_file"),
                 )
             except KeyError:
                 return jsonify(ok=False, error="Runner không tồn tại"), 404
