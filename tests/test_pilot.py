@@ -3164,6 +3164,33 @@ def test_review_action_doi_hook_rejects_variant_from_other_post():
         os.environ.pop(var, None)
 
 
+def test_review_action_regenerate_exception_redirects_gracefully_not_500():
+    print("\nPOST /duyet/<id>/doi-hook khi content_engine raise -> redirect có lỗi, không phải 500, có audit")
+    from acp.core import content_engine
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        original = content_engine.regenerate_hook
+
+        def crashing_regenerate(conn, post_id, variant_id):
+            raise RuntimeError("giả lập lỗi LLM")
+
+        content_engine.regenerate_hook = crashing_regenerate
+        try:
+            resp = c.post(f"/duyet/{post_id}/doi-hook", data={"variant_id": variant["id"], "_csrf": csrf})
+            check("không phải 500", resp.status_code != 500, resp.status_code)
+            check("redirect thường (302)", resp.status_code == 302, resp.status_code)
+            conn = connect()
+            audit_row = conn.execute(
+                "SELECT * FROM audit_log WHERE entity='content_variant_row' AND entity_id=? "
+                "AND action='doi-hook_failed' ORDER BY created_at DESC LIMIT 1", (variant["id"],)).fetchone()
+            conn.close()
+            check("có audit doi-hook_failed", audit_row is not None, audit_row)
+        finally:
+            content_engine.regenerate_hook = original
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card():
     print("\nGET /duyet KHÔNG render variant bị loại vì fact-unsafe (3 cột điểm NULL) thành card chọn được")
     from acp.core import system_settings, content_variant as _cv
@@ -3348,6 +3375,7 @@ if __name__ == "__main__":
     test_review_action_invalid_action_still_404()
     test_review_action_doi_hook_missing_variant_id_errors_gracefully()
     test_review_action_doi_hook_rejects_variant_from_other_post()
+    test_review_action_regenerate_exception_redirects_gracefully_not_500()
     test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card()
     test_duyet_still_renders_when_content_variant_lookup_fails()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")

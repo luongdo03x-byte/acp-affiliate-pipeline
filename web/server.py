@@ -892,12 +892,17 @@ def create_app():
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
         elif action in ("doi-hook", "lam-lai", "doi-angle"):
             variant_id = request.form.get("variant_id")
-            if action == "doi-hook":
-                res = content_engine.regenerate_hook(conn, post_id, variant_id)
-            elif action == "lam-lai":
-                res = content_engine.regenerate_variant(conn, post_id, variant_id)
-            else:
-                res = content_engine.switch_angle(conn, post_id, variant_id)
+            try:
+                if action == "doi-hook":
+                    res = content_engine.regenerate_hook(conn, post_id, variant_id)
+                elif action == "lam-lai":
+                    res = content_engine.regenerate_variant(conn, post_id, variant_id)
+                else:
+                    res = content_engine.switch_angle(conn, post_id, variant_id)
+            except Exception as exc:
+                res = {"ok": False, "error": "Không tạo được nội dung mới, thử lại sau"}
+                pipeline.audit(conn, "content_variant_row", variant_id or post_id, f"{action}_failed",
+                               actor="system", detail={"error": str(exc)})
         else:
             conn.close()
             abort(404)
