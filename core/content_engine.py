@@ -18,21 +18,30 @@ def _row_to_variant(row) -> content_variant.ContentVariant:
         body=json.loads(row["body_json"]), cta=row["cta"], structure=row["structure"])
 
 
-def _recent_variants(conn, channel_id: str, limit: int = 5, exclude_variant_id: str = None) -> list:
+def _recent_variants(conn, channel_id: str, limit: int = 5, exclude_run_id: str = None) -> list:
     """N variant BEST gần nhất đã dùng cho cùng channel_id -- input cho
     Anti-Repetition (E4). post.channel_id là kênh chính (D1).
-    exclude_variant_id: loại chính variant đang được chấm lại ra khỏi tập
-    so sánh (G3) -- tránh so 1 variant với chính nó sau regenerate, gây
-    repetition_penalty giả tạo (variant đã từng is_best=1 sẽ tự khớp
-    chính nó nếu không loại trừ)."""
+
+    exclude_run_id: loại TOÀN BỘ variant của 1 run ra khỏi tập so sánh
+    (G3, mức run chứ không phải mức variant). Lý do phải là mức run: 3
+    variant trong cùng 1 run đều được sinh từ CÙNG một ProductFacts nên
+    tự nhiên gần giống nhau -- so 1 variant với anh em cùng run của nó
+    không phải tín hiệu "lặp nội dung" thật, chỉ là penalty giả tạo. Chỉ
+    loại đúng 1 dòng đang chấm lại là chưa đủ: khi operator regenerate
+    variant KHÔNG phải best (label B/C -- trường hợp phổ biến vì thường
+    giữ lại bản ★ và làm lại các bản thay thế), anh em is_best=1 cùng run
+    vẫn lọt vào tập so sánh vì nó là dòng khác. Lúc tạo bài không có vấn
+    đề này (compute_variants() chạy TRƯỚC persist_run(), variant của
+    chính bài chưa tồn tại trong bảng); chỉ khi chấm lại sau regenerate
+    (dòng đã nằm sẵn trong bảng) mới phát sinh."""
     rows = conn.execute("""
         SELECT cv.* FROM content_variant_row cv
         JOIN content_generation_run cgr ON cv.run_id = cgr.id
         JOIN post p ON cgr.post_id = p.id
         WHERE p.channel_id = ? AND cv.is_best = 1
-              AND (? IS NULL OR cv.id != ?)
+              AND (? IS NULL OR cv.run_id != ?)
         ORDER BY cv.created_at DESC LIMIT ?
-    """, (channel_id, exclude_variant_id, exclude_variant_id, limit)).fetchall()
+    """, (channel_id, exclude_run_id, exclude_run_id, limit)).fetchall()
     return [_row_to_variant(r) for r in rows]
 
 
@@ -108,8 +117,12 @@ def _rescore_variant(conn, variant_id: str, channel_id: str) -> None:
     cột điểm về NULL + is_best=0, đúng tín hiệu "ẩn khỏi /duyet" đã có từ
     E6's final fix wave (web/server.py::review() bỏ qua variant có
     scores NULL). Không raise -- lỗi LLM đã được score_variant_hybrid()
-    tự xử lý nội bộ (retry + fallback rule_score)."""
+    tự xử lý nội bộ (retry + fallback rule_score); variant_id không tra
+    ra dòng nào thì no-op luôn thay vì để _row_to_variant(None) ném
+    TypeError (giữ đúng cam kết "không raise" của hàm này)."""
     row = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant_id,)).fetchone()
+    if not row:
+        return
     variant_obj = _row_to_variant(row)
     hybrid = content_scoring.score_variant_hybrid(variant_obj)
     if not hybrid["rules"].fact_safety_pass:
@@ -118,7 +131,10 @@ def _rescore_variant(conn, variant_id: str, channel_id: str) -> None:
         audit(conn, "content_variant_row", variant_id, "rescore_unsafe", actor="system",
               detail={"violations": hybrid["rules"].violations})
         return
-    recent = _recent_variants(conn, channel_id, exclude_variant_id=variant_id)
+    # Loại cả run của chính variant này, không chỉ mỗi dòng đang chấm --
+    # anh em cùng run sinh từ cùng ProductFacts nên gần giống nhau sẵn,
+    # so với chúng chỉ tạo repetition_penalty giả (xem _recent_variants()).
+    recent = _recent_variants(conn, channel_id, exclude_run_id=row["run_id"])
     penalty = content_scoring.repetition_penalty(variant_obj, recent)
     final_score = max(0.0, round(hybrid["hybrid_score"] - penalty, 4))
     conn.execute("""UPDATE content_variant_row SET rule_score=?, hybrid_score=?, final_score=?,

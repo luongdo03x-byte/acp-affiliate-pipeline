@@ -1583,14 +1583,43 @@ def test_rescore_variant_after_regenerate_produces_real_scores():
 
 
 def test_rescore_variant_excludes_self_from_repetition_check():
-    print("\n_recent_variants(exclude_variant_id=...) không tự so variant với chính nó -- final_score = hybrid_score")
+    print("\n_recent_variants(exclude_run_id=...) không tự so variant với chính nó -- final_score = hybrid_score")
     from acp.core import content_engine
     conn, post_id, variant, ch_id = _mk_regen_fixture()
+    # _mk_regen_fixture() trả variant label A -- thường cũng là dòng is_best=1
+    # (select_best_variant() phá hoà bằng cách lấy ứng viên đầu tiên).
     res = content_engine.regenerate_hook(conn, post_id, variant["id"])
     check("regenerate_hook thành công", res.get("ok") is True, res)
     after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
     check("final_score bằng hybrid_score (không bị tự trừ penalty vì so với chính mình)",
           after["final_score"] == after["hybrid_score"], (after["final_score"], after["hybrid_score"]))
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_rescore_variant_excludes_own_run_not_just_self():
+    print("\n_rescore_variant() regenerate variant KHÔNG phải best -> vẫn không bị penalty vì anh em cùng run")
+    from acp.core import content_engine
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    run_id = variant["run_id"]
+    # Trường hợp thật sự của bug I-1: operator thường giữ bản ★ (is_best=1)
+    # và làm lại các bản thay thế. Loại trừ mức variant là chưa đủ -- anh em
+    # is_best=1 CÙNG RUN vẫn lọt vào tập so sánh, mà 3 variant trong 1 run
+    # sinh từ cùng ProductFacts nên gần giống nhau sẵn -> repetition_penalty
+    # giả tạo kéo final_score tụt thẳng dù nội dung không có lỗi gì.
+    non_best = conn.execute(
+        "SELECT * FROM content_variant_row WHERE run_id=? AND is_best=0 LIMIT 1", (run_id,)).fetchone()
+    check("fixture có ít nhất 1 variant không phải best", non_best is not None, non_best)
+    best = conn.execute(
+        "SELECT * FROM content_variant_row WHERE run_id=? AND is_best=1 LIMIT 1", (run_id,)).fetchone()
+    check("fixture có 1 variant is_best=1 cùng run (chính là dòng gây penalty giả)",
+          best is not None and (non_best is None or best["id"] != non_best["id"]), best)
+    if non_best is not None:
+        res = content_engine.regenerate_hook(conn, post_id, non_best["id"])
+        check("regenerate_hook trên variant không phải best thành công", res.get("ok") is True, res)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (non_best["id"],)).fetchone()
+        check("có điểm thực (không NULL)", after["final_score"] is not None, after["final_score"])
+        check("final_score bằng hybrid_score (KHÔNG bị trừ penalty vì anh em cùng run)",
+              after["final_score"] == after["hybrid_score"], (after["final_score"], after["hybrid_score"]))
     _cleanup_regen_fixture(conn, post_id, ch_id)
 
 
@@ -4451,6 +4480,7 @@ if __name__ == "__main__":
     test_regenerate_hook_rejects_missing_or_wrong_post_variant()
     test_rescore_variant_after_regenerate_produces_real_scores()
     test_rescore_variant_excludes_self_from_repetition_check()
+    test_rescore_variant_excludes_own_run_not_just_self()
     test_rescore_variant_unsafe_content_nulls_scores_and_audits()
     test_switch_angle_exhausted_candidates_returns_error_not_crash()
     test_regenerate_hook_lookup_failure_does_not_write_audit()
