@@ -76,7 +76,14 @@ class AvdManager:
         if port < 5554 or port > 5680 or port % 2:
             raise ValueError("emulator port must be an even port between 5554 and 5680")
         return self._popen(
-            [self.emulator, "-avd", avd_name, "-port", str(port)],
+            [
+                self.emulator,
+                "-avd", avd_name,
+                "-port", str(port),
+                "-gpu", "swiftshader",
+                "-feature", "-Vulkan",
+                "-no-snapshot",
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
