@@ -131,6 +131,10 @@ secrets_blob_path() {
 }
 
 cmd_encrypt_secrets() {
+    # Mã hoá shared/.env.local (secret thật) thành 1 file nhị phân AN TOÀN
+    # ĐỂ COMMIT vào git -- không bao giờ commit .env.local dạng chữ thường.
+    # Passphrase KHÔNG được truyền qua đối số/biến môi trường (sẽ lộ qua
+    # history shell/ps); gpg tự hỏi qua pinentry.
     require_cmd gpg
     local release
     release="$(current_release)"
@@ -151,6 +155,10 @@ cmd_encrypt_secrets() {
 }
 
 cmd_setup() {
+    # Bootstrap một lần trên máy mới, chạy từ bên trong release vừa clone
+    # (releases/<version>/acp/manage.sh setup), TRƯỚC KHI $ACTIVE tồn tại --
+    # nên không dùng current_release() ở đây, mà lấy release từ chính vị
+    # trí của script này.
     require_cmd python3
     local release
     release="$(dirname "$SCRIPT_REAL")"
@@ -159,6 +167,8 @@ cmd_setup() {
 
     mkdir -p "$SHARED/var"
 
+    # venv trước, vì bước sinh ACP_MASTER_KEY bên dưới cần `run.py genkey`
+    # chạy được (cần gói cryptography đã cài).
     if [[ -x "$release/.venv/bin/python" ]]; then
         info "Đã có virtualenv -- bỏ qua cài đặt."
     else
@@ -166,6 +176,8 @@ cmd_setup() {
         info "Đã tạo virtualenv + cài dependencies."
     fi
 
+    # Không bao giờ ghi đè .env.local đã có -- có thể là bản đã copy
+    # nguyên từ máy cũ (kèm token/khoá thật) để giữ nguyên kết nối Threads.
     local secrets_blob
     secrets_blob="$(secrets_blob_path "$release")"
     if [[ -f "$SHARED/.env.local" ]]; then
@@ -188,6 +200,7 @@ cmd_setup() {
         local db_path="$SHARED/var/acp.db"
         local master_key
         master_key="$("$release/.venv/bin/python" "$release/run.py" genkey)"
+        # portable sed -i: dùng file tạm thay vì -i '' (khác nhau giữa GNU/BSD sed).
         local tmp_env="$SHARED/.env.local.tmp"
         sed -e "s#^ACP_DB=\$#ACP_DB=$db_path#" \
             -e "s#^ACP_MASTER_KEY=\$#ACP_MASTER_KEY=$master_key#" \
@@ -204,6 +217,8 @@ cmd_setup() {
     [[ -L "$release/.env.local" || -f "$release/.env.local" ]] || ln -s "$SHARED/.env.local" "$release/.env.local"
     [[ -L "$release/var" || -d "$release/var" ]] || ln -s "$SHARED/var" "$release/var"
 
+    # Chỉ tạo schema, không seed dữ liệu demo -- an toàn kể cả khi
+    # shared/var đã có DB được copy/restore từ máy khác.
     migrate_release "$release"
     info "Đã đảm bảo schema CSDL."
 
