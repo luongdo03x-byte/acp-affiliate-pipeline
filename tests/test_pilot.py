@@ -3260,6 +3260,41 @@ def test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card():
         os.environ.pop(var, None)
 
 
+def test_duyet_hides_variant_after_regenerate_produces_unsafe_content():
+    print("\nGET /duyet ẩn variant sau khi REGENERATE sinh ra nội dung fact-unsafe (không chỉ lúc tạo bài)")
+    from acp.core import content_variant as _cv
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        conn = connect()
+        before = c.get("/duyet").get_data(as_text=True)
+        check("trước khi làm lại, variant có hiện trên /duyet", variant["id"] in before, variant["id"])
+
+        def unsafe_gen(prompt):
+            # Bịa trải nghiệm cá nhân -> check_fact_safety() chặn ->
+            # _rescore_variant() (G3) set cả 3 cột điểm NULL + is_best=0.
+            return json.dumps({"main_message": "Mình đã dùng 2 tuần rồi, thấy rất ổn.",
+                               "body": []}, ensure_ascii=False)
+
+        _cv.set_body_generator(unsafe_gen)
+        try:
+            resp = c.post(f"/duyet/{post_id}/lam-lai",
+                          data={"variant_id": variant["id"], "_csrf": csrf})
+            check("không phải 500", resp.status_code != 500, resp.status_code)
+            check("redirect thường (302)", resp.status_code == 302, resp.status_code)
+        finally:
+            _cv.set_body_generator(None)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        check("3 cột điểm về NULL sau khi chấm lại",
+              after["rule_score"] is None and after["hybrid_score"] is None and after["final_score"] is None,
+              (after["rule_score"], after["hybrid_score"], after["final_score"]))
+        body = c.get("/duyet").get_data(as_text=True)
+        check("variant fact-unsafe sau regenerate KHÔNG còn hiện trên /duyet",
+              variant["id"] not in body, variant["id"])
+        conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_duyet_still_renders_when_content_variant_lookup_fails():
     print("\nGET /duyet vẫn 200 khi phần đọc variant của Content Engine v2 lỗi (bảng chưa migrate) -- không 500")
     from acp.core import system_settings, content_platform as _cp
@@ -3377,6 +3412,7 @@ if __name__ == "__main__":
     test_review_action_doi_hook_rejects_variant_from_other_post()
     test_review_action_regenerate_exception_redirects_gracefully_not_500()
     test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card()
+    test_duyet_hides_variant_after_regenerate_produces_unsafe_content()
     test_duyet_still_renders_when_content_variant_lookup_fails()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
