@@ -54,12 +54,18 @@ def _json_body() -> dict:
     return value
 
 
+def _find_shift(conn, shift_id):
+    if not shift_id:
+        return None
+    return conn.execute(
+        "SELECT * FROM seeding_shift WHERE id=?", (str(shift_id),)
+    ).fetchone()
+
+
 def _find_active_shift(conn, shift_id=None):
     if shift_id:
-        return conn.execute(
-            "SELECT * FROM seeding_shift WHERE id=? AND status='ACTIVE'",
-            (str(shift_id),),
-        ).fetchone()
+        row = _find_shift(conn, shift_id)
+        return row if row is not None and row["status"] == "ACTIVE" else None
     return conn.execute(
         "SELECT * FROM seeding_shift WHERE status='ACTIVE' ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
@@ -356,13 +362,18 @@ def _record_api_result(*, force_reviewed=False):
     _require_extension_token()
     body = _json_body()
     target_id = str(body.get("target_id") or "").strip()
-    if not target_id:
-        abort(400, "target_id là bắt buộc")
+    shift_id = str(body.get("shift_id") or "").strip()
+    if not target_id or not shift_id:
+        abort(400, "target_id và shift_id là bắt buộc")
     conn = connect()
     try:
-        shift = _find_active_shift(conn, body.get("shift_id"))
+        # A result describes an action that may already have happened in the
+        # browser. Record it against the exact shift even if the operator
+        # paused/ended that shift immediately after the click. Queue/analyze
+        # endpoints still require ACTIVE through _find_active_shift().
+        shift = _find_shift(conn, shift_id)
         if shift is None:
-            return jsonify(ok=False, error="no_active_shift"), 409
+            return jsonify(ok=False, error="shift_not_found"), 409
         mode = "reviewed" if force_reviewed else str(body.get("mode") or "").strip()
         summary = seeding.record_result(
             conn,
