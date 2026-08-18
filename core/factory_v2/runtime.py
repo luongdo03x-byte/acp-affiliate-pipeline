@@ -72,6 +72,22 @@ class FactoryControllerRuntime:
     def _is_remote(self, job) -> bool:
         return self._runner_type(job) == RunnerType.REMOTE_AVD.value
 
+    def _completion_mode(self, account) -> str:
+        batch = self.repo.get_batch(account["batch_id"])
+        if batch is None:
+            return "ACP_ACTIVE"
+        return str(batch.get("completion_mode") or "ACP_ACTIVE").strip().upper()
+
+    def _complete_social_only_job(self, job, account) -> None:
+        timestamp = now()
+        self.repo.conn.execute(
+            """UPDATE factory_account
+               SET completed_at=COALESCE(completed_at, ?), updated_at=?
+               WHERE id=?""",
+            (timestamp, timestamp, account["id"]),
+        )
+        self.scheduler.release_job_in_transaction(job["id"], "COMPLETED")
+
     @staticmethod
     def _profile_payload(account) -> dict:
         profile = {
@@ -302,6 +318,12 @@ class FactoryControllerRuntime:
             elif current["stage"] != AccountStage.THREADS_CREATED.value:
                 raise ValueError(f"cannot complete Threads from {current['stage']}")
             self._resolve_remote_checkpoint(account["id"], "POSTCHECK_OK")
+
+            refreshed = self.repo.get_account(account["id"])
+            if self._completion_mode(refreshed) == "SOCIAL_ONLY":
+                self._complete_social_only_job(job, refreshed)
+                return
+
             self._set_remote_running(job, "START_ACP")
 
         refreshed_row = self.repo.conn.execute(
@@ -584,6 +606,12 @@ class FactoryControllerRuntime:
         self.repo.resolve_checkpoint(
             checkpoint["id"], resolved_at=now(), resolution="POSTCHECK_OK"
         )
+        refreshed_account = self.repo.get_account(account["id"])
+        if self._completion_mode(refreshed_account) == "SOCIAL_ONLY":
+            with transaction(self.repo.conn):
+                self._complete_social_only_job(job, refreshed_account)
+            return
+
         self.repo.conn.execute(
             """UPDATE factory_job
                SET state='RUNNING', desired_action='START_ACP', command_id=?, heartbeat_at=?
@@ -597,7 +625,7 @@ class FactoryControllerRuntime:
         refreshed_job = dict(self.repo.conn.execute(
             "SELECT * FROM factory_job WHERE id=?", (job["id"],)
         ).fetchone())
-        self._start_activation(refreshed_job, self.repo.get_account(account["id"]))
+        self._start_activation(refreshed_job, refreshed_account)
 
     def _drive_job(self, job) -> None:
         account = self.repo.get_account(job["account_id"])
@@ -632,7 +660,14 @@ class FactoryControllerRuntime:
             else:
                 self._verify_checkpoint(job, account)
         elif action == "START_ACP":
-            self._start_activation(job, account)
+            if self._completion_mode(account) == "SOCIAL_ONLY":
+                if account["stage"] == AccountStage.THREADS_CREATED.value:
+                    with transaction(self.repo.conn):
+                        self._complete_social_only_job(job, account)
+                else:
+                    raise ValueError("SOCIAL_ONLY activation requested before Threads completion")
+            else:
+                self._start_activation(job, account)
         elif action == "WAIT_ACP":
             self._reconcile_activation(job, account)
 
@@ -698,43 +733,3 @@ class FactoryControllerRuntime:
                 except Exception as exc:
                     _LOG.warning("Factory controller tick failed (%s)", type(exc).__name__)
                 stop_event.wait(interval_seconds)
-        finally:
-            self.close()
-
-
-def build_default_runtime():
-    """Construct the local controller runtime in the thread that will own SQLite."""
-    from core.db import connect
-
-    from .avd import AvdManager
-    from .host_metrics import HostMetricsSampler
-    from .repository import FactoryRepository
-    from .scheduler import Scheduler
-    from .schema import ensure_schema
-    from .service import FactoryService
-    from .supervisor import WorkerSupervisor
-    from .worker_process import WorkerProcessManager
-
-    conn = connect()
-    ensure_schema(conn)
-    repo = FactoryRepository(conn)
-    service = FactoryService(repo)
-    worker_processes = WorkerProcessManager()
-    avd = AvdManager()
-    metrics = HostMetricsSampler()
-    scheduler = Scheduler(repo, service)
-    supervisor = WorkerSupervisor(
-        repo,
-        avd,
-        metrics,
-        worker_processes=worker_processes,
-    )
-    supervisor.reconcile_on_boot()
-    return FactoryControllerRuntime(
-        repo,
-        service,
-        scheduler,
-        supervisor,
-        worker_processes,
-        owned_connection=conn,
-    )
