@@ -58,6 +58,30 @@ class FakeWorkerProcesses:
         }
 
     def request(self, worker_id, command):
+        if command.action == "PREPARE_INSTAGRAM":
+            return {
+                "ok": True,
+                "status": "completed",
+                "result": {"screen": "IG_SIGNUP_ENTRY"},
+            }
+        if command.action == "AUTOMATE_INSTAGRAM":
+            return {
+                "ok": True,
+                "status": "waiting_human",
+                "result": {
+                    "screen": "OTP_REQUIRED",
+                    "reason": "HUMAN_VERIFICATION_REQUIRED",
+                },
+            }
+        if command.action == "OBSERVE_CHECKPOINT":
+            return {
+                "ok": True,
+                "status": "completed",
+                "result": {
+                    "screen": "IG_HOME",
+                    "last_safe_step": "IG_HOME",
+                },
+            }
         if command.action == "OBSERVE_FOREGROUND":
             return {"ok": True, "package": self.foreground_package}
         if command.action == "REPORT_WAITING_HUMAN":
