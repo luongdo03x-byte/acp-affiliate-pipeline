@@ -39,7 +39,9 @@ MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # mang session cookie của người vận hành -- nó tự bảo vệ bằng token một lần
 # dùng + chỉ nhận request từ loopback (xem core/helper_pairing.py và route
 # helper_submit() bên dưới), không phải bằng đăng nhập.
-PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz", "/api/helper/")
+# /api/seeding/ tương tự: Chrome extension không mang dashboard session nhưng
+# mọi endpoint tự bắt buộc ACP_SEEDING_EXTENSION_TOKEN trong Blueprint riêng.
+PUBLIC_PREFIXES = ("/media/", "/webhook/", "/oauth/", "/dangnhap", "/static/", "/healthz", "/api/helper/", "/api/seeding/")
 
 
 class ProductUserError(Exception):
@@ -1099,5 +1101,8 @@ def create_app():
         f = attribution.funnel(conn)
         conn.close()
         return jsonify(f)
+
+    from .seeding_routes import register_seeding
+    register_seeding(app)
 
     return app
