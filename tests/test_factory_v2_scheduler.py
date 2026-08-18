@@ -25,6 +25,23 @@ class FactoryV2SchedulerTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
+    def _seed_threads_retry(self, completion_mode):
+        self.conn.execute(
+            "UPDATE factory_batch SET status='PAUSED' WHERE id=?", (self.batch["id"],)
+        )
+        batch = self.service.create_batch(
+            f"{completion_mode} retry", count=1, seed=11, completion_mode=completion_mode
+        )
+        account = self.repo.list_accounts(batch["id"])[0]
+        self.conn.execute(
+            """UPDATE factory_account
+               SET stage='RETRY_PENDING', last_safe_stage='THREADS_CREATED',
+                   last_error_code=NULL, last_error_message=NULL
+               WHERE id=?""",
+            (account["id"],),
+        )
+        return self.repo.get_account(account["id"])
+
     def test_two_workers_cannot_receive_same_account(self):
         first = self.scheduler.assign_next("worker-01")
         second = self.scheduler.assign_next("worker-02")
@@ -33,6 +50,24 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         self.assertNotEqual(first["account_id"], second["account_id"])
         active = self.repo.get_active_job_for_account(first["account_id"])
         self.assertEqual("worker-01", active["worker_id"])
+
+    def test_social_only_threads_created_retry_does_not_enqueue_start_acp(self):
+        account = self._seed_threads_retry("SOCIAL_ONLY")
+
+        assigned = self.scheduler.assign_next("worker-01")
+
+        self.assertIsNone(assigned)
+        self.assertIsNone(self.repo.get_active_job_for_account(account["id"]))
+        self.assertEqual("READY", self.repo.get_worker("worker-01")["state"])
+
+    def test_acp_active_threads_created_retry_keeps_start_acp_resume(self):
+        account = self._seed_threads_retry("ACP_ACTIVE")
+
+        assigned = self.scheduler.assign_next("worker-01")
+
+        self.assertIsNotNone(assigned)
+        self.assertEqual(account["id"], assigned["account_id"])
+        self.assertEqual("START_ACP", assigned["desired_action"])
 
     def test_expired_lease_with_live_heartbeat_enters_reconciliation(self):
         assigned = self.scheduler.assign_next("worker-01")
