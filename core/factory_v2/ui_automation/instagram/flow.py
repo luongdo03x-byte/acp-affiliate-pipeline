@@ -3,20 +3,45 @@ from __future__ import annotations
 
 from ..flow_result import FlowResult
 from .screens import PACKAGE
-from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, SIGN_UP, USERNAME_INPUT
+from .selectors import (
+    BIO_INPUT,
+    CONTINUE,
+    DISPLAY_NAME_INPUT,
+    SIGN_UP,
+    SIGNUP_CONTACT_INPUT,
+    USERNAME_INPUT,
+)
 
 _SUCCESS = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK"})
 _IG_PROTECTED = (
-    "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
-    "EMAIL_OR_PHONE_VERIFICATION", "SELFIE_OR_IDENTITY_CHECK",
-    "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY", "CONSENT_WITH_SECURITY_IMPACT",
+    "PASSWORD_REQUIRED",
+    "OTP_REQUIRED",
+    "CAPTCHA_REQUIRED",
+    "IG_FINAL_SIGNUP_SUBMIT",
+    "EMAIL_OR_PHONE_VERIFICATION",
+    "SELFIE_OR_IDENTITY_CHECK",
+    "SECURITY_CHALLENGE",
+    "ACCOUNT_RECOVERY",
+    "CONSENT_WITH_SECURITY_IMPACT",
 )
 _IG_ERRORS = (
-    "NETWORK_ERROR", "RATE_LIMITED", "ACTION_BLOCKED", "ACCOUNT_DISABLED", "APP_CRASH",
+    "NETWORK_ERROR",
+    "RATE_LIMITED",
+    "ACTION_BLOCKED",
+    "ACCOUNT_DISABLED",
+    "APP_CRASH",
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
-    "IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK",
+    "IG_CONTACT_ENTRY",
+    "IG_PROFILE_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
+_AFTER_CONTACT = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_PROFILE_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
 )
 _AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + ("IG_HOME", "IG_POSTCHECK_OK")
 
@@ -72,10 +97,11 @@ class InstagramFlow:
             self.driver.open_package(PACKAGE)
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
         if detected.kind == "IG_SIGNUP_ENTRY":
-            selector = SIGN_UP if self.driver.find(SIGN_UP) is not None else CONTINUE
+            if self.driver.find(SIGN_UP) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             action = self._attempt(
                 lambda: self.driver.tap(
-                    selector,
+                    SIGN_UP,
                     expected_screens=_AFTER_SIGNUP,
                     timeout=8.0,
                 )
@@ -83,6 +109,31 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_SIGNUP_ENTRY")
+        if detected.kind == "IG_CONTACT_ENTRY":
+            contact = str(profile.get("signup_contact") or "").strip()
+            if not contact:
+                return FlowResult(
+                    "needs_confirmation",
+                    detected.kind,
+                    "MISSING_SIGNUP_CONTACT",
+                )
+            if self.driver.find(SIGNUP_CONTACT_INPUT) is None or self.driver.find(CONTINUE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.set_text(SIGNUP_CONTACT_INPUT, contact)
+            )
+            if action.status not in {"completed", "noop"}:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    CONTINUE,
+                    expected_screens=_AFTER_CONTACT,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_CONTACT_ENTRY")
         if detected.kind == "IG_PROFILE_SETUP":
             approved = (
                 (USERNAME_INPUT, str(profile.get("username") or "")),
