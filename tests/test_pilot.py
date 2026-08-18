@@ -211,6 +211,14 @@ def test_factory():
     check("get_caption_llm() trả về llm_gemini.rewrite khi bật",
           llm is not None and llm.__name__ == "rewrite")
     os.environ.pop("ACP_CAPTION_LLM", None)
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+    check("get_content_engine_llm() tắt mặc định (không set ACP_CONTENT_ENGINE_LLM)",
+          factory.get_content_engine_llm() is None)
+    os.environ["ACP_CONTENT_ENGINE_LLM"] = "gemini"
+    llm2 = factory.get_content_engine_llm()
+    check("get_content_engine_llm() trả về llm_gemini.rewrite_json khi bật",
+          llm2 is not None and llm2.__name__ == "rewrite_json")
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
 
 
 def test_mock_meta_connection_service():
