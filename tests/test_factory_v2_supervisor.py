@@ -4,6 +4,7 @@ import unittest
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.resource_policy import HostSample
 from core.factory_v2.schema import ensure_schema
+from core.factory_v2.service import FactoryService
 from core.factory_v2.supervisor import WorkerSupervisor
 from core.factory_v2.worker_protocol import CommandLedger
 
@@ -94,6 +95,7 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         self.conn.execute("PRAGMA foreign_keys = ON")
         ensure_schema(self.conn)
         self.repo = FactoryRepository(self.conn)
+        self.service = FactoryService(self.repo)
         self.avd = FakeAvd()
         self.worker_processes = FakeWorkerProcesses()
 
@@ -109,6 +111,11 @@ class FactoryV2SupervisorTests(unittest.TestCase):
             stability_seconds=0,
         )
 
+    def _seed_social_only_batch(self):
+        return self.service.create_batch(
+            "Social-only pilot", count=1, seed=31, completion_mode="SOCIAL_ONLY"
+        )
+
     def test_missing_heartbeat_moves_worker_to_recovering_not_ready(self):
         self.repo.insert_worker({
             "id": "worker-03", "avd_name": "acp-worker-03", "state": "RUNNING",
@@ -119,6 +126,41 @@ class FactoryV2SupervisorTests(unittest.TestCase):
         worker = self.repo.get_worker("worker-03")
         self.assertEqual("RECOVERING", worker["state"])
         self.assertEqual("a17", worker["current_account_id"])
+
+    def test_social_only_pilot_does_not_start_second_avd_while_one_is_active(self):
+        self._seed_social_only_batch()
+        self.repo.insert_worker({
+            "id": "active",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "RUNNING",
+            "current_account_id": "account-1",
+            "current_job_id": "job-1",
+        })
+
+        decision = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1)).tick()
+
+        self.assertEqual("HOLD", decision.action)
+        self.assertEqual(1, decision.target_workers)
+        self.assertEqual([], self.avd.started)
+
+    def test_social_only_pilot_does_not_start_second_avd_while_waiting_human(self):
+        self._seed_social_only_batch()
+        self.repo.insert_worker({
+            "id": "human",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "WAITING_HUMAN",
+            "current_account_id": "account-1",
+            "current_job_id": "job-1",
+        })
+
+        decision = self._supervisor(HostSample(40, 8192, 0, 0, 1, 1)).tick()
+
+        self.assertEqual("HOLD", decision.action)
+        self.assertEqual(1, decision.target_workers)
+        self.assertEqual([], self.avd.started)
+        self.assertEqual("WAITING_HUMAN", self.repo.get_worker("human")["state"])
 
     def test_red_drains_ready_worker_before_waiting_human(self):
         self.repo.insert_worker({"id": "ready", "avd_name": "acp-worker-01", "adb_serial": "emulator-5554", "state": "READY"})
