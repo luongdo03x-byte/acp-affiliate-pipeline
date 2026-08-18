@@ -20,6 +20,15 @@ class FakeWorkerProcesses:
 
     def request(self, worker_id, command):
         self.actions.append(command.action)
+        if command.action == "AUTOMATE_THREADS":
+            return {
+                "ok": True,
+                "status": "waiting_human",
+                "result": {
+                    "screen": "SECURITY_CHALLENGE",
+                    "reason": "HUMAN_VERIFICATION_REQUIRED",
+                },
+            }
         if command.action == "REPORT_WAITING_HUMAN":
             return {"ok": True, "heartbeat": {"worker_id": worker_id, "state": "WAITING_HUMAN"}}
         return {"ok": True}
@@ -74,7 +83,7 @@ class FactoryV2RuntimeResumeTests(unittest.TestCase):
         self.assertEqual("IG_CREATED", updated["last_safe_stage"])
         self.assertEqual("THREADS_POSTCHECK", checkpoints[-1]["type"])
         self.assertEqual(
-            ["PREPARE_TEXT", "OPEN_PACKAGE", "REPORT_WAITING_HUMAN"],
+            ["AUTOMATE_THREADS"],
             self.worker_processes.actions,
         )
 
