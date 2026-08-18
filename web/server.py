@@ -25,7 +25,7 @@ from ..adapters.shopee_affiliate import (
 )
 from ..core import attribution, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
-from ..core import content_checker, content_platform, content_variant
+from ..core import content_angle, content_checker, content_facts, content_hook, content_platform, content_variant
 from ..core.db import connect, now
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
@@ -554,6 +554,47 @@ def create_app():
                                             caption_overrides=caption_overrides or None)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
+        elif action in ("doi-hook", "lam-lai", "doi-angle"):
+            variant_id = request.form.get("variant_id")
+            variant_row = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant_id,)).fetchone() if variant_id else None
+            if not variant_row:
+                res = {"ok": False, "error": "Thiếu hoặc không tìm thấy variant"}
+            else:
+                run = conn.execute("SELECT * FROM content_generation_run WHERE id=?", (variant_row["run_id"],)).fetchone()
+                post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
+                product = conn.execute("SELECT * FROM product WHERE id=?", (post["product_id"],)).fetchone() if post else None
+                if not (run and run["status"] == "READY" and product):
+                    res = {"ok": False, "error": "Bài này không ở trạng thái có thể regenerate"}
+                else:
+                    facts = content_facts.build_product_facts(conn, product)
+                    if action == "doi-hook":
+                        hook_result = content_hook.select_best_hook(variant_row["angle"], facts)
+                        conn.execute("UPDATE content_variant_row SET hook=?, updated_at=? WHERE id=?",
+                                     (hook_result["hook"], now(), variant_id))
+                        res = {"ok": True}
+                    elif action == "lam-lai":
+                        new_variant = content_variant.generate_variant(variant_row["angle"], facts)
+                        conn.execute("""UPDATE content_variant_row SET hook=?, main_message=?, body_json=?, cta=?,
+                                        updated_at=? WHERE id=?""",
+                                     (new_variant.hook, new_variant.main_message,
+                                      json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta, now(), variant_id))
+                        res = {"ok": True}
+                    else:  # doi-angle
+                        candidates = content_angle.select_angle_candidates(product)
+                        used_angles = {r["angle"] for r in conn.execute(
+                            "SELECT angle FROM content_variant_row WHERE run_id=?", (run["id"],)).fetchall()}
+                        next_angle = next((a for a in candidates if a not in used_angles), None)
+                        if not next_angle:
+                            res = {"ok": False, "error": "Không còn angle nào khác để đổi"}
+                        else:
+                            new_variant = content_variant.generate_variant(next_angle, facts)
+                            conn.execute("""UPDATE content_variant_row SET angle=?, hook=?, main_message=?,
+                                            body_json=?, cta=?, structure=?, updated_at=? WHERE id=?""",
+                                         (new_variant.angle, new_variant.hook, new_variant.main_message,
+                                          json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta,
+                                          new_variant.structure, now(), variant_id))
+                            res = {"ok": True}
+                    pipeline.audit(conn, "content_variant_row", variant_id, action, actor="operator", detail=res)
         else:
             conn.close()
             abort(404)
