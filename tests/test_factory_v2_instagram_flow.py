@@ -10,7 +10,7 @@ class FakeDriver:
     def __init__(
         self,
         screens,
-        available=("username", "display_name", "bio", "continue", "sign_up"),
+        available=("username", "display_name", "bio", "signup_contact", "continue", "sign_up"),
         *,
         tap_statuses=None,
         set_statuses=None,
@@ -50,13 +50,41 @@ class FakeDriver:
 
 class InstagramFlowTests(unittest.TestCase):
     def setUp(self):
-        self.profile = {"username": "sample_user", "display_name": "Sample User", "bio": "Sample bio", "password": "must-not-be-used", "otp": "000000"}
+        self.profile = {
+            "username": "sample_user",
+            "display_name": "Sample User",
+            "bio": "Sample bio",
+            "signup_contact_type": "phone",
+            "signup_contact": "+84901234567",
+            "password": "must-not-be-used",
+            "otp": "000000",
+        }
 
     def test_otp_stops_before_mutation(self):
         driver = FakeDriver([DetectedScreen("OTP_REQUIRED", 0.82, ("verify-marker",), True)])
         result = InstagramFlow(driver).run(self.profile)
         self.assertEqual("waiting_human", result.status)
         self.assertEqual("OTP_REQUIRED", result.screen)
+        self.assertEqual([], driver.mutations)
+
+    def test_contact_entry_sets_supplied_contact_then_continues(self):
+        driver = FakeDriver([DetectedScreen("IG_CONTACT_ENTRY", 0.96, ("contact",), False)])
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("running", result.status)
+        self.assertEqual([("signup_contact", "+84901234567")], driver.set_values)
+        self.assertEqual(
+            [("set_text", "signup_contact"), ("tap", "continue")],
+            driver.mutations,
+        )
+        self.assertEqual("IG_CONTACT_ENTRY", result.last_safe_step)
+
+    def test_contact_entry_without_supplied_contact_fails_closed(self):
+        profile = dict(self.profile)
+        profile.pop("signup_contact")
+        driver = FakeDriver([DetectedScreen("IG_CONTACT_ENTRY", 0.96, ("contact",), False)])
+        result = InstagramFlow(driver).run(profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("MISSING_SIGNUP_CONTACT", result.reason)
         self.assertEqual([], driver.mutations)
 
     def test_profile_setup_sets_only_approved_fields(self):
