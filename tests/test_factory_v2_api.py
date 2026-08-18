@@ -149,6 +149,46 @@ class FactoryV2ApiTests(unittest.TestCase):
         self.assertEqual("YELLOW", body["host"]["capacity_state"])
         self.assertNotIn("adb_serial", str(body))
 
+    def test_dashboard_counts_threads_created_as_active_for_social_only(self):
+        batch = self.service.create_batch(
+            "Social only", count=1, seed=17, completion_mode="SOCIAL_ONLY"
+        )
+        account = self.repo.list_accounts(batch["id"])[0]
+        self.conn.execute(
+            """UPDATE factory_account
+               SET stage='THREADS_CREATED', last_safe_stage='THREADS_CREATED', completed_at=?
+               WHERE id=?""",
+            (now(), account["id"]),
+        )
+
+        res = self.client.get("/api/factory/v2/dashboard", headers=self.auth)
+
+        self.assertEqual(200, res.status_code)
+        body = res.get_json()
+        self.assertEqual("SOCIAL_ONLY", body["batch"]["completion_mode"])
+        self.assertEqual(1, body["accounts"]["active"])
+        self.assertEqual(0, body["accounts"]["queued"])
+
+    def test_dashboard_keeps_threads_created_incomplete_for_acp_active_mode(self):
+        batch = self.service.create_batch(
+            "ACP completion", count=1, seed=18, completion_mode="ACP_ACTIVE"
+        )
+        account = self.repo.list_accounts(batch["id"])[0]
+        self.conn.execute(
+            """UPDATE factory_account
+               SET stage='THREADS_CREATED', last_safe_stage='THREADS_CREATED'
+               WHERE id=?""",
+            (account["id"],),
+        )
+
+        res = self.client.get("/api/factory/v2/dashboard", headers=self.auth)
+
+        self.assertEqual(200, res.status_code)
+        body = res.get_json()
+        self.assertEqual("ACP_ACTIVE", body["batch"]["completion_mode"])
+        self.assertEqual(0, body["accounts"]["active"])
+        self.assertEqual(1, body["accounts"]["queued"])
+
     def test_read_endpoints_return_controller_rows(self):
         batch = self.client.get(
             f"/api/factory/v2/batches/{self.batch['id']}", headers=self.auth
