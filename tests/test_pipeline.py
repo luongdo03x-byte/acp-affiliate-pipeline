@@ -1475,6 +1475,99 @@ def test_recent_variants_scoped_by_channel_and_ordered():
     conn.close()
 
 
+def _mk_regen_fixture():
+    """Trả (conn, post_id, variant_row_dict, channel_id) -- 1 bài đã
+    persist qua Content Engine v2 thật (compute_variants+persist_run),
+    variant_row đầu tiên (label A) dùng để test 3 hàm regenerate_*()/
+    switch_angle(). Caller tự dọn dẹp bằng _cleanup_regen_fixture()."""
+    from acp.core import content_engine
+    conn, product, ch_id = _mk_content_engine_fixture()
+    computed = content_engine.compute_variants(conn, product, ch_id, ["threads"], "https://link.test")
+    post_id = ulid()
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code, caption_body,
+        disclosure_text, caption_final, affiliate_link, status, created_at, updated_at)
+        VALUES (?,?,?,(SELECT id FROM campaign LIMIT 1),'A','x',?,'x','https://link.test','PENDING_REVIEW',?,?)""",
+        (post_id, product["id"], ch_id, content.DISCLOSURE_DEFAULT, now(), now()))
+    persisted = content_engine.persist_run(conn, post_id, computed)
+    variant_row = conn.execute(
+        "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label LIMIT 1", (persisted["run_id"],)).fetchone()
+    return conn, post_id, dict(variant_row), ch_id
+
+
+def _cleanup_regen_fixture(conn, post_id, ch_id):
+    run_row = conn.execute("SELECT id FROM content_generation_run WHERE post_id=?", (post_id,)).fetchone()
+    if run_row:
+        conn.execute("DELETE FROM content_variant_row WHERE run_id=?", (run_row["id"],))
+        conn.execute("DELETE FROM content_generation_run WHERE id=?", (run_row["id"],))
+    conn.execute("DELETE FROM post WHERE id=?", (post_id,))
+    conn.execute("DELETE FROM channel WHERE id=?", (ch_id,))
+    conn.close()
+
+
+def test_regenerate_hook_changes_only_hook():
+    print("\nregenerate_hook() chỉ đổi hook, giữ nguyên angle/main_message/cta")
+    from acp.core import content_engine
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    res = content_engine.regenerate_hook(conn, post_id, variant["id"])
+    check("trả ok=True", res.get("ok") is True, res)
+    after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+    check("angle không đổi", after["angle"] == variant["angle"], (after["angle"], variant["angle"]))
+    check("main_message không đổi", after["main_message"] == variant["main_message"])
+    check("cta không đổi", after["cta"] == variant["cta"])
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_regenerate_variant_keeps_angle_changes_content():
+    print("\nregenerate_variant() giữ nguyên angle, nội dung thực sự đổi")
+    from acp.core import content_engine, content_variant as _cv
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    call_count = [0]
+    original = _cv._body_generator_fn
+
+    def fake_gen(prompt):
+        call_count[0] += 1
+        return json.dumps({"main_message": f"Thông điệp mới lần {call_count[0]}",
+                            "body": ["Điểm mới A", "Điểm mới B"]})
+
+    _cv.set_body_generator(fake_gen)
+    try:
+        res = content_engine.regenerate_variant(conn, post_id, variant["id"])
+        check("trả ok=True", res.get("ok") is True, res)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        check("angle giữ nguyên", after["angle"] == variant["angle"], (after["angle"], variant["angle"]))
+        check("main_message thực sự đổi", after["main_message"] != variant["main_message"],
+              (after["main_message"], variant["main_message"]))
+        check("gọi đúng 1 lần body_generator", call_count[0] == 1, call_count[0])
+    finally:
+        _cv.set_body_generator(original)
+        _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_switch_angle_moves_to_unused_angle():
+    print("\nswitch_angle() đổi sang angle chưa dùng trong cùng run")
+    from acp.core import content_engine, content_angle as _ca
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    res = content_engine.switch_angle(conn, post_id, variant["id"])
+    check("trả ok=True", res.get("ok") is True, res)
+    after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+    check("angle thực sự đổi", after["angle"] != variant["angle"], (after["angle"], variant["angle"]))
+    check("angle mới nằm trong content_angle.ANGLES", after["angle"] in _ca.ANGLES, after["angle"])
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_regenerate_hook_rejects_missing_or_wrong_post_variant():
+    print("\nregenerate_hook() trả lỗi rõ khi thiếu variant_id hoặc variant thuộc post khác, không crash")
+    from acp.core import content_engine
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    conn2, post_id2, variant2, ch_id2 = _mk_regen_fixture()
+    res_missing = content_engine.regenerate_hook(conn, post_id, None)
+    check("thiếu variant_id -> ok=False, không crash", res_missing.get("ok") is False, res_missing)
+    res_wrong_post = content_engine.regenerate_hook(conn, post_id, variant2["id"])
+    check("variant thuộc post khác -> ok=False, không crash", res_wrong_post.get("ok") is False, res_wrong_post)
+    _cleanup_regen_fixture(conn2, post_id2, ch_id2)
+    _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
 def test_create_post_flag_off_behaves_exactly_like_before():
     print("\n_create_post_from_raw_product() flag TẮT -> không có content_generation_run, caption từ v1")
     from acp.core import system_settings
@@ -4261,6 +4354,10 @@ if __name__ == "__main__":
     test_compute_variants_ready_status_has_captions()
     test_persist_run_writes_one_run_and_three_variant_rows()
     test_recent_variants_scoped_by_channel_and_ordered()
+    test_regenerate_hook_changes_only_hook()
+    test_regenerate_variant_keeps_angle_changes_content()
+    test_switch_angle_moves_to_unused_angle()
+    test_regenerate_hook_rejects_missing_or_wrong_post_variant()
     test_create_post_flag_off_behaves_exactly_like_before()
     test_create_post_flag_on_uses_v2_caption_and_persists_run()
     test_create_post_v2_exception_falls_back_to_v1_without_crashing()

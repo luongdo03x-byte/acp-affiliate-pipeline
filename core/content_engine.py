@@ -8,8 +8,8 @@ approve_post()/publisher/publish -- chỉ sinh + lưu (PTYC mục 55).
 """
 import json
 
-from . import content_facts, content_variant, content_scoring, content_platform
-from .db import now, ulid
+from . import content_facts, content_variant, content_scoring, content_platform, content_hook, content_angle
+from .db import audit, now, ulid
 
 
 def _row_to_variant(row) -> content_variant.ContentVariant:
@@ -74,3 +74,88 @@ def persist_run(conn, post_id: str, computed: dict) -> dict:
         variant_rows.append({"id": row_id, "label": labels[i], "is_best": bool(is_best)})
     best_label = next((r["label"] for r in variant_rows if r["is_best"]), None)
     return {"run_id": run_id, "best_label": best_label, "variant_rows": variant_rows}
+
+
+def _load_regen_context(conn, post_id: str, variant_id: str):
+    """Trả (variant_row, run, product, None) nếu hợp lệ, hoặc
+    (None, None, None, "<lý do>") nếu không -- dùng chung cho cả 3 hàm
+    regenerate_*()/switch_angle() bên dưới. variant phải thuộc ĐÚNG post_id
+    (chặn trộn nội dung giữa 2 bài, bài học từ Task 6's fix E6)."""
+    variant_row = conn.execute(
+        "SELECT * FROM content_variant_row WHERE id=?", (variant_id,)).fetchone() if variant_id else None
+    if not variant_row:
+        return None, None, None, "Thiếu hoặc không tìm thấy variant"
+    run = conn.execute(
+        "SELECT * FROM content_generation_run WHERE id=?", (variant_row["run_id"],)).fetchone()
+    post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
+    product = conn.execute(
+        "SELECT * FROM product WHERE id=?", (post["product_id"],)).fetchone() if post else None
+    if not (run and run["status"] == "READY" and run["post_id"] == post_id and product):
+        return None, None, None, "Variant không thuộc về bài này"
+    return variant_row, run, product, None
+
+
+def regenerate_hook(conn, post_id: str, variant_id: str) -> dict:
+    """Đổi riêng hook, giữ nguyên angle/main_message/cta/structure của
+    variant. Trả {"ok": True} hoặc {"ok": False, "error": "..."}."""
+    variant_row, run, product, error = _load_regen_context(conn, post_id, variant_id)
+    if error:
+        return {"ok": False, "error": error}
+    facts = content_facts.build_product_facts(conn, product)
+    hook_result = content_hook.select_best_hook(variant_row["angle"], facts)
+    conn.execute("UPDATE content_variant_row SET hook=?, updated_at=? WHERE id=?",
+                 (hook_result["hook"], now(), variant_id))
+    res = {"ok": True}
+    audit(conn, "content_variant_row", variant_id, "doi-hook", actor="operator", detail=res)
+    return res
+
+
+def regenerate_variant(conn, post_id: str, variant_id: str) -> dict:
+    """Sinh lại toàn bộ hook/main_message/body/cta, GIỮ NGUYÊN angle. Trả
+    {"ok": True} hoặc {"ok": False, "error": "..."}."""
+    variant_row, run, product, error = _load_regen_context(conn, post_id, variant_id)
+    if error:
+        return {"ok": False, "error": error}
+    facts = content_facts.build_product_facts(conn, product)
+    new_variant = content_variant.generate_variant(variant_row["angle"], facts)
+    conn.execute("""UPDATE content_variant_row SET hook=?, main_message=?, body_json=?, cta=?,
+                    updated_at=? WHERE id=?""",
+                 (new_variant.hook, new_variant.main_message,
+                  json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta, now(), variant_id))
+    res = {"ok": True}
+    audit(conn, "content_variant_row", variant_id, "lam-lai", actor="operator", detail=res)
+    return res
+
+
+def switch_angle(conn, post_id: str, variant_id: str) -> dict:
+    """Đổi sang 1 angle CHƯA dùng trong cùng run (thủ công, khác
+    select_angle_candidates() tự động của E2 -- lấy từ TOÀN BỘ
+    content_angle.ANGLES, không phải select_angle_candidates(product):
+    hàm đó chỉ tự động chọn 1-3 angle và generate_variants() đã dùng hết
+    đúng danh sách đó cho 3 variant ban đầu -- lấy lại nó thì "đổi angle"
+    không bao giờ còn candidate nào (chết cứng). select_angle_candidates()
+    quản chọn angle TỰ ĐỘNG (E2), còn "đổi angle" là cửa thoát THỦ CÔNG của
+    operator -- 2 mối quan tâm khác nhau. generate_variant() chạy an toàn
+    với mọi angle trong ANGLES nhờ ANGLE_TO_STRUCTURE/ANGLE_TO_CTA_TYPE có
+    default (.get(angle, ...)). Trả {"ok": False, "error": "Không còn
+    angle nào khác để đổi"} nếu hết candidate."""
+    variant_row, run, product, error = _load_regen_context(conn, post_id, variant_id)
+    if error:
+        return {"ok": False, "error": error}
+    facts = content_facts.build_product_facts(conn, product)
+    candidates = content_angle.ANGLES
+    used_angles = {r["angle"] for r in conn.execute(
+        "SELECT angle FROM content_variant_row WHERE run_id=?", (run["id"],)).fetchall()}
+    next_angle = next((a for a in candidates if a not in used_angles), None)
+    if not next_angle:
+        res = {"ok": False, "error": "Không còn angle nào khác để đổi"}
+    else:
+        new_variant = content_variant.generate_variant(next_angle, facts)
+        conn.execute("""UPDATE content_variant_row SET angle=?, hook=?, main_message=?,
+                        body_json=?, cta=?, structure=?, updated_at=? WHERE id=?""",
+                     (new_variant.angle, new_variant.hook, new_variant.main_message,
+                      json.dumps(new_variant.body, ensure_ascii=False), new_variant.cta,
+                      new_variant.structure, now(), variant_id))
+        res = {"ok": True}
+    audit(conn, "content_variant_row", variant_id, "doi-angle", actor="operator", detail=res)
+    return res
