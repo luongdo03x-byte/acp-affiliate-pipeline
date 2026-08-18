@@ -31,6 +31,25 @@ SIGNUP_CONTACT_INPUT = Selector(
     ),
 )
 
+BIRTH_DATE_INPUT = Selector(
+    semantic="birth_date",
+    resource_ids=(
+        "com.instagram.android:id/birthday",
+        "com.instagram.android:id/birthday_field",
+        "com.instagram.android:id/date_of_birth",
+    ),
+)
+
+ADD_PROFILE_PHOTO = Selector(
+    semantic="add_profile_photo",
+    resource_ids=(
+        "com.instagram.android:id/add_profile_photo",
+        "com.instagram.android:id/add_photo_button",
+    ),
+    texts=("Add profile photo", "Thêm ảnh đại diện"),
+    require_clickable=True,
+)
+
 FINAL_SIGNUP_SUBMIT = Selector(
     semantic="final_signup_submit",
     texts=("Create account", "Sign up", "Đăng ký", "Tạo tài khoản"),
