@@ -89,6 +89,34 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(detected.protected)
         self.assertFalse(detected.automation_allowed)
 
+    def test_supported_birthday_text_entry_is_automation_allowed(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (
+                node(
+                    text="Birthday",
+                    resource_id="com.instagram.android:id/birthday",
+                    class_name="android.widget.EditText",
+                    clickable=True,
+                ),
+                node(text="Next", resource_id="com.instagram.android:id/next_button", clickable=True),
+            ),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_BIRTHDAY_ENTRY", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_known_avatar_setup_is_automation_allowed(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".MainActivity",
+            (node(text="Add profile photo", class_name="android.widget.Button", clickable=True),),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_AVATAR_SETUP", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
     def test_unknown_never_allows_automation(self):
         detected = build_instagram_detector().detect(UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Unexpected screen"),)))
         self.assertEqual("UNKNOWN", detected.kind)
