@@ -31,6 +31,12 @@ class SeedingWebStaticTests(unittest.TestCase):
         self.assertIn('href="/seeding"', source)
         self.assertIn("page=='seeding'", source)
 
+    def test_extension_has_token_protected_pause_shift_endpoint(self) -> None:
+        source = (ROOT / "web" / "seeding_routes.py").read_text(encoding="utf-8")
+        self.assertIn('@bp.post("/api/seeding/pause-shift")', source)
+        self.assertIn("_require_extension_token()", source)
+        self.assertIn("seeding.pause_shift", source)
+
 
 @unittest.skipUnless(HAS_FLASK, "Flask is not installed in the minimal local harness")
 class SeedingWebFunctionalTests(unittest.TestCase):
