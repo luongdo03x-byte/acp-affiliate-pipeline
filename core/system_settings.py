@@ -3,6 +3,7 @@ from .db import audit, now
 
 
 PUBLISH_WORKER_ENABLED = "publish_worker_enabled"
+SEEDING_GLOBAL_PAUSED = "seeding_global_paused"
 
 
 def get_system_setting(conn, key: str, default=None):
@@ -25,3 +26,13 @@ def set_system_setting(conn, key: str, value, actor: str = "operator") -> None:
 def publish_worker_enabled(conn) -> bool:
     """Fail-safe: không có bản ghi nào đồng nghĩa worker đăng bài đang tắt."""
     return get_system_setting(conn, PUBLISH_WORKER_ENABLED, "0") == "1"
+
+
+def seeding_global_paused(conn) -> bool:
+    """Không có setting nghĩa là seeding đang hoạt động; campaign vẫn tự quyết auto-submit."""
+    return get_system_setting(conn, SEEDING_GLOBAL_PAUSED, "0") == "1"
+
+
+def set_seeding_global_paused(conn, paused: bool, actor: str = "operator") -> None:
+    """Bật/tắt kill switch seeding và để lại audit qua set_system_setting()."""
+    set_system_setting(conn, SEEDING_GLOBAL_PAUSED, "1" if paused else "0", actor=actor)
