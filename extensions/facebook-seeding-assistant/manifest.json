@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "ACP Facebook Seeding Assistant",
+  "version": "0.1.0",
+  "description": "ACP-assisted Facebook target queue with fail-closed hybrid review.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://m.facebook.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {"service_worker": "background.js"},
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/*", "https://m.facebook.com/*"],
+      "js": ["parser.js", "runner.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
