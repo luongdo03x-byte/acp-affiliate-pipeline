@@ -173,6 +173,7 @@ class WorkerSupervisor:
             if w["state"] == "RECOVERING"
             and w["last_error"] == "manual restart requested"
             and not w["current_job_id"]
+            and not w["current_account_id"]
         ), None)
         if restart is not None:
             return self._stop_persisted_worker(
@@ -183,6 +184,7 @@ class WorkerSupervisor:
             w for w in workers
             if w["draining"]
             and not w["current_job_id"]
+            and not w["current_account_id"]
             and w["state"] != "WAITING_HUMAN"
         ), None)
         if drain is not None:
@@ -263,7 +265,12 @@ class WorkerSupervisor:
             "WAITING_HUMAN": 99,
         }
         candidates = sorted(workers, key=lambda w: (by_priority.get(w["state"], 50), w["id"]))
-        candidate = next((w for w in candidates if w["state"] != "WAITING_HUMAN"), None)
+        candidate = next((
+            w for w in candidates
+            if w["state"] != "WAITING_HUMAN"
+            and not w["current_job_id"]
+            and not w["current_account_id"]
+        ), None)
         if candidate is None:
             return SupervisorDecision("HOLD", capacity, len(workers))
         worker_id = candidate["id"]
