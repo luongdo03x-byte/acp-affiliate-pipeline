@@ -1,5 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.factory_v2.ui_automation.detector import DetectedScreen
 from core.factory_v2.ui_automation.flow_result import FlowResult
@@ -52,6 +55,14 @@ class FakeAvd:
         self.packages.append((serial, package))
 
 
+class FakeAdbClient:
+    def __init__(self):
+        self.push_calls = []
+
+    def push_file(self, source, destination):
+        self.push_calls.append((str(source), str(destination)))
+
+
 class AvdWorkerAgentTests(unittest.TestCase):
     def setUp(self):
         self.profile = {
@@ -61,7 +72,6 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "signup_contact_type": "phone",
             "signup_contact": "+84901234567",
             "birth_date": "2000-05-20",
-            "avatar_file": "var/factory_avatars/sample.jpg",
             "password": "secret-must-not-pass",
             "otp": "123456",
             "verification_code": "654321",
@@ -69,7 +79,7 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "arbitrary": "must-not-pass",
         }
 
-    def make_agent(self, instagram_result=None, threads_result=None):
+    def make_agent(self, instagram_result=None, threads_result=None, *, adb_client=None):
         instagram = FakeFlow(
             instagram_result
             or FlowResult(
@@ -79,13 +89,18 @@ class AvdWorkerAgentTests(unittest.TestCase):
         threads = FakeFlow(
             threads_result or FlowResult("running", "THREADS_ONBOARDING")
         )
+        kwargs = {
+            "avd": FakeAvd(),
+            "instagram_flow": instagram,
+            "threads_flow": threads,
+        }
+        if adb_client is not None:
+            kwargs["adb_client"] = adb_client
         agent = WorkerAgent(
             "worker-1",
             "acp-worker-01",
             "emulator-5554",
-            avd=FakeAvd(),
-            instagram_flow=instagram,
-            threads_flow=threads,
+            **kwargs,
         )
         return agent, instagram, threads
 
@@ -104,7 +119,7 @@ class AvdWorkerAgentTests(unittest.TestCase):
         self.assertEqual(
             {
                 "username", "display_name", "bio", "signup_contact_type",
-                "signup_contact", "birth_date", "avatar_file",
+                "signup_contact", "birth_date",
             },
             set(instagram.run_calls[0]),
         )
@@ -112,6 +127,43 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "password", "otp", "verification_code", "recovery_code", "arbitrary"
         ):
             self.assertNotIn(forbidden, instagram.run_calls[0])
+
+    def test_existing_avatar_is_staged_to_fixed_device_path(self):
+        adb_client = FakeAdbClient()
+        agent, instagram, _ = self.make_agent(
+            FlowResult("running", "IG_AVATAR_SETUP"),
+            adb_client=adb_client,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            source = repo_root / "avatars" / "sample.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"test-avatar")
+            profile = dict(self.profile, avatar_file="avatars/sample.jpg")
+            with patch("workers.account_factory_worker._REPO_ROOT", repo_root):
+                agent.execute(WorkerCommand(
+                    "stage-avatar", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": profile}
+                ))
+
+        self.assertEqual(
+            [(str(source.resolve()), "/sdcard/Pictures/ACP/avatar.jpg")],
+            adb_client.push_calls,
+        )
+        self.assertEqual("avatars/sample.jpg", instagram.run_calls[0]["avatar_file"])
+
+    def test_missing_avatar_file_is_rejected_before_flow_mutation(self):
+        adb_client = FakeAdbClient()
+        agent, instagram, _ = self.make_agent(adb_client=adb_client)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            profile = dict(self.profile, avatar_file="avatars/missing.jpg")
+            with patch("workers.account_factory_worker._REPO_ROOT", repo_root):
+                with self.assertRaisesRegex(ValueError, "avatar_file"):
+                    agent.execute(WorkerCommand(
+                        "missing-avatar", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": profile}
+                    ))
+        self.assertEqual([], adb_client.push_calls)
+        self.assertEqual([], instagram.run_calls)
 
     def test_invalid_contact_type_is_rejected_before_flow_mutation(self):
         agent, instagram, _ = self.make_agent()
