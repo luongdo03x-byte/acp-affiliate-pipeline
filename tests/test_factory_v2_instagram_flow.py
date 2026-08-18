@@ -10,7 +10,10 @@ class FakeDriver:
     def __init__(
         self,
         screens,
-        available=("username", "display_name", "bio", "signup_contact", "continue", "sign_up"),
+        available=(
+            "username", "display_name", "bio", "signup_contact", "birth_date",
+            "add_profile_photo", "continue", "sign_up",
+        ),
         *,
         tap_statuses=None,
         set_statuses=None,
@@ -56,6 +59,8 @@ class InstagramFlowTests(unittest.TestCase):
             "bio": "Sample bio",
             "signup_contact_type": "phone",
             "signup_contact": "+84901234567",
+            "birth_date": "2000-05-20",
+            "avatar_file": "avatars/sample.jpg",
             "password": "must-not-be-used",
             "otp": "000000",
         }
@@ -85,6 +90,48 @@ class InstagramFlowTests(unittest.TestCase):
         result = InstagramFlow(driver).run(profile)
         self.assertEqual("needs_confirmation", result.status)
         self.assertEqual("MISSING_SIGNUP_CONTACT", result.reason)
+        self.assertEqual([], driver.mutations)
+
+    def test_birthday_entry_sets_supplied_date_then_continues(self):
+        driver = FakeDriver([DetectedScreen("IG_BIRTHDAY_ENTRY", 0.96, ("birthday",), False)])
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("running", result.status)
+        self.assertEqual([("birth_date", "2000-05-20")], driver.set_values)
+        self.assertEqual(
+            [("set_text", "birth_date"), ("tap", "continue")],
+            driver.mutations,
+        )
+        self.assertEqual("IG_BIRTHDAY_ENTRY", result.last_safe_step)
+
+    def test_birthday_entry_without_supported_input_fails_closed(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_BIRTHDAY_ENTRY", 0.96, ("birthday",), False)],
+            available=("continue",),
+        )
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual([], driver.mutations)
+
+    def test_unknown_birthday_picker_never_mutates(self):
+        driver = FakeDriver([DetectedScreen("UNKNOWN", 0.0, (), False)] * 3)
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual([], driver.mutations)
+
+    def test_avatar_setup_uses_known_add_profile_photo_selector_only(self):
+        driver = FakeDriver([DetectedScreen("IG_AVATAR_SETUP", 0.96, ("avatar",), False)])
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("running", result.status)
+        self.assertEqual([("tap", "add_profile_photo")], driver.mutations)
+        self.assertEqual("IG_AVATAR_SETUP", result.last_safe_step)
+
+    def test_avatar_setup_without_staged_avatar_fails_closed(self):
+        profile = dict(self.profile)
+        profile.pop("avatar_file")
+        driver = FakeDriver([DetectedScreen("IG_AVATAR_SETUP", 0.96, ("avatar",), False)])
+        result = InstagramFlow(driver).run(profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("MISSING_AVATAR", result.reason)
         self.assertEqual([], driver.mutations)
 
     def test_profile_setup_sets_only_approved_fields(self):
