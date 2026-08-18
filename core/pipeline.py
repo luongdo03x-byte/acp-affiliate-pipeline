@@ -454,10 +454,17 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
             conn.execute("UPDATE post SET caption_instagram=? WHERE id=?",
                          (v2_computed["captions"]["instagram"], post_id))
     if v2_computed:
-        persisted = content_engine.persist_run(conn, post_id, v2_computed)
-        audit(conn, "content_generation_run", persisted["run_id"], "generated", actor="operator",
-              detail={"post_id": post_id, "status": v2_computed["status"],
-                      "best_label": persisted.get("best_label")})
+        try:
+            persisted = content_engine.persist_run(conn, post_id, v2_computed)
+            audit(conn, "content_generation_run", persisted["run_id"], "generated", actor="operator",
+                  detail={"post_id": post_id, "status": v2_computed["status"],
+                          "best_label": persisted.get("best_label")})
+        except Exception as exc:
+            # post/caption/channel selection đã commit (autocommit) -- không để
+            # lỗi ghi content_generation_run làm hỏng kết quả tạo bài, chỉ ghi
+            # audit để vận hành viên biết mà kiểm tra.
+            audit(conn, "post", post_id, "content_engine_v2_persist_failed", actor="system",
+                  detail={"error": str(exc)})
     if media_asset_ids:
         for i, aid in enumerate(media_asset_ids, start=1):
             conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",

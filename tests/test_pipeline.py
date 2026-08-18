@@ -1472,6 +1472,35 @@ def test_create_post_fact_check_failed_falls_back_to_v1_caption():
     conn.close()
 
 
+def test_create_post_persist_run_exception_does_not_crash_post_creation():
+    print("\n_create_post_from_raw_product() persist_run() raise exception -> tạo bài vẫn thành công, ghi audit content_engine_v2_persist_failed")
+    from acp.core import system_settings, content_engine
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    original = content_engine.persist_run
+
+    def crashing_persist(*a, **kw):
+        raise RuntimeError("giả lập lỗi ghi content_generation_run")
+
+    content_engine.persist_run = crashing_persist
+    try:
+        src = MockAccessTrade()
+        target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+        ctx = {"source": src, "publishers": {}}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "test")
+        check("tạo bài vẫn thành công dù persist_run() crash", res.get("ok"), res.get("error"))
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res.get("post_id"),)).fetchone()
+        check("không có content_generation_run (persist_run crash)", run is None, run)
+        audit_row = conn.execute(
+            "SELECT * FROM audit_log WHERE entity='post' AND action='content_engine_v2_persist_failed' "
+            "AND entity_id=? ORDER BY created_at DESC LIMIT 1", (res.get("post_id"),)).fetchone()
+        check("có audit content_engine_v2_persist_failed", audit_row is not None, audit_row)
+    finally:
+        content_engine.persist_run = original
+        system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    conn.close()
+
+
 def test_select_best_hook_picks_highest_score():
     print("\nselect_best_hook() chọn đúng hook điểm cao nhất")
     from acp.core import content_hook
@@ -3987,6 +4016,7 @@ if __name__ == "__main__":
     test_create_post_flag_on_uses_v2_caption_and_persists_run()
     test_create_post_v2_exception_falls_back_to_v1_without_crashing()
     test_create_post_fact_check_failed_falls_back_to_v1_caption()
+    test_create_post_persist_run_exception_does_not_crash_post_creation()
     test_select_best_hook_picks_highest_score()
     test_select_best_hook_all_rejected_when_every_hook_fails_rules()
     test_build_extract_prompt_fences_untrusted_description()
