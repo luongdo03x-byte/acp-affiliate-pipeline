@@ -1621,6 +1621,44 @@ def test_rescore_variant_unsafe_content_nulls_scores_and_audits():
         _cleanup_regen_fixture(conn, post_id, ch_id)
 
 
+def test_switch_angle_exhausted_candidates_returns_error_not_crash():
+    print("\nswitch_angle() hết candidate -> trả lỗi rõ, không đổi angle, vẫn có audit (khác lỗi lookup)")
+    from acp.core import content_engine, content_angle as _ca
+    conn, post_id, variant, ch_id = _mk_regen_fixture()
+    original_angles = _ca.ANGLES
+    # Thu hẹp ANGLES tạm thời về đúng angle variant hiện có -- mọi angle
+    # "khả dụng" coi như đã dùng hết, mô phỏng hết candidate mà không cần
+    # tạo tay 11 dòng variant giả.
+    _ca.ANGLES = [variant["angle"]]
+    try:
+        res = content_engine.switch_angle(conn, post_id, variant["id"])
+        check("trả ok=False", res.get("ok") is False, res)
+        check("thông báo đúng", res.get("error") == "Không còn angle nào khác để đổi", res)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        check("angle không đổi", after["angle"] == variant["angle"], (after["angle"], variant["angle"]))
+        audit_row = conn.execute(
+            "SELECT * FROM audit_log WHERE entity='content_variant_row' AND entity_id=? AND action='doi-angle' "
+            "ORDER BY created_at DESC LIMIT 1", (variant["id"],)).fetchone()
+        check("vẫn có audit dù thất bại (khác lỗi lookup của _load_regen_context())",
+              audit_row is not None, audit_row)
+    finally:
+        _ca.ANGLES = original_angles
+        _cleanup_regen_fixture(conn, post_id, ch_id)
+
+
+def test_regenerate_hook_lookup_failure_does_not_write_audit():
+    print("\nregenerate_hook() lỗi lookup (thiếu variant) -> KHÔNG ghi audit, khác lỗi 'hết angle' của switch_angle()")
+    from acp.core import content_engine
+    conn = connect()
+    before_count = conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity='content_variant_row'").fetchone()[0]
+    res = content_engine.regenerate_hook(conn, "post-khong-ton-tai", None)
+    check("trả ok=False", res.get("ok") is False, res)
+    after_count = conn.execute("SELECT COUNT(*) FROM audit_log WHERE entity='content_variant_row'").fetchone()[0]
+    check("không ghi thêm audit nào (đúng bất đối xứng đã xác nhận ở G2's final review)",
+          after_count == before_count, (before_count, after_count))
+    conn.close()
+
+
 def test_create_post_flag_off_behaves_exactly_like_before():
     print("\n_create_post_from_raw_product() flag TẮT -> không có content_generation_run, caption từ v1")
     from acp.core import system_settings
@@ -4414,6 +4452,8 @@ if __name__ == "__main__":
     test_rescore_variant_after_regenerate_produces_real_scores()
     test_rescore_variant_excludes_self_from_repetition_check()
     test_rescore_variant_unsafe_content_nulls_scores_and_audits()
+    test_switch_angle_exhausted_candidates_returns_error_not_crash()
+    test_regenerate_hook_lookup_failure_does_not_write_audit()
     test_create_post_flag_off_behaves_exactly_like_before()
     test_create_post_flag_on_uses_v2_caption_and_persists_run()
     test_create_post_v2_exception_falls_back_to_v1_without_crashing()
