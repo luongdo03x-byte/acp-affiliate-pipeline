@@ -8,12 +8,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (parser) {
   const FACEBOOK_HOSTS = new Set(['facebook.com', 'www.facebook.com', 'm.facebook.com']);
 
-  function shouldAttemptAutoSubmit(decision, status) {
+  function shouldAttemptAutoSubmit(decision, status, expectedShiftId) {
     return Boolean(
       decision
       && decision.decision === 'AUTO_READY'
       && status
-      && status.paused === false,
+      && status.paused === false
+      && expectedShiftId
+      && status.active_shift_id === expectedShiftId,
     );
   }
 
@@ -56,10 +58,10 @@
     return Boolean(a && b && a.path === b.path && a.query === b.query);
   }
 
-  async function performSingleSubmit({ decision, getStatus, submit, verify }) {
+  async function performSingleSubmit({ decision, expectedShiftId, getStatus, submit, verify }) {
     if (!decision || decision.decision !== 'AUTO_READY') return 'REVIEW_REQUIRED';
     const status = await getStatus();
-    if (!shouldAttemptAutoSubmit(decision, status)) return 'PAUSED';
+    if (!shouldAttemptAutoSubmit(decision, status, expectedShiftId)) return 'PAUSED';
     await submit();
     const verified = await verify();
     return verified ? 'POSTED' : 'UNKNOWN';
