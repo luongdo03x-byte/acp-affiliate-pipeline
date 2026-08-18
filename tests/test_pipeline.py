@@ -1320,6 +1320,7 @@ def test_compute_variants_ready_status_has_captions():
     check("có caption threads", "threads" in computed["captions"], computed["captions"].keys())
     check("có caption facebook", "facebook" in computed["captions"], computed["captions"].keys())
     check("không có caption instagram (không yêu cầu)", "instagram" not in computed["captions"], computed["captions"].keys())
+    conn.execute("DELETE FROM channel WHERE id=?", (ch_id,))
     conn.close()
 
 
@@ -1343,6 +1344,7 @@ def test_persist_run_writes_one_run_and_three_variant_rows():
     conn.execute("DELETE FROM content_variant_row WHERE run_id=?", (persisted["run_id"],))
     conn.execute("DELETE FROM content_generation_run WHERE id=?", (persisted["run_id"],))
     conn.execute("DELETE FROM post WHERE id=?", (post_id,))
+    conn.execute("DELETE FROM channel WHERE id=?", (ch_id,))
     conn.close()
 
 
@@ -1367,6 +1369,7 @@ def test_recent_variants_scoped_by_channel_and_ordered():
         conn.execute("DELETE FROM content_variant_row WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM content_generation_run WHERE id=?", (run_id,))
     conn.execute("DELETE FROM post WHERE id=?", (post_id,))
+    conn.execute("DELETE FROM channel WHERE id=?", (ch_id,))
     conn.close()
 
 
