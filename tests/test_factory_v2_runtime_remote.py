@@ -131,6 +131,34 @@ def job(action="PREPARE_INSTAGRAM", runner_type="REMOTE_AVD"):
 
 
 class RemoteRuntimeTests(unittest.TestCase):
+    def test_profile_payload_includes_only_selected_safe_signup_input(self):
+        acc = account()
+        acc.update({
+            "signup_contact_type": "phone",
+            "phone": "+84901234567",
+            "email": "backup@example.com",
+            "birth_date": "2000-05-20",
+            "avatar_file": "var/factory_avatars/sample.jpg",
+            "password": "must-not-pass",
+            "otp": "123456",
+        })
+
+        payload = FactoryControllerRuntime._profile_payload(acc)
+
+        self.assertEqual({
+            "username": "sample_user",
+            "display_name": "Sample User",
+            "bio": "Sample bio",
+            "signup_contact_type": "phone",
+            "signup_contact": "+84901234567",
+            "birth_date": "2000-05-20",
+            "avatar_file": "var/factory_avatars/sample.jpg",
+        }, payload["profile"])
+        serialized = repr(payload)
+        self.assertNotIn("backup@example.com", serialized)
+        self.assertNotIn("must-not-pass", serialized)
+        self.assertNotIn("123456", serialized)
+
     def test_remote_prepare_routes_to_avd_automation_and_waits_legally(self):
         acc = account()
         repo = FakeRepo(acc)
