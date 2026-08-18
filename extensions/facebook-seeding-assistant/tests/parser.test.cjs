@@ -47,6 +47,39 @@ test('auto submit requires AUTO_READY and an unpaused server status', () => {
   );
 });
 
+test('single submit returns UNKNOWN after one click when verification fails', async () => {
+  let clicks = 0;
+  let statusChecks = 0;
+  const result = await runner.performSingleSubmit({
+    decision: { decision: 'AUTO_READY' },
+    getStatus: async () => {
+      statusChecks += 1;
+      return { paused: false };
+    },
+    submit: async () => {
+      clicks += 1;
+    },
+    verify: async () => false,
+  });
+  assert.equal(statusChecks, 1);
+  assert.equal(clicks, 1);
+  assert.equal(result, 'UNKNOWN');
+});
+
+test('single submit rechecks pause before click and does not submit while paused', async () => {
+  let clicks = 0;
+  const result = await runner.performSingleSubmit({
+    decision: { decision: 'AUTO_READY' },
+    getStatus: async () => ({ paused: true }),
+    submit: async () => {
+      clicks += 1;
+    },
+    verify: async () => true,
+  });
+  assert.equal(clicks, 0);
+  assert.equal(result, 'PAUSED');
+});
+
 test('verification compares normalized visible text', () => {
   const root = {
     textContent: 'Khác\nBạn có thể tham khảo Brand; hiện có tư vấn miễn phí.',
