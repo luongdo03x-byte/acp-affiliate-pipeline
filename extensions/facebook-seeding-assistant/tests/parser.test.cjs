@@ -7,6 +7,31 @@ test('normalizeText collapses whitespace and NBSP', () => {
   assert.equal(parser.normalizeText('  xin\u00a0 chào\n bạn  '), 'xin chào bạn');
 });
 
+test('composer selection returns one visible candidate and rejects ambiguity', () => {
+  const visible = { hidden: false };
+  const rootOne = { querySelectorAll: () => [visible] };
+  const rootMany = { querySelectorAll: () => [visible, { hidden: false }] };
+  assert.equal(parser.findCommentComposer(rootOne), visible);
+  assert.equal(parser.findCommentComposer(rootMany), null);
+});
+
+test('context extraction returns normalized visible article text', () => {
+  const article = {
+    hidden: false,
+    innerText: '  Xin chỗ\n tư vấn uy tín  ',
+    textContent: '  Xin chỗ\n tư vấn uy tín  ',
+    getAttribute: (name) => (name === 'data-pagelet' ? 'FeedUnit_123' : null),
+  };
+  const root = { querySelectorAll: () => [article] };
+  const result = parser.extractPostContext(
+    root,
+    'https://www.facebook.com/groups/demo/posts/123/',
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.context.post_text, 'Xin chỗ tư vấn uy tín');
+  assert.equal(result.context.url.endsWith('/posts/123/'), true);
+});
+
 test('auto submit requires AUTO_READY and an unpaused server status', () => {
   assert.equal(
     runner.shouldAttemptAutoSubmit({ decision: 'AUTO_READY' }, { paused: false }),
