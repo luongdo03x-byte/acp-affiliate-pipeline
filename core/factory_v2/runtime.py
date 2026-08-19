@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import sqlite3
 import threading
 
 from core.db import now, transaction, ulid
@@ -213,6 +214,8 @@ class FactoryControllerRuntime:
         flow: str,
         screen: str,
         confirmation: bool,
+        error_code: str = "UI_CHANGED",
+        error_message: str | None = None,
     ) -> None:
         checkpoint_type = "IG_POSTCHECK" if flow == "instagram" else "THREADS_POSTCHECK"
         checkpoint = self._checkpoint_for_account(account["id"])
@@ -253,8 +256,11 @@ class FactoryControllerRuntime:
                 self.service.transition_account(
                     account["id"],
                     AccountStage.NEEDS_CONFIRMATION,
-                    error_code="UI_CHANGED",
-                    error_message=f"Unrecognized {flow} UI: {screen}",
+                    error_code=error_code,
+                    error_message=(
+                        error_message
+                        or f"Unrecognized {flow} UI: {screen}"
+                    ),
                 )
 
             if checkpoint is None:
@@ -347,6 +353,25 @@ class FactoryControllerRuntime:
             )
             self.scheduler.release_job_in_transaction(job["id"], "FAILED")
 
+    def _apply_profile_updates(self, job, account, *, flow: str, detail: dict) -> bool:
+        updates = detail.get("profile_updates")
+        if updates is None or updates == {}:
+            return True
+        if (
+            flow != "instagram"
+            or not isinstance(updates, dict)
+            or set(updates) != {"username"}
+            or not isinstance(updates.get("username"), str)
+        ):
+            return False
+        self.service.update_worker_selected_username(
+            account["id"],
+            job_id=job["id"],
+            worker_id=job["worker_id"],
+            username=updates["username"],
+        )
+        return True
+
     def _handle_remote_result(self, job, account, *, flow: str, response: dict) -> None:
         status = str(response.get("status") or "needs_confirmation").lower()
         detail = response.get("result") if isinstance(response.get("result"), dict) else {}
@@ -354,6 +379,29 @@ class FactoryControllerRuntime:
         reason = str(detail.get("reason") or screen)[:120]
 
         if status == "running":
+            try:
+                applied = self._apply_profile_updates(
+                    job,
+                    account,
+                    flow=flow,
+                    detail=detail,
+                )
+                if not applied:
+                    raise ValueError("invalid worker profile_updates")
+            except (ValueError, KeyError, sqlite3.IntegrityError):
+                self._ensure_remote_checkpoint(
+                    job,
+                    account,
+                    flow=flow,
+                    screen=screen,
+                    confirmation=True,
+                    error_code="UI_CHANGED",
+                    error_message=(
+                        "Instagram username synchronization failed; "
+                        "verify the account username before continuing."
+                    ),
+                )
+                return
             self._set_remote_running(
                 job,
                 "AUTOMATE_INSTAGRAM" if flow == "instagram" else "AUTOMATE_THREADS",
