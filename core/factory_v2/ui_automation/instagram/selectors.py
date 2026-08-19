@@ -91,6 +91,7 @@ PROFILE = Selector(
 )
 ACCOUNT_SWITCHER = Selector(
     semantic="account_switcher",
+    resource_ids=("com.instagram.android:id/action_bar_username_container",),
     content_descs=("Switch accounts", "Chuyển tài khoản"),
     texts=("Switch accounts", "Chuyển tài khoản"),
     require_clickable=True,
