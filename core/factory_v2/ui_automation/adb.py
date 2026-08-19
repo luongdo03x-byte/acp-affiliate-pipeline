@@ -30,6 +30,7 @@ class CommandRunner:
 class AdbClient:
     _AVATAR_DEVICE_DIR = "/sdcard/Pictures/ACP"
     _AVATAR_DEVICE_PATH = "/sdcard/Pictures/ACP/avatar.jpg"
+    _HIERARCHY_DEVICE_PATH = "/sdcard/acp-window.xml"
 
     def __init__(self, serial: str, *, adb_path: str | None = None, runner=None):
         serial = str(serial or "").strip()
@@ -80,19 +81,42 @@ class AdbClient:
             return activity_match
         return None, None
 
-    def dump_hierarchy(self) -> str:
-        result = self._run(["exec-out", "uiautomator", "dump", "/dev/tty"], timeout=25)
-        output = str(result.stdout or "")
+    @staticmethod
+    def _hierarchy_xml_from_output(output: str) -> str | None:
+        output = str(output or "")
         start = output.find("<?xml")
         if start < 0:
             start = output.find("<hierarchy")
         if start < 0:
-            raise RuntimeError("UI hierarchy XML missing from adb output")
+            return None
         end = output.find("</hierarchy>", start)
         if end < 0:
             raise RuntimeError("UI hierarchy XML is incomplete")
         end += len("</hierarchy>")
         return output[start:end]
+
+    def dump_hierarchy(self) -> str:
+        try:
+            result = self._run(["exec-out", "uiautomator", "dump", "/dev/tty"], timeout=25)
+            xml = self._hierarchy_xml_from_output(result.stdout)
+            if xml is not None:
+                return xml
+        except RuntimeError:
+            pass
+
+        path = self._HIERARCHY_DEVICE_PATH
+        try:
+            self._run(["shell", "uiautomator", "dump", path], timeout=25)
+            result = self._run(["exec-out", "cat", path], timeout=20)
+            xml = self._hierarchy_xml_from_output(result.stdout)
+            if xml is None:
+                raise RuntimeError("UI hierarchy XML missing from adb fallback output")
+            return xml
+        finally:
+            try:
+                self._run(["shell", "rm", "-f", path], timeout=10)
+            except RuntimeError:
+                pass
 
     def tap(self, x: int, y: int) -> None:
         self._run(["shell", "input", "tap", str(int(x)), str(int(y))])
