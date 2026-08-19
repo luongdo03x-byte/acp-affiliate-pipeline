@@ -3,7 +3,10 @@
 {% block content %}
 <div class="page-header">
   <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Quản lý account theo nền tảng. Bật/tắt và ngách chỉ áp dụng cho lô nội dung sau.</p></div>
-  <form method="get" action="/oauth/meta/start"><button class="btn btn--primary" type="submit">Kết nối Meta</button></form>
+  <div class="channel-meta">
+    <form method="get" action="/oauth/threads/start"><button class="btn btn--primary" type="submit">Kết nối Threads</button></form>
+    <form method="get" action="/oauth/meta/start"><button class="btn btn--ghost" type="submit">Kết nối Meta</button></form>
+  </div>
 </div>
 {% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
 {% if summary %}<div class="alert alert--success"><strong>Đã đồng bộ.</strong><span>{{ summary }}</span></div>{% endif %}
