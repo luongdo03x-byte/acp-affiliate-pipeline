@@ -86,6 +86,25 @@ class AccountFactoryCoreTests(unittest.TestCase):
         stored = get_session(self.conn, created["id"])
         self.assertEqual(created["state"], stored["state"])
 
+    def test_generic_session_discovers_authenticated_account(self):
+        created = create_oauth_session(self.conn)
+        self.assertEqual("", created["expected_username"])
+
+        result = complete_oauth_session(
+            self.conn,
+            state=created["state"],
+            code="code-generic",
+            redirect_uri="https://acp.example/oauth/threads/callback",
+            provider=FakeThreadsOAuth(username="New.Account", user_id="uid-new"),
+        )
+
+        self.assertEqual("ACTIVE", result["status"])
+        self.assertEqual("new.account", result["username"])
+        row = self.conn.execute("SELECT * FROM channel WHERE external_user_id='uid-new'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual("@new.account", row["handle"])
+        self.assertEqual("long-secret", crypto.decrypt(row["token_encrypted"]))
+
     def test_account_mismatch_never_creates_or_updates_channel(self):
         created = create_oauth_session(self.conn, expected_username="alice")
         provider = FakeThreadsOAuth(username="bob", user_id="uid-bob")
