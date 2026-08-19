@@ -90,8 +90,16 @@ class SeedingAccountExecutionTests(unittest.TestCase):
     def test_prepare_generates_only_selected_account_slots_and_keeps_texts_distinct(self):
         response = {
             "accounts": [
-                {"slot": 1, "main_comments": ["Câu chính A"], "replies": ["Reply A1", "Reply A2"]},
-                {"slot": 2, "main_comments": ["Câu chính B"], "replies": ["Reply B1", "Reply B2"]},
+                {
+                    "slot": 1,
+                    "main_comments": ["Mình nghĩ nên tìm hiểu kỹ thông tin trước khi quyết định."],
+                    "replies": ["Ý này khá hợp lý, hỏi thêm chi tiết sẽ dễ cân nhắc hơn.", "Mình cũng ưu tiên xem kỹ điều kiện trước rồi mới chọn."],
+                },
+                {
+                    "slot": 2,
+                    "main_comments": ["Có thể tham khảo thêm vài chia sẻ thực tế để có góc nhìn rộng hơn."],
+                    "replies": ["Chuẩn, mỗi trường hợp sẽ khác nên xem nhu cầu cụ thể trước.", "Nếu còn phân vân thì hỏi trực tiếp bên hỗ trợ cho chắc nhé."],
+                },
             ]
         }
         rows = seeding_execution.prepare_account_task(
