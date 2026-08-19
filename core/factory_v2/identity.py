@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import random
 import re
 import unicodedata
@@ -90,12 +91,47 @@ _AVATAR_THEMES = {
     },
 }
 
+_INSTAGRAM_USERNAME_MAX = 30
+_USERNAME_SAFE = re.compile(r"[^a-z0-9._]+")
+
 
 def _slug(value: str) -> str:
     value = value.replace("Đ", "D").replace("đ", "d")
     normalized = unicodedata.normalize("NFD", value)
     ascii_like = "".join(ch for ch in normalized if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]", "", ascii_like.lower())
+
+
+def _normalize_fallback_base(value: str) -> str:
+    cleaned = _USERNAME_SAFE.sub("", str(value or "").casefold()).strip("._")
+    return cleaned or "profile"
+
+
+def username_fallback_candidates(
+    requested_username: str,
+    account_id: str,
+    max_candidates: int = 5,
+) -> tuple[str, ...]:
+    """Return a bounded restart-stable sequence of Instagram username fallbacks."""
+    limit = min(max(0, int(max_candidates)), 5)
+    if limit == 0:
+        return ()
+    stable_id = str(account_id or "").strip()
+    if not stable_id:
+        raise ValueError("account_id is required for username fallback")
+
+    requested = _normalize_fallback_base(requested_username)
+    suffix_width = 6
+    prefix = requested[: _INSTAGRAM_USERNAME_MAX - suffix_width].rstrip("._") or "profile"
+    result: list[str] = []
+    for attempt in range(1, limit + 1):
+        digest = hashlib.sha256(f"{stable_id}:{attempt}".encode("utf-8")).digest()
+        suffix = f"{int.from_bytes(digest[:8], 'big') % 1_000_000:06d}"
+        candidate = f"{prefix}{suffix}"[:_INSTAGRAM_USERNAME_MAX]
+        if candidate == requested or candidate in result:
+            continue
+        result.append(candidate)
+    return tuple(result)
 
 
 def _scaled_counts(weights: dict[str, float], count: int) -> dict[str, int]:
