@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -53,6 +54,33 @@ class FactoryV2CreateAccountTests(unittest.TestCase):
             row["avd_name"] = f"{worker_id}-avd"
         return self.repo.insert_worker(row)
 
+    def bind_remote_job(self, account_id, *, worker_id="worker-username", job_id="job-username"):
+        worker = self.seed_worker(worker_id, "REMOTE_AVD")
+        self.repo.create_job_lease({
+            "id": job_id,
+            "account_id": account_id,
+            "worker_id": worker_id,
+            "runner_type": "REMOTE_AVD",
+            "lease_token": f"lease-{job_id}",
+            "state": "RUNNING",
+            "desired_action": "AUTOMATE_INSTAGRAM",
+            "leased_at": "2026-08-19T10:00:00+00:00",
+            "lease_expires_at": "2026-08-19T10:10:00+00:00",
+        })
+        self.conn.execute(
+            """UPDATE factory_account
+               SET assigned_worker_id=?, current_job_id=?
+               WHERE id=?""",
+            (worker_id, job_id, account_id),
+        )
+        self.conn.execute(
+            """UPDATE factory_worker
+               SET state='RUNNING', current_account_id=?, current_job_id=?
+               WHERE id=?""",
+            (account_id, job_id, worker_id),
+        )
+        return worker_id, job_id
+
     def test_create_single_account_for_local_runner(self):
         phone = self.seed_worker("phone-1", "LOCAL_DEVICE")
 
@@ -73,6 +101,67 @@ class FactoryV2CreateAccountTests(unittest.TestCase):
         result = self.service.create_single_account(execution_target="AUTO_AVD")
         self.assertEqual("AUTO_AVD", result["account"]["execution_target"])
         self.assertIsNone(result["account"]["assigned_worker_id"])
+
+    def test_worker_selected_username_updates_bound_account(self):
+        result = self.service.create_single_account(
+            execution_target="AUTO_AVD",
+            completion_mode="SOCIAL_ONLY",
+        )
+        account_id = result["account"]["id"]
+        worker_id, job_id = self.bind_remote_job(account_id)
+
+        updated = self.service.update_worker_selected_username(
+            account_id,
+            job_id=job_id,
+            worker_id=worker_id,
+            username="baongocd483102",
+        )
+
+        self.assertEqual("baongocd483102", updated["username"])
+
+    def test_worker_selected_username_rejects_binding_mismatch(self):
+        result = self.service.create_single_account(execution_target="AUTO_AVD")
+        account_id = result["account"]["id"]
+        worker_id, _ = self.bind_remote_job(account_id)
+
+        with self.assertRaisesRegex(ValueError, "binding"):
+            self.service.update_worker_selected_username(
+                account_id,
+                job_id="wrong-job",
+                worker_id=worker_id,
+                username="baongocd483102",
+            )
+
+    def test_worker_selected_username_rejects_invalid_value(self):
+        result = self.service.create_single_account(execution_target="AUTO_AVD")
+        account_id = result["account"]["id"]
+        worker_id, job_id = self.bind_remote_job(account_id)
+
+        with self.assertRaisesRegex(ValueError, "username"):
+            self.service.update_worker_selected_username(
+                account_id,
+                job_id=job_id,
+                worker_id=worker_id,
+                username="INVALID USERNAME",
+            )
+
+    def test_worker_selected_username_preserves_batch_uniqueness(self):
+        batch = self.service.create_batch(
+            "username uniqueness",
+            count=2,
+            execution_target="AUTO_AVD",
+            completion_mode="SOCIAL_ONLY",
+        )
+        first, second = self.repo.list_accounts(batch["id"])
+        worker_id, job_id = self.bind_remote_job(first["id"])
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.service.update_worker_selected_username(
+                first["id"],
+                job_id=job_id,
+                worker_id=worker_id,
+                username=second["username"],
+            )
 
     def test_create_account_requires_execution_target(self):
         res = self.client.post("/api/factory/v2/accounts", headers=self.auth, json={})
