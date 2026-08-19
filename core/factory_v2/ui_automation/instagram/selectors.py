@@ -9,6 +9,7 @@ CONTINUE = Selector(
         "com.instagram.android:id/next_button",
         "com.instagram.android:id/continue_button",
     ),
+    content_descs=("Next", "Continue", "Tiếp tục", "Tiếp"),
     texts=("Next", "Continue", "Tiếp tục", "Tiếp"),
     require_clickable=True,
 )
@@ -54,6 +55,21 @@ ADD_PROFILE_PHOTO = Selector(
 FINAL_SIGNUP_SUBMIT = Selector(
     semantic="final_signup_submit",
     texts=("Create account", "Sign up", "Đăng ký", "Tạo tài khoản"),
+    require_clickable=True,
+)
+
+CREATE_USERNAME_TITLE = Selector(
+    semantic="create_username",
+    content_descs=("Create a username", "Tạo tên người dùng"),
+    texts=("Create a username", "Tạo tên người dùng"),
+)
+
+# Android 15 / current Instagram accessibility trees expose the signup username
+# field without a stable resource-id. It is only used together with the
+# CREATE_USERNAME_TITLE + CONTINUE screen signature, never as a global locator.
+USERNAME_ENTRY_INPUT = Selector(
+    semantic="username",
+    class_names=("android.widget.EditText",),
     require_clickable=True,
 )
 
