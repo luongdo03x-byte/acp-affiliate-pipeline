@@ -146,11 +146,15 @@ class InstagramFlowTests(unittest.TestCase):
         InstagramFlow(driver).run(self.profile)
         self.assertNotIn(("tap", "sign_up"), driver.mutations)
 
-    def test_lost_ack_on_successor_returns_completed_without_mutation(self):
-        driver = FakeDriver([DetectedScreen("IG_HOME", 0.96, ("home",), False)])
+    def test_logged_in_home_routes_to_existing_session_instead_of_completing(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_HOME", 0.96, ("home",), False)],
+            available=("profile",),
+        )
         result = InstagramFlow(driver).run(self.profile)
-        self.assertEqual("completed", result.status)
-        self.assertEqual([], driver.mutations)
+        self.assertEqual("running", result.status)
+        self.assertEqual([("tap", "profile")], driver.mutations)
+        self.assertEqual("IG_EXISTING_SESSION", result.last_safe_step)
 
     def test_normal_action_stops_after_three_failed_attempts(self):
         driver = FakeDriver(
@@ -207,10 +211,17 @@ class InstagramFlowTests(unittest.TestCase):
         self.assertEqual([], driver.mutations)
 
     def test_app_crash_reopens_once_then_rechecks(self):
-        driver = FakeDriver([DetectedScreen("APP_CRASH", 0.99, ("crash",), False), DetectedScreen("IG_HOME", 0.96, ("home",), False)])
+        driver = FakeDriver(
+            [
+                DetectedScreen("APP_CRASH", 0.99, ("crash",), False),
+                DetectedScreen("IG_SIGNUP_ENTRY", 0.94, ("signup",), False),
+            ],
+            available=("sign_up",),
+        )
         result = InstagramFlow(driver).run(self.profile)
-        self.assertEqual("completed", result.status)
+        self.assertEqual("running", result.status)
         self.assertEqual(["com.instagram.android"], driver.opened)
+        self.assertIn(("tap", "sign_up"), driver.mutations)
 
     def test_repeated_app_crash_reopens_only_once(self):
         crash = DetectedScreen("APP_CRASH", 0.99, ("crash",), False)
