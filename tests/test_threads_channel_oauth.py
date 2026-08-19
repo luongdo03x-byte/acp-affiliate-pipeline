@@ -97,12 +97,12 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
             state = query["state"][0]
             self.assertTrue(state)
             self.assertEqual(
-                ["https://acp.example/oauth/threads/connect/callback"],
+                ["https://acp.example/oauth/threads/callback"],
                 query["redirect_uri"],
             )
 
             callback = client.get(
-                f"/oauth/threads/connect/callback?state={state}&code=browser-code",
+                f"/oauth/threads/callback?state={state}&code=browser-code",
                 base_url="https://acp.example",
             )
             self.assertEqual(302, callback.status_code)
@@ -126,7 +126,7 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
             )
         query = parse_qs(urlparse(response.headers["Location"]).query)
         self.assertEqual(
-            ["https://public-acp.example/oauth/threads/connect/callback"],
+            ["https://public-acp.example/oauth/threads/callback"],
             query["redirect_uri"],
         )
 
@@ -135,7 +135,7 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         with patch("web.threads_oauth.connect", side_effect=self._connect):
             client = app.test_client()
             response = client.get(
-                "/oauth/threads/connect/callback?state=unknown&code=browser-code",
+                "/oauth/threads/callback?state=unknown&code=browser-code",
                 base_url="https://acp.example",
             )
             self.assertEqual(302, response.status_code)
