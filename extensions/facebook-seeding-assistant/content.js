@@ -6,6 +6,15 @@
   const PANEL_ID = 'acp-facebook-seeding-panel';
   let running = false;
   let idleTimer = null;
+  let lastFacebookComposer = null;
+
+  document.addEventListener('focusin', (event) => {
+    const target = event && event.target;
+    const currentPanel = document.getElementById(PANEL_ID);
+    if (!target || (currentPanel && currentPanel.contains(target))) return;
+    const candidate = parser.findFocusedComposer({ activeElement: target });
+    if (candidate) lastFacebookComposer = candidate;
+  }, true);
 
   function bridge(message) {
     return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
@@ -183,13 +192,15 @@
     });
     node.querySelector('#acp-seed-like-stop').addEventListener('click', () => {
       running = false;
-      setPanel('PAUSED', '<div>Profile này đã dừng tại bước LIKE.</div>', 'danger');
+      setPanel('PAUSED', '<div>Profile này đã dừng tại bước LIKE. Reload/mở lại trang để tiếp tục.</div>', 'danger');
     });
   }
 
   function composerForWork(work) {
     if (work.slot.comment_type === 'REPLY') {
-      return parser.findFocusedComposer(document);
+      return lastFacebookComposer && parser.isVisible(lastFacebookComposer)
+        ? lastFacebookComposer
+        : null;
     }
     const extracted = parser.extractPostContext(document, location.href);
     const scope = extracted.ok && extracted.article ? extracted.article : document;
@@ -201,17 +212,18 @@
     const kind = isReply ? `Reply ${work.slot.item_index}` : `CMT chính ${work.slot.item_index}`;
     const initial = String(work.slot.final_text || work.slot.generated_text || '').trim();
     let lastFilledComposer = null;
+    if (isReply) lastFacebookComposer = null;
     const instruction = isReply
-      ? 'Bấm Reply dưới comment phù hợp trên Facebook để ô reply được focus, sau đó bấm “Điền vào ô đang chọn”. Tool không tự chọn người để reply.'
+      ? 'Bấm Reply dưới comment phù hợp trên Facebook. ACP nhớ ô reply đó ngay cả khi bạn quay lại panel để bấm “Điền vào ô đã chọn”. Mỗi reply mới phải chọn lại comment cần trả lời.'
       : 'Bấm “Điền CMT chính”; extension chỉ điền nội dung, không tự bấm Đăng.';
     const node = setPanel(`${kind} · ${config.accountLabel}`, `
       <div><strong>${escapeHtml(work.campaign_name)}</strong> · Account slot ${escapeHtml(work.account_slot)}</div>
       <div style="margin-top:8px;color:#cbd5e1">${escapeHtml(instruction)}</div>
       <textarea id="acp-seed-work-text" style="width:100%;box-sizing:border-box;min-height:100px;margin-top:10px;padding:8px">${escapeHtml(initial)}</textarea>
       <div id="acp-seed-work-status" style="margin-top:8px;color:#94a3b8">Bạn có thể sửa câu trước khi điền.</div>
-      ${button(isReply ? 'Điền vào ô đang chọn' : 'Điền CMT chính', 'acp-seed-fill')}
+      ${button(isReply ? 'Điền vào ô đã chọn' : 'Điền CMT chính', 'acp-seed-fill')}
       ${button('Đã đăng · xác nhận', 'acp-seed-confirm')}
-      ${button('Skip', 'acp-seed-skip', true)}
+      ${button('Dừng · làm tiếp sau', 'acp-seed-stop-work', true)}
     `);
 
     const textArea = node.querySelector('#acp-seed-work-text');
@@ -225,7 +237,7 @@
       const composer = composerForWork(work);
       if (!composer) {
         status.textContent = isReply
-          ? 'Chưa thấy ô reply đang focus. Hãy bấm Reply dưới comment cần trả lời rồi thử lại.'
+          ? 'Chưa ghi nhận ô reply Facebook. Hãy bấm Reply dưới đúng comment rồi thử lại.'
           : 'Không xác định duy nhất ô comment chính; không điền để tránh nhầm.';
         return;
       }
@@ -260,25 +272,16 @@
         if (result.report && result.report.status === 'FAILED') {
           status.textContent = `Comment đã ghi DONE nhưng Sheet lỗi: ${result.report.error || 'unknown'}`;
         }
+        lastFacebookComposer = null;
         running = false;
         run().catch(showFatal);
       } catch (error) { showFatal(error); }
     });
 
-    node.querySelector('#acp-seed-skip').addEventListener('click', async () => {
-      try {
-        await api('/api/seeding/account/work-result', {
-          method: 'POST',
-          body: {
-            instance_id: config.extensionInstanceId,
-            slot_id: work.slot.id,
-            result: 'SKIPPED',
-            final_text: textArea.value.trim() || null,
-          },
-        });
-        running = false;
-        run().catch(showFatal);
-      } catch (error) { showFatal(error); }
+    node.querySelector('#acp-seed-stop-work').addEventListener('click', () => {
+      lastFacebookComposer = null;
+      running = false;
+      setPanel('PAUSED', '<div>Slot chưa thay đổi. Reload/mở lại trang để tiếp tục đúng comment này sau.</div>', 'danger');
     });
   }
 
