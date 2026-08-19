@@ -241,8 +241,9 @@
         status.textContent = 'Hãy dùng nút Điền trước để ACP theo dõi đúng ô composer.';
         return;
       }
-      if (!runner.verifyManualSubmission(document.body, lastFilledComposer, text)) {
-        status.textContent = 'Chưa xác minh được comment đã đăng: ô composer còn nội dung hoặc comment chưa render trên trang.';
+      const extracted = parser.extractPostContext(document, location.href);
+      if (!extracted.ok || !runner.verifyManualSubmission(extracted.article, lastFilledComposer, text)) {
+        status.textContent = 'Chưa xác minh được comment đã đăng: ô composer còn nội dung hoặc comment chưa render trong đúng bài Facebook.';
         return;
       }
       try {
