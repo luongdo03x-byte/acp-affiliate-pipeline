@@ -47,9 +47,9 @@
       return {
         path,
         // Facebook frequently appends volatile tracking query parameters to
-        // rendered /posts/<id> URLs. The path already uniquely identifies
-        // those post permalinks; query-based legacy targets still need query.
-        query: /\/posts\/[^/]+$/i.test(path) ? '' : url.search,
+        // rendered /posts/<id> and /permalink/<id> URLs. Their paths already
+        // identify the post; query-based legacy targets still need the query.
+        query: /\/(?:posts|permalink)\/[^/]+$/i.test(path) ? '' : url.search,
       };
     } catch (_) {
       return null;
