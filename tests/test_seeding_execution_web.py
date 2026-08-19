@@ -41,6 +41,8 @@ class SeedingExecutionWebContracts(unittest.TestCase):
         self.assertIn("lastFilledComposer", source)
         self.assertIn("scheduleIdlePoll", source)
         self.assertIn("setTimeout", source)
+        self.assertIn("verifyManualSubmission(extracted.article", source)
+        self.assertNotIn("verifyManualSubmission(document.body", source)
 
 
 if __name__ == "__main__":
