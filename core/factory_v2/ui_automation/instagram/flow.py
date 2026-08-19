@@ -1,6 +1,8 @@
 """Fail-closed Instagram UI state machine for REMOTE_AVD."""
 from __future__ import annotations
 
+from core.factory_v2.identity import username_fallback_candidates
+
 from ..flow_result import FlowResult
 from .screens import PACKAGE
 from .selectors import (
@@ -38,6 +40,10 @@ _IG_ERRORS = (
     "ACCOUNT_DISABLED",
     "APP_CRASH",
 )
+_USERNAME_VALIDATION_STATES = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_USERNAME_VALID",
+    "IG_USERNAME_UNAVAILABLE",
+)
 _AFTER_EXISTING_HOME = _IG_PROTECTED + _IG_ERRORS + (
     "IG_EXISTING_PROFILE",
     "IG_ACCOUNT_SWITCHER",
@@ -50,6 +56,8 @@ _AFTER_EXISTING_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
 _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_SIGNUP_ENTRY",
     "IG_USERNAME_ENTRY",
+    "IG_USERNAME_VALID",
+    "IG_USERNAME_UNAVAILABLE",
     "IG_CONTACT_ENTRY",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
@@ -57,6 +65,8 @@ _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
     "IG_USERNAME_ENTRY",
+    "IG_USERNAME_VALID",
+    "IG_USERNAME_UNAVAILABLE",
     "IG_CONTACT_ENTRY",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
@@ -120,7 +130,119 @@ class InstagramFlow:
             return FlowResult("error", detected.kind, "ACCOUNT_DISABLED")
         return None
 
-    def _handle_detected(self, detected, profile: dict, *, crash_reopened: bool = False) -> FlowResult:
+    @staticmethod
+    def _username_terminal_result(detected):
+        if detected.protected:
+            return FlowResult(
+                "waiting_human",
+                detected.kind,
+                "HUMAN_VERIFICATION_REQUIRED",
+            )
+        if detected.kind in {"RATE_LIMITED", "ACTION_BLOCKED"}:
+            return FlowResult("retry_pending", detected.kind, detected.kind)
+        if detected.kind == "ACCOUNT_DISABLED":
+            return FlowResult("error", detected.kind, "ACCOUNT_DISABLED")
+        if detected.kind == "NETWORK_ERROR":
+            return FlowResult("retry_pending", detected.kind, "NETWORK_ERROR")
+        if detected.kind not in {"IG_USERNAME_VALID", "IG_USERNAME_UNAVAILABLE"}:
+            return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+        return None
+
+    def _accept_username(
+        self,
+        selected: str,
+        requested: str,
+        original_screen: str,
+    ) -> FlowResult:
+        if self.driver.find(CONTINUE) is None:
+            return FlowResult("needs_confirmation", original_screen, "UI_CHANGED")
+        action = self._attempt(
+            lambda: self.driver.tap(
+                CONTINUE,
+                expected_screens=_AFTER_USERNAME,
+                timeout=8.0,
+            )
+        )
+        if action.status != "completed":
+            return FlowResult("needs_confirmation", original_screen, "UI_CHANGED")
+        updates = {"username": selected} if selected != requested else None
+        return FlowResult(
+            "running",
+            "IG_USERNAME_VALID",
+            last_safe_step="IG_USERNAME_ENTRY",
+            profile_updates=updates,
+        )
+
+    def _handle_username(
+        self,
+        detected,
+        profile: dict,
+        account_id: str | None,
+    ) -> FlowResult:
+        requested = str(profile.get("username") or "").strip()
+        if not requested:
+            return FlowResult("needs_confirmation", detected.kind, "MISSING_USERNAME")
+
+        current = self.driver.find(USERNAME_ENTRY_INPUT)
+        if current is None:
+            return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+        current_text = str(getattr(current, "text", "") or "")
+
+        if detected.kind != "IG_USERNAME_UNAVAILABLE":
+            if current_text != requested:
+                action = self._attempt(
+                    lambda: self.driver.set_text(USERNAME_ENTRY_INPUT, requested)
+                )
+                if action.status not in {"completed", "noop"}:
+                    return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            validation = self.driver.wait_for(_USERNAME_VALIDATION_STATES, 8.0)
+            terminal = self._username_terminal_result(validation)
+            if terminal is not None:
+                return terminal
+            if validation.kind == "IG_USERNAME_VALID":
+                return self._accept_username(requested, requested, detected.kind)
+
+        stable_id = str(account_id or "").strip()
+        if not stable_id:
+            return FlowResult("needs_confirmation", detected.kind, "MISSING_ACCOUNT_ID")
+
+        for candidate in username_fallback_candidates(
+            requested,
+            stable_id,
+            max_candidates=5,
+        ):
+            action = self._attempt(
+                lambda candidate=candidate: self.driver.set_text(
+                    USERNAME_ENTRY_INPUT,
+                    candidate,
+                )
+            )
+            if action.status not in {"completed", "noop"}:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+
+            validation = self.driver.wait_for(_USERNAME_VALIDATION_STATES, 8.0)
+            terminal = self._username_terminal_result(validation)
+            if terminal is not None:
+                return terminal
+            if validation.kind == "IG_USERNAME_UNAVAILABLE":
+                continue
+            if validation.kind == "IG_USERNAME_VALID":
+                return self._accept_username(candidate, requested, detected.kind)
+
+        return FlowResult(
+            "needs_confirmation",
+            "IG_USERNAME_UNAVAILABLE",
+            "USERNAME_UNAVAILABLE",
+        )
+
+    def _handle_detected(
+        self,
+        detected,
+        profile: dict,
+        *,
+        account_id: str | None = None,
+        crash_reopened: bool = False,
+    ) -> FlowResult:
         if detected.protected:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
         error = self._result_for_error(detected)
@@ -133,13 +255,23 @@ class InstagramFlow:
             for _ in range(2):
                 current = self.driver.detect_screen()
                 if current.kind != "NETWORK_ERROR":
-                    return self._handle_detected(current, profile, crash_reopened=crash_reopened)
+                    return self._handle_detected(
+                        current,
+                        profile,
+                        account_id=account_id,
+                        crash_reopened=crash_reopened,
+                    )
             return FlowResult("retry_pending", current.kind, "NETWORK_ERROR")
         if detected.kind == "APP_CRASH":
             if crash_reopened:
                 return FlowResult("needs_confirmation", detected.kind, "APP_CRASH")
             self.driver.open_package(PACKAGE)
-            return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
+            return self._handle_detected(
+                self._detect_bounded(),
+                profile,
+                account_id=account_id,
+                crash_reopened=True,
+            )
         if detected.kind in _EXISTING_SESSION_HOME:
             if self.driver.find(PROFILE) is None:
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
@@ -192,27 +324,12 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_SIGNUP_ENTRY")
-        if detected.kind == "IG_USERNAME_ENTRY":
-            username = str(profile.get("username") or "").strip()
-            if not username:
-                return FlowResult("needs_confirmation", detected.kind, "MISSING_USERNAME")
-            if self.driver.find(USERNAME_ENTRY_INPUT) is None or self.driver.find(CONTINUE) is None:
-                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
-            action = self._attempt(
-                lambda: self.driver.set_text(USERNAME_ENTRY_INPUT, username)
-            )
-            if action.status not in {"completed", "noop"}:
-                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
-            action = self._attempt(
-                lambda: self.driver.tap(
-                    CONTINUE,
-                    expected_screens=_AFTER_USERNAME,
-                    timeout=8.0,
-                )
-            )
-            if action.status != "completed":
-                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
-            return FlowResult("running", detected.kind, last_safe_step="IG_USERNAME_ENTRY")
+        if detected.kind in {
+            "IG_USERNAME_ENTRY",
+            "IG_USERNAME_VALID",
+            "IG_USERNAME_UNAVAILABLE",
+        }:
+            return self._handle_username(detected, profile, account_id)
         if detected.kind == "IG_CONTACT_ENTRY":
             contact = str(profile.get("signup_contact") or "").strip()
             if not contact:
@@ -296,8 +413,12 @@ class InstagramFlow:
             return FlowResult("running", detected.kind, last_safe_step="IG_PROFILE_SETUP")
         return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
 
-    def run(self, profile: dict) -> FlowResult:
-        return self._handle_detected(self._detect_bounded(), dict(profile or {}))
+    def run(self, profile: dict, *, account_id: str | None = None) -> FlowResult:
+        return self._handle_detected(
+            self._detect_bounded(),
+            dict(profile or {}),
+            account_id=account_id,
+        )
 
     def observe_checkpoint(self) -> FlowResult:
         detected = self._detect_bounded()
