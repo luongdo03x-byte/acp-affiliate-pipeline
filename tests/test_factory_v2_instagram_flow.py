@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from core.factory_v2.identity import username_fallback_candidates
 from core.factory_v2.ui_automation.detector import DetectedScreen
 from core.factory_v2.ui_automation.driver import ActionResult
 from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
@@ -17,6 +18,8 @@ class FakeDriver:
         *,
         tap_statuses=None,
         set_statuses=None,
+        wait_screens=None,
+        node_texts=None,
     ):
         self.screens = list(screens)
         self.last = self.screens[-1] if self.screens else DetectedScreen("UNKNOWN", 0, ())
@@ -26,6 +29,8 @@ class FakeDriver:
         self.opened = []
         self.tap_statuses = list(tap_statuses or [])
         self.set_statuses = list(set_statuses or [])
+        self.wait_screens = list(wait_screens or [])
+        self.node_texts = dict(node_texts or {})
 
     def detect_screen(self):
         if self.screens:
@@ -33,18 +38,27 @@ class FakeDriver:
         return self.last
 
     def find(self, selector):
-        return SimpleNamespace() if selector.semantic in self.available else None
+        if selector.semantic not in self.available:
+            return None
+        return SimpleNamespace(text=self.node_texts.get(selector.semantic, ""))
 
     def set_text(self, selector, value):
         self.mutations.append(("set_text", selector.semantic))
         self.set_values.append((selector.semantic, value))
         status = self.set_statuses.pop(0) if self.set_statuses else "completed"
+        if status in {"completed", "noop"}:
+            self.node_texts[selector.semantic] = value
         return ActionResult(status)
 
     def tap(self, selector, **kwargs):
         self.mutations.append(("tap", selector.semantic))
         status = self.tap_statuses.pop(0) if self.tap_statuses else "completed"
         return ActionResult(status)
+
+    def wait_for(self, expected_screens, timeout):
+        if self.wait_screens:
+            self.last = self.wait_screens.pop(0)
+        return self.last
 
     def open_package(self, package):
         self.mutations.append(("open_package", package))
@@ -134,20 +148,82 @@ class InstagramFlowTests(unittest.TestCase):
         self.assertEqual("MISSING_AVATAR", result.reason)
         self.assertEqual([], driver.mutations)
 
-    def test_username_entry_sets_supplied_username_then_continues(self):
-        driver = FakeDriver([
-            DetectedScreen("IG_USERNAME_ENTRY", 0.97, ("create_username", "username_input", "continue"), False)
-        ])
-
-        result = InstagramFlow(driver).run(self.profile)
-
+    def test_requested_username_valid_taps_next_without_profile_update(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_USERNAME_ENTRY", 0.97, ("create_username",), False)],
+            available=("username", "continue"),
+            node_texts={"username": "dragon.3275826"},
+            wait_screens=[DetectedScreen("IG_USERNAME_VALID", 0.99, ("valid",), False)],
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
         self.assertEqual("running", result.status)
         self.assertEqual([("username", "sample_user")], driver.set_values)
-        self.assertEqual(
-            [("set_text", "username"), ("tap", "continue")],
-            driver.mutations,
-        )
+        self.assertIsNone(result.profile_updates)
+        self.assertIn(("tap", "continue"), driver.mutations)
         self.assertEqual("IG_USERNAME_ENTRY", result.last_safe_step)
+
+    def test_unavailable_username_uses_first_valid_fallback_and_reports_update(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_USERNAME_UNAVAILABLE", 0.99, ("unavailable",), False)],
+            available=("username", "continue"),
+            node_texts={"username": "sample_user"},
+            wait_screens=[DetectedScreen("IG_USERNAME_VALID", 0.99, ("valid",), False)],
+        )
+        expected = username_fallback_candidates("sample_user", "acc-1")[0]
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("running", result.status)
+        self.assertEqual(expected, driver.set_values[-1][1])
+        self.assertEqual({"username": expected}, result.profile_updates)
+        self.assertIn(("tap", "continue"), driver.mutations)
+
+    def test_five_unavailable_fallbacks_stop_without_sixth_candidate(self):
+        unavailable = DetectedScreen("IG_USERNAME_UNAVAILABLE", 0.99, ("unavailable",), False)
+        driver = FakeDriver(
+            [unavailable],
+            available=("username", "continue"),
+            node_texts={"username": "sample_user"},
+            wait_screens=[unavailable] * 5,
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("USERNAME_UNAVAILABLE", result.reason)
+        self.assertEqual(5, len(driver.set_values))
+        self.assertNotIn(("tap", "continue"), driver.mutations)
+
+    def test_username_rate_limit_stops_before_next_candidate(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_USERNAME_UNAVAILABLE", 0.99, (), False)],
+            available=("username", "continue"),
+            node_texts={"username": "sample_user"},
+            wait_screens=[DetectedScreen("RATE_LIMITED", 0.99, ("rate",), False)],
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("retry_pending", result.status)
+        self.assertEqual("RATE_LIMITED", result.reason)
+        self.assertEqual(1, len(driver.set_values))
+
+    def test_username_unknown_validation_fails_closed(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_USERNAME_ENTRY", 0.97, (), False)],
+            available=("username", "continue"),
+            node_texts={"username": "dragon.3275826"},
+            wait_screens=[DetectedScreen("UNKNOWN", 0.0, (), False)],
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("UI_CHANGED", result.reason)
+        self.assertNotIn(("tap", "continue"), driver.mutations)
+
+    def test_unavailable_username_without_account_id_fails_closed(self):
+        driver = FakeDriver(
+            [DetectedScreen("IG_USERNAME_UNAVAILABLE", 0.99, (), False)],
+            available=("username", "continue"),
+            node_texts={"username": "sample_user"},
+        )
+        result = InstagramFlow(driver).run(self.profile)
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("MISSING_ACCOUNT_ID", result.reason)
+        self.assertEqual([], driver.mutations)
 
     def test_profile_setup_sets_only_approved_fields(self):
         driver = FakeDriver([DetectedScreen("IG_PROFILE_SETUP", 0.96, ("profile",), False)])
