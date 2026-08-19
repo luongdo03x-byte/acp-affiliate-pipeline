@@ -21,6 +21,7 @@ if __package__ and "." in __package__:
         create_oauth_session,
     )
     from ..core.db import connect
+    from .threads_onboarding import register_threads_onboarding_routes
 else:
     from core.account_factory import (
         OAuthSessionError,
@@ -30,6 +31,7 @@ else:
         create_oauth_session,
     )
     from core.db import connect
+    from web.threads_onboarding import register_threads_onboarding_routes
 
 
 def _redirect_uri() -> str:
@@ -99,4 +101,5 @@ def register_threads_channel_oauth_routes(app, *, admin_password: str):
             summary=f"Đã kết nối @{result['username']} và kích hoạt kênh Threads",
         ))
 
+    register_threads_onboarding_routes(app, admin_password=admin_password)
     return app
