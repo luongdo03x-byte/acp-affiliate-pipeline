@@ -93,10 +93,19 @@ class SeedingAccountExecutionTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
+    def _prepare(self):
+        return seeding_execution.prepare_account_task(
+            self.conn,
+            instance_id="profile-1",
+            campaign_id="TASK1",
+            target_id="TARGET1",
+            post_text="Nội dung bài Facebook cần phản hồi",
+            llm_fn=lambda _prompt: json.dumps(distinct_plan(), ensure_ascii=False),
+        )
+
     def test_unmapped_profile_gets_no_work_and_mapped_profile_gets_like_first(self):
         idle = seeding_execution.next_account_work(self.conn, "profile-3")
         self.assertTrue(idle["done"])
-
         work = seeding_execution.next_account_work(self.conn, "profile-1")
         self.assertFalse(work["done"])
         self.assertEqual("LIKE", work["action"])
@@ -105,14 +114,7 @@ class SeedingAccountExecutionTests(unittest.TestCase):
         self.assertEqual(1, work["account_slot"])
 
     def test_prepare_generates_only_selected_account_slots_and_keeps_texts_distinct(self):
-        rows = seeding_execution.prepare_account_task(
-            self.conn,
-            instance_id="profile-1",
-            campaign_id="TASK1",
-            target_id="TARGET1",
-            post_text="Nội dung bài Facebook cần phản hồi",
-            llm_fn=lambda _prompt: json.dumps(distinct_plan(), ensure_ascii=False),
-        )
+        rows = self._prepare()
         self.assertEqual(6, len(rows))
         self.assertEqual({1, 2}, {row["account_slot"] for row in rows})
         untouched = self.conn.execute(
@@ -124,7 +126,6 @@ class SeedingAccountExecutionTests(unittest.TestCase):
 
     def test_prepare_reuses_plan_if_another_profile_finishes_during_llm_call(self):
         plan = distinct_plan()
-
         def competing_llm(_prompt):
             rows = [
                 (1, "MAIN", 1, plan["accounts"][0]["main_comments"][0]),
@@ -142,7 +143,6 @@ class SeedingAccountExecutionTests(unittest.TestCase):
                     (text, account_slot, comment_type, item_index),
                 )
             return json.dumps(plan, ensure_ascii=False)
-
         rows = seeding_execution.prepare_account_task(
             self.conn,
             instance_id="profile-2",
@@ -155,15 +155,9 @@ class SeedingAccountExecutionTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "GENERATED" for row in rows))
 
     def test_like_done_then_returns_only_own_first_comment(self):
-        self.conn.execute(
-            "UPDATE seeding_comment_slot SET generated_text='Main A', status='GENERATED' WHERE id='S1M'"
-        )
-        self.conn.execute(
-            "UPDATE seeding_comment_slot SET generated_text='Reply A1', status='GENERATED' WHERE id='S1R1'"
-        )
-        self.conn.execute(
-            "UPDATE seeding_comment_slot SET generated_text='Reply A2', status='GENERATED' WHERE id='S1R2'"
-        )
+        self.conn.execute("UPDATE seeding_comment_slot SET generated_text='Main A', status='GENERATED' WHERE id='S1M'")
+        self.conn.execute("UPDATE seeding_comment_slot SET generated_text='Reply A1', status='GENERATED' WHERE id='S1R1'")
+        self.conn.execute("UPDATE seeding_comment_slot SET generated_text='Reply A2', status='GENERATED' WHERE id='S1R2'")
         seeding_execution.record_like(self.conn, "profile-1", "TASK1", done=True)
         work = seeding_execution.next_account_work(self.conn, "profile-1")
         self.assertEqual("COMMENT", work["action"])
@@ -172,28 +166,49 @@ class SeedingAccountExecutionTests(unittest.TestCase):
         self.assertEqual("Main A", work["slot"]["generated_text"])
 
     def test_profile_cannot_complete_another_accounts_slot(self):
-        self.conn.execute(
-            "UPDATE seeding_comment_slot SET generated_text='Main B', status='GENERATED' WHERE id='S2M'"
-        )
+        self.conn.execute("UPDATE seeding_comment_slot SET generated_text='Main B', status='GENERATED' WHERE id='S2M'")
+        with self.assertRaises(ValueError):
+            seeding_execution.record_comment_result(
+                self.conn, instance_id="profile-1", slot_id="S2M", result="DONE",
+                final_text="Main B đã đăng", proof_ref="observed:1",
+            )
+
+    def test_operator_edit_with_forbidden_word_is_rejected(self):
+        self._prepare()
         with self.assertRaises(ValueError):
             seeding_execution.record_comment_result(
                 self.conn,
                 instance_id="profile-1",
-                slot_id="S2M",
+                slot_id="S1M",
                 result="DONE",
-                final_text="Main B đã đăng",
+                final_text="Mình thấy loại sữa này khá ổn",
+                proof_ref="observed:1",
+            )
+        self.assertEqual(
+            "GENERATED",
+            self.conn.execute("SELECT status FROM seeding_comment_slot WHERE id='S1M'").fetchone()[0],
+        )
+
+    def test_operator_edit_duplicate_of_other_account_is_rejected(self):
+        self._prepare()
+        duplicate = self.conn.execute(
+            "SELECT generated_text FROM seeding_comment_slot WHERE id='S2M'"
+        ).fetchone()[0]
+        with self.assertRaises(ValueError):
+            seeding_execution.record_comment_result(
+                self.conn,
+                instance_id="profile-1",
+                slot_id="S1M",
+                result="DONE",
+                final_text=duplicate,
                 proof_ref="observed:1",
             )
 
     def test_mapping_cannot_change_after_generation_started(self):
-        self.conn.execute(
-            "UPDATE seeding_comment_slot SET generated_text='Main A', status='GENERATED' WHERE id='S1M'"
-        )
+        self.conn.execute("UPDATE seeding_comment_slot SET generated_text='Main A', status='GENERATED' WHERE id='S1M'")
         with self.assertRaises(ValueError):
             seeding_accounts.assign_task_accounts(
-                self.conn,
-                "TASK1",
-                [self.accounts[1]["id"], self.accounts[2]["id"]],
+                self.conn, "TASK1", [self.accounts[1]["id"], self.accounts[2]["id"]],
             )
 
 
