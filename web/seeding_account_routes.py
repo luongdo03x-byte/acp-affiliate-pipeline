@@ -1,11 +1,56 @@
 """Account registry, heartbeat and task-account mapping for Seeding."""
 from __future__ import annotations
 
-from flask import jsonify, redirect, request, url_for
+import json
+
+from flask import jsonify, redirect, render_template, request, url_for
 
 from ..core import seeding_accounts, seeding_tasks
 from ..core.db import connect
-from .seeding_routes import bp, _json_body, _require_extension_token
+from .seeding_routes import bp, _json_body, _require_extension_token, _pending_review_count
+
+
+def _campaign_rows(conn):
+    rows = conn.execute(
+        "SELECT id,name,task_rules,created_at FROM seeding_campaign ORDER BY created_at DESC"
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            rules = json.loads(item.get("task_rules") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            rules = {}
+        item["max_accounts"] = max(1, int(rules.get("max_accounts", 1) or 1))
+        out.append(item)
+    return out
+
+
+@bp.get("/seeding/accounts")
+def seeding_accounts_page():
+    conn = connect()
+    try:
+        seeding_tasks.ensure_task_schema(conn)
+        seeding_accounts.ensure_account_schema(conn)
+        campaigns = _campaign_rows(conn)
+        selected_id = request.args.get("campaign_id", "").strip()
+        if not selected_id and campaigns:
+            selected_id = campaigns[0]["id"]
+        selected = next((row for row in campaigns if row["id"] == selected_id), None)
+        accounts = seeding_accounts.list_accounts(conn)
+        mapped = seeding_accounts.list_task_accounts(conn, selected_id) if selected_id else []
+        return render_template(
+            "seeding_accounts.html",
+            page="seeding",
+            pending_review=_pending_review_count(conn),
+            campaigns=campaigns,
+            selected=selected,
+            facebook_accounts=accounts,
+            task_accounts=mapped,
+            task_account_ids={row["account_id"] for row in mapped},
+        )
+    finally:
+        conn.close()
 
 
 @bp.post("/api/seeding/account/register")
@@ -65,14 +110,14 @@ def seeding_task_accounts_update(campaign_id):
         )
         return redirect(
             url_for(
-                "seeding.seeding_page",
+                "seeding.seeding_accounts_page",
                 campaign_id=campaign_id,
                 message=f"Đã gán {len(mapped)} tài khoản Facebook",
             )
         )
     except ValueError as exc:
         return redirect(
-            url_for("seeding.seeding_page", campaign_id=campaign_id, err=str(exc))
+            url_for("seeding.seeding_accounts_page", campaign_id=campaign_id, err=str(exc))
         )
     finally:
         conn.close()
