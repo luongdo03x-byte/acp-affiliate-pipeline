@@ -45,6 +45,15 @@ class SeedingWebStaticTests(unittest.TestCase):
         self.assertIn("_find_shift(conn, shift_id)", body)
         self.assertNotIn("_find_active_shift(conn", body)
 
+    def test_manual_task_form_and_route_contract_exist(self) -> None:
+        route_source = (ROOT / "web" / "seeding_routes.py").read_text(encoding="utf-8")
+        template_source = (ROOT / "web" / "templates" / "seeding.html").read_text(encoding="utf-8")
+        self.assertIn('@bp.post("/seeding/task")', route_source)
+        self.assertIn('action="/seeding/task"', template_source)
+        self.assertIn('name="task_name"', template_source)
+        self.assertIn('name="instruction"', template_source)
+        self.assertIn('name="post_url"', template_source)
+
 
 @unittest.skipUnless(HAS_FLASK, "Flask is not installed in the minimal local harness")
 class SeedingWebFunctionalTests(unittest.TestCase):
@@ -92,6 +101,29 @@ class SeedingWebFunctionalTests(unittest.TestCase):
         self.assertIn("Seeding", body)
         self.assertIn("Global pause", body)
         self.assertIn("confidence_threshold", body)
+        self.assertIn("Tạo nhiệm vụ", body)
+
+    def test_manual_task_create_redirects_to_new_task_and_shows_parsed_rules(self) -> None:
+        response = self.client.post(
+            "/seeding/task",
+            data={
+                "task_name": "A2GR-64",
+                "instruction": (
+                    "LIKE BÀI ĐĂNG; mỗi acc 3 CMT (1 cmt chính + 2 cmt reply); "
+                    "tối đa 3 acc; KHÔNG NHẮC SỮA."
+                ),
+                "post_url": "https://www.facebook.com/groups/demo/permalink/123/",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(200, response.status_code)
+        body = response.get_data(as_text=True)
+        self.assertIn("A2GR-64", body)
+        self.assertIn("3 account", body)
+        self.assertIn("1 main", body)
+        self.assertIn("2 reply", body)
+        self.assertIn("sữa", body.lower())
+        self.assertGreaterEqual(body.count("Account "), 3)
 
 
 if __name__ == "__main__":
