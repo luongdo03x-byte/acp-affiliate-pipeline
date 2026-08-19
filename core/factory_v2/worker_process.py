@@ -16,6 +16,13 @@ from .worker_protocol import WorkerCommand
 _ALLOWED_ENV = (
     "PATH", "HOME", "LANG", "LC_ALL", "ANDROID_HOME", "ANDROID_SDK_ROOT",
 )
+_UI_ACTIONS = frozenset({
+    "PREPARE_INSTAGRAM",
+    "AUTOMATE_INSTAGRAM",
+    "OBSERVE_CHECKPOINT",
+    "AUTOMATE_THREADS",
+})
+_UI_RESPONSE_TIMEOUT_SECONDS = 60.0
 
 
 def _readline_with_timeout(stream, timeout: float) -> str:
@@ -95,7 +102,14 @@ class WorkerProcessManager:
         payload = json.dumps(command.to_dict(), ensure_ascii=False, separators=(",", ":"))
         process.stdin.write(payload + "\n")
         process.stdin.flush()
-        line = self.line_reader(process.stdout, self.response_timeout_seconds)
+        timeout = self.response_timeout_seconds
+        if str(command.action or "").upper() in _UI_ACTIONS:
+            timeout = max(timeout, _UI_RESPONSE_TIMEOUT_SECONDS)
+        try:
+            line = self.line_reader(process.stdout, timeout)
+        except TimeoutError:
+            self.stop(worker_id)
+            raise
         if not line:
             raise RuntimeError("worker process closed its response stream")
         try:
