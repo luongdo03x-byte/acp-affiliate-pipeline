@@ -367,10 +367,6 @@ def _record_api_result(*, force_reviewed=False):
         abort(400, "target_id và shift_id là bắt buộc")
     conn = connect()
     try:
-        # A result describes an action that may already have happened in the
-        # browser. Record it against the exact shift even if the operator
-        # paused/ended that shift immediately after the click. Queue/analyze
-        # endpoints still require ACTIVE through _find_active_shift().
         shift = _find_shift(conn, shift_id)
         if shift is None:
             return jsonify(ok=False, error="shift_not_found"), 409
@@ -413,3 +409,60 @@ def register_seeding(app) -> None:
     """Attach seeding routes and reuse ACP's configured optional LLM callback."""
     seeding.set_llm(factory.get_caption_llm())
     app.register_blueprint(bp)
+
+
+@bp.post("/seeding/task")
+def seeding_task_create():
+    """Create one manual task from the three operator-facing fields."""
+    from ..core import seeding_tasks
+
+    conn = connect()
+    try:
+        task = seeding_tasks.create_task(
+            conn,
+            name=request.form.get("task_name", ""),
+            instruction=request.form.get("instruction", ""),
+            post_url=request.form.get("post_url", ""),
+        )
+        return _redirect_to_campaign(task["campaign"]["id"], message="Đã tạo nhiệm vụ")
+    except ValueError as exc:
+        return _redirect_to_campaign(err=exc)
+    finally:
+        conn.close()
+
+
+@bp.app_context_processor
+def inject_seeding_task_context():
+    """Expose parsed task rules and account slots only while rendering /seeding."""
+    if request.path != "/seeding":
+        return {}
+
+    from ..core import seeding_tasks
+
+    conn = connect()
+    try:
+        seeding_tasks.ensure_task_schema(conn)
+        selected_id = request.args.get("campaign_id", "").strip()
+        if not selected_id:
+            row = conn.execute(
+                "SELECT id FROM seeding_campaign ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            selected_id = row["id"] if row else ""
+        if not selected_id:
+            return {"task_rules": {}, "comment_slots": [], "task_target": None}
+
+        rules = seeding_tasks.get_task_rules(conn, selected_id)
+        slots = seeding_tasks.list_comment_slots(conn, selected_id)
+        target = conn.execute(
+            "SELECT id,url,status FROM seeding_target WHERE campaign_id=? ORDER BY position LIMIT 1",
+            (selected_id,),
+        ).fetchone()
+        return {
+            "task_rules": rules,
+            "comment_slots": slots,
+            "task_target": dict(target) if target else None,
+        }
+    except ValueError:
+        return {"task_rules": {}, "comment_slots": [], "task_target": None}
+    finally:
+        conn.close()
