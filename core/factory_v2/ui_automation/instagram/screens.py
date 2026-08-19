@@ -4,6 +4,8 @@ from __future__ import annotations
 from ..detector import ScreenDetector, ScreenSignature
 from ..selectors import Selector
 from .selectors import (
+    ACCOUNT_SWITCHER,
+    ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
     BIO_INPUT,
     BIRTH_DATE_INPUT,
@@ -158,6 +160,24 @@ def build_instagram_detector() -> ScreenDetector:
             0.99,
             False,
             34,
+        ),
+        ScreenSignature(
+            "IG_ACCOUNT_SWITCHER",
+            PACKAGE,
+            (ADD_ACCOUNT,),
+            1,
+            0.98,
+            False,
+            58,
+        ),
+        ScreenSignature(
+            "IG_EXISTING_PROFILE",
+            PACKAGE,
+            (PROFILE, ACCOUNT_SWITCHER),
+            2,
+            0.97,
+            False,
+            59,
         ),
         ScreenSignature("IG_POSTCHECK_OK", PACKAGE, (HOME, PROFILE), 2, 0.99, False, 60),
         ScreenSignature(
