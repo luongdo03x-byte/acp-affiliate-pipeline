@@ -158,6 +158,18 @@ class InstagramExistingSessionDetectorTests(unittest.TestCase):
         self.assertEqual("IG_ACCOUNT_SWITCHER", detected.kind)
         self.assertTrue(detected.automation_allowed)
 
+    def test_create_new_account_content_description_is_signup_entry(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (node(content_desc="Create new account", clickable=True),),
+        )
+
+        detected = build_instagram_detector().detect(snapshot)
+
+        self.assertEqual("IG_SIGNUP_ENTRY", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
