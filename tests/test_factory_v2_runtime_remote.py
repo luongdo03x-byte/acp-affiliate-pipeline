@@ -49,6 +49,8 @@ class FakeService:
     def __init__(self, repo):
         self.repo = repo
         self.transitions = []
+        self.username_updates = []
+        self.events = []
     def transition_account(self, account_id, stage, **kwargs):
         target = stage.value if hasattr(stage, "value") else str(stage)
         current = self.repo.account["stage"]
@@ -58,6 +60,11 @@ class FakeService:
         self.repo.account["stage"] = target
         if target in {"IG_CREATED", "THREADS_CREATED"}:
             self.repo.account["last_safe_stage"] = target
+        return self.repo.account
+    def update_worker_selected_username(self, account_id, *, job_id, worker_id, username):
+        self.username_updates.append((account_id, job_id, worker_id, username))
+        self.events.append(("username", username))
+        self.repo.account["username"] = username
         return self.repo.account
 
 
@@ -100,6 +107,7 @@ class TestRuntime(FactoryControllerRuntime):
         return self.repo.checkpoint
     def _set_remote_running(self, job, desired_action):
         self.running_actions.append(desired_action)
+        self.service.events.append(("running", desired_action))
         job["desired_action"] = desired_action
     def _set_remote_waiting(self, job):
         self.waiting.append(job["id"])
@@ -120,6 +128,8 @@ def account(stage="RUNNER_ASSIGNED"):
         "bio": "Sample bio",
         "stage": stage,
         "last_safe_stage": "IG_CREATED" if stage == "IG_CREATED" else "PROFILE_READY",
+        "assigned_worker_id": "worker-1",
+        "current_job_id": "job-1",
     }
 
 
@@ -163,6 +173,90 @@ class RemoteRuntimeTests(unittest.TestCase):
         serialized = repr(payload)
         self.assertNotIn("backup@example.com", serialized)
         self.assertNotIn("must-not-pass", serialized)
+
+    def test_running_instagram_result_persists_username_before_next_action(self):
+        acc = account()
+        repo = FakeRepo(acc, completion_mode="SOCIAL_ONLY")
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "result": {
+                    "screen": "IG_USERNAME_VALID",
+                    "profile_updates": {"username": "baongocd483102"},
+                },
+            }]),
+        )
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+        self.assertEqual("baongocd483102", acc["username"])
+        self.assertEqual(
+            [("username", "baongocd483102"), ("running", "AUTOMATE_INSTAGRAM")],
+            service.events,
+        )
+        self.assertEqual("AUTOMATE_INSTAGRAM", runtime.running_actions[-1])
+
+    def test_running_instagram_result_without_profile_update_leaves_username_unchanged(self):
+        acc = account()
+        repo = FakeRepo(acc)
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "result": {"screen": "IG_PROFILE_SETUP"},
+            }]),
+        )
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+        self.assertEqual("sample_user", acc["username"])
+        self.assertEqual([], service.username_updates)
+        self.assertEqual("AUTOMATE_INSTAGRAM", runtime.running_actions[-1])
+
+    def test_malformed_instagram_profile_update_opens_confirmation_without_advancing(self):
+        acc = account()
+        repo = FakeRepo(acc)
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "result": {
+                    "screen": "IG_USERNAME_VALID",
+                    "profile_updates": {"username": "safe_name", "password": "secret"},
+                },
+            }]),
+        )
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+        self.assertEqual("NEEDS_CONFIRMATION", acc["stage"])
+        self.assertEqual([], service.username_updates)
+        self.assertEqual([], runtime.running_actions)
+
+    def test_threads_profile_update_is_rejected_without_advancing(self):
+        acc = account("IG_CREATED")
+        repo = FakeRepo(acc, completion_mode="SOCIAL_ONLY")
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "result": {
+                    "screen": "THREADS_ONBOARDING",
+                    "profile_updates": {"username": "unexpected"},
+                },
+            }]),
+        )
+        runtime._drive_job(job("AUTOMATE_THREADS"))
+        self.assertEqual("NEEDS_CONFIRMATION", acc["stage"])
+        self.assertEqual([], service.username_updates)
+        self.assertEqual([], runtime.running_actions)
 
     def test_remote_prepare_routes_to_avd_automation_and_waits_legally(self):
         acc = account()
