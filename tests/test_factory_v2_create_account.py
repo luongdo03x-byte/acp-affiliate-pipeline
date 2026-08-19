@@ -145,6 +145,19 @@ class FactoryV2CreateAccountTests(unittest.TestCase):
                 username="INVALID USERNAME",
             )
 
+    def test_worker_selected_username_rejects_non_string_value(self):
+        result = self.service.create_single_account(execution_target="AUTO_AVD")
+        account_id = result["account"]["id"]
+        worker_id, job_id = self.bind_remote_job(account_id)
+
+        with self.assertRaisesRegex(ValueError, "username"):
+            self.service.update_worker_selected_username(
+                account_id,
+                job_id=job_id,
+                worker_id=worker_id,
+                username=123456,
+            )
+
     def test_worker_selected_username_preserves_batch_uniqueness(self):
         batch = self.service.create_batch(
             "username uniqueness",
