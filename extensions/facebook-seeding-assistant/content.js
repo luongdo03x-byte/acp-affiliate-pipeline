@@ -69,21 +69,37 @@
   async function showConfig() {
     const configResult = await bridge({ type: 'ACP_GET_CONFIG' });
     const config = (configResult && configResult.data) || {};
-    const node = setPanel('Cấu hình', `
+    const node = setPanel('Kết nối tài khoản', `
+      <div style="margin-bottom:6px">Tên/nhãn account Facebook</div>
+      <input id="acp-seed-account-label" value="${escapeHtml(config.accountLabel || '')}" placeholder="FB01 hoặc tên dễ nhận biết" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:7px">
       <div style="margin-bottom:6px">ACP local URL</div>
       <input id="acp-seed-base" value="${escapeHtml(config.acpBaseUrl || 'http://127.0.0.1:5000')}" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:7px">
       <div style="margin-bottom:6px">ACP_SEEDING_EXTENSION_TOKEN</div>
       <input id="acp-seed-token" type="password" value="${escapeHtml(config.seedingToken || '')}" style="width:100%;box-sizing:border-box;padding:7px">
-      ${button('Lưu & chạy', 'acp-seed-save')}
+      <div style="margin-top:8px;color:#94a3b8">Profile ID: ${escapeHtml(config.extensionInstanceId || 'sẽ tạo khi lưu')}</div>
+      ${button('Lưu & kết nối', 'acp-seed-save')}
     `);
     node.querySelector('#acp-seed-save').addEventListener('click', async () => {
-      await bridge({
+      const response = await bridge({
         type: 'ACP_SET_CONFIG',
         config: {
           acpBaseUrl: node.querySelector('#acp-seed-base').value,
           seedingToken: node.querySelector('#acp-seed-token').value,
+          accountLabel: node.querySelector('#acp-seed-account-label').value,
         },
       });
+      if (!response || !response.ok) {
+        showFatal(new Error('Không lưu được cấu hình extension'));
+        return;
+      }
+      if (response.pairing && !response.pairing.ok) {
+        const error = response.pairing.data && response.pairing.data.error
+          ? response.pairing.data.error
+          : 'Không kết nối được account với ACP';
+        showFatal(new Error(error));
+        return;
+      }
+      running = false;
       run().catch(showFatal);
     });
   }
@@ -225,7 +241,12 @@
     try {
       const configResult = await bridge({ type: 'ACP_GET_CONFIG' });
       const config = (configResult && configResult.data) || {};
-      if (!config.seedingToken) {
+      if (!config.seedingToken || !config.accountLabel) {
+        running = false;
+        return showConfig();
+      }
+      const pairing = await bridge({ type: 'ACP_REGISTER_ACCOUNT' });
+      if (!pairing || !pairing.ok) {
         running = false;
         return showConfig();
       }
@@ -241,7 +262,7 @@
       const assignment = await acquireAssignment();
       if (!assignment) {
         running = false;
-        setPanel('DONE', '<div>Không còn target READY.</div>', 'ok');
+        setPanel('DONE', `<div>${escapeHtml(config.accountLabel)} đã kết nối. Không còn target READY.</div>`, 'ok');
         return;
       }
       if (!runner.isSameFacebookTarget(location.href, assignment.target.url)) {
