@@ -26,7 +26,7 @@ def _is_oauth_retry(account: Mapping[str, Any]) -> bool:
     return (
         str(account.get("stage") or "") == _OAUTH_RETRY_STAGE
         and str(account.get("last_safe_stage") or "") == _TESTER_READY_STAGE
-        and str(account.get("last_error_code") or "") == "OAUTH_FAILED"
+        and str(account.get("last_error_code") or "") in {"", "OAUTH_FAILED"}
     )
 
 
