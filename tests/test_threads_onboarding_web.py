@@ -1,7 +1,6 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from flask import Flask
@@ -206,6 +205,61 @@ class ThreadsOnboardingWebTests(unittest.TestCase):
 
         self.assertEqual(302, callback.status_code)
         self.assertIn("/kenh/threads/onboarding?err=", callback.headers["Location"])
+        conn = db.connect()
+        account = conn.execute(
+            "SELECT * FROM factory_account WHERE id=?", (self.account_id,)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(AccountStage.RETRY_PENDING.value, account["stage"])
+        self.assertEqual("OAUTH_FAILED", account["last_error_code"])
+        self.assertIsNotNone(account["tester_accepted_at"])
+
+    def test_account_mismatch_returns_to_retry_without_losing_tester_acceptance(self):
+        self.provider.username = "wrong.user"
+        self.provider.user_id = "uid-wrong"
+        app = self._build_app()
+        client = app.test_client()
+        start = client.post(f"/kenh/threads/onboarding/{self.account_id}/continue")
+        state = parse_qs(urlparse(start.headers["Location"]).query)["state"][0]
+
+        callback = client.get(
+            f"/oauth/threads/onboarding/callback?state={state}&code=wrong-account-code"
+        )
+
+        self.assertEqual(302, callback.status_code)
+        self.assertIn("/kenh/threads/onboarding?err=", callback.headers["Location"])
+        conn = db.connect()
+        account = conn.execute(
+            "SELECT * FROM factory_account WHERE id=?", (self.account_id,)
+        ).fetchone()
+        channel_count = conn.execute("SELECT COUNT(*) FROM channel").fetchone()[0]
+        conn.close()
+        self.assertEqual(AccountStage.RETRY_PENDING.value, account["stage"])
+        self.assertEqual(AccountStage.THREADS_CREATED.value, account["last_safe_stage"])
+        self.assertIsNone(account["last_error_code"])
+        self.assertIsNotNone(account["tester_accepted_at"])
+        self.assertEqual(0, channel_count)
+
+    def test_reopening_wizard_reconciles_expired_oauth_to_retry(self):
+        app = self._build_app()
+        client = app.test_client()
+        client.post(f"/kenh/threads/onboarding/{self.account_id}/continue")
+
+        conn = db.connect()
+        account = conn.execute(
+            "SELECT * FROM factory_account WHERE id=?", (self.account_id,)
+        ).fetchone()
+        conn.execute(
+            "UPDATE account_factory_oauth_session SET expires_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", account["oauth_session_id"]),
+        )
+        conn.close()
+
+        response = client.get("/kenh/threads/onboarding")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn("READY_FOR_OAUTH", body)
         conn = db.connect()
         account = conn.execute(
             "SELECT * FROM factory_account WHERE id=?", (self.account_id,)
