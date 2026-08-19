@@ -9,7 +9,7 @@ import unittest
 _tmp = tempfile.mkdtemp(prefix="acp-seeding-task-intake-")
 os.environ["ACP_DB"] = os.path.join(_tmp, "task-intake.db")
 
-from acp.core import db, seeding  # noqa: E402
+from acp.core import db, seeding, seeding_tasks  # noqa: E402
 
 db.DB_PATH = os.environ["ACP_DB"]
 
@@ -30,6 +30,7 @@ class TaskIntakeTests(unittest.TestCase):
         db.init_db()
         self.conn = db.connect()
         seeding.set_llm(None)
+        seeding_tasks.ensure_task_schema(self.conn)
 
     def tearDown(self) -> None:
         self.conn.close()
@@ -48,13 +49,13 @@ class TaskIntakeTests(unittest.TestCase):
         self.assertIn("seeding_comment_slot", tables)
 
     def test_create_task_allows_duplicate_names_and_precreates_slots(self) -> None:
-        first = seeding.create_task(
+        first = seeding_tasks.create_task(
             self.conn,
             name="A2GR-64",
             instruction=INSTRUCTION,
             post_url=POST_URL,
         )
-        second = seeding.create_task(
+        second = seeding_tasks.create_task(
             self.conn,
             name="A2GR-64",
             instruction=INSTRUCTION,
