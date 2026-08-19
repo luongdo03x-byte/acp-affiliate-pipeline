@@ -27,10 +27,12 @@ class FakeFlow:
         self.result = result
         self.driver = FakeDriver(screen or DetectedScreen(result.screen, 0.99, ()))
         self.run_calls = []
+        self.account_ids = []
         self.observe_calls = 0
 
-    def run(self, profile):
+    def run(self, profile, *, account_id=None):
         self.run_calls.append(dict(profile))
+        self.account_ids.append(account_id)
         return self.result
 
     def observe_checkpoint(self):
@@ -127,6 +129,56 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "password", "otp", "verification_code", "recovery_code", "arbitrary"
         ):
             self.assertNotIn(forbidden, instagram.run_calls[0])
+
+    def test_instagram_flow_receives_stable_account_id(self):
+        agent, instagram, _ = self.make_agent(FlowResult("running", "IG_USERNAME_ENTRY"))
+        agent.execute(WorkerCommand(
+            "account-seed", "AUTOMATE_INSTAGRAM", "acc-123", {"profile": self.profile}
+        ))
+        self.assertEqual(["acc-123"], instagram.account_ids)
+
+    def test_worker_returns_only_sanitized_username_profile_update(self):
+        agent, _, _ = self.make_agent(
+            FlowResult(
+                "running",
+                "IG_USERNAME_VALID",
+                last_safe_step="IG_USERNAME_ENTRY",
+                profile_updates={"username": "baongocd483102"},
+            )
+        )
+        response = agent.execute(WorkerCommand(
+            "username-update", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": self.profile}
+        ))
+        self.assertEqual(
+            {"username": "baongocd483102"},
+            response["result"]["profile_updates"],
+        )
+
+    def test_worker_rejects_unknown_or_sensitive_profile_update_keys(self):
+        agent, _, _ = self.make_agent(
+            FlowResult(
+                "running",
+                "IG_USERNAME_VALID",
+                profile_updates={"username": "safe_name", "password": "secret"},
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "profile_updates"):
+            agent.execute(WorkerCommand(
+                "bad-update", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": self.profile}
+            ))
+
+    def test_worker_rejects_invalid_username_profile_update(self):
+        agent, _, _ = self.make_agent(
+            FlowResult(
+                "running",
+                "IG_USERNAME_VALID",
+                profile_updates={"username": "INVALID USERNAME"},
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "profile_updates"):
+            agent.execute(WorkerCommand(
+                "bad-username-update", "AUTOMATE_INSTAGRAM", "acc-1", {"profile": self.profile}
+            ))
 
     def test_existing_avatar_is_staged_to_fixed_device_path(self):
         adb_client = FakeAdbClient()
