@@ -55,7 +55,6 @@ class SeedingReportTests(unittest.TestCase):
                     "INSERT INTO seeding_comment_slot VALUES (?,?,?,?,?,?,?,?,'DONE','2026','2026')",
                     (f"R{slot}{rep}", "TASK1", "T1", slot, "REPLY", rep, f"Reply {slot}.{rep}", f"Reply final {slot}.{rep}"),
                 )
-        # Unassigned slot must not block completion or appear in report.
         self.conn.execute(
             "INSERT INTO seeding_comment_slot VALUES ('M3','TASK1','T1',3,'MAIN',1,NULL,NULL,'EMPTY','2026','2026')"
         )
@@ -118,6 +117,21 @@ class SeedingReportTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual("A2GR-64", calls[0][1]["task_name"])
         self.assertEqual(4, len(calls[0][1]["rows"]))
+
+    def test_existing_pushing_reservation_does_not_send_again(self):
+        self.conn.execute(
+            "INSERT INTO seeding_task_report(campaign_id,status,updated_at) VALUES ('TASK1','PUSHING','2026')"
+        )
+        calls = []
+        result = seeding_reports.push_to_sheet(
+            self.conn,
+            "TASK1",
+            webhook_url="https://script.google.com/macros/s/test/exec",
+            secret="secret",
+            sender=lambda url, payload: calls.append((url, payload)) or {"ok": True},
+        )
+        self.assertEqual("PUSHING", result["status"])
+        self.assertEqual([], calls)
 
 
 if __name__ == "__main__":
