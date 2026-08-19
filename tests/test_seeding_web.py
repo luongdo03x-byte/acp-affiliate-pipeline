@@ -129,8 +129,10 @@ class SeedingWebFunctionalTests(unittest.TestCase):
 
 
 def load_tests(loader, tests, pattern):
-    """Keep task-intake regressions inside the existing manage.sh seeding gate."""
+    """Keep seeding regressions inside the existing manage.sh seeding gate."""
     from acp.tests import (
+        test_seeding_account_web,
+        test_seeding_accounts,
         test_seeding_task_comment_plan,
         test_seeding_task_intake,
         test_seeding_task_rules,
@@ -141,6 +143,8 @@ def load_tests(loader, tests, pattern):
     suite.addTests(loader.loadTestsFromModule(test_seeding_task_rules))
     suite.addTests(loader.loadTestsFromModule(test_seeding_task_intake))
     suite.addTests(loader.loadTestsFromModule(test_seeding_task_comment_plan))
+    suite.addTests(loader.loadTestsFromModule(test_seeding_accounts))
+    suite.addTests(loader.loadTestsFromModule(test_seeding_account_web))
     return suite
 
 
