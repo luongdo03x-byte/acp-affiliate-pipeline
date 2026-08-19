@@ -92,6 +92,52 @@ class FactoryV2SupervisorColdStartTests(unittest.TestCase):
         self.assertEqual(0, worker["draining"])
         self.assertIsNone(worker["last_error"])
 
+    def test_social_only_swap_pressure_does_not_drain_avd_on_tick_after_start(self):
+        sample = HostSample(
+            cpu_percent=22.94,
+            ram_available_mb=7427,
+            swap_used_mb=7157,
+            swap_in_rate=86.68,
+            load_1m=2.96,
+            load_5m=2.86,
+        )
+        supervisor = self.supervisor(sample)
+
+        first = supervisor.tick()
+        second = supervisor.tick()
+
+        self.assertEqual("START", first.action)
+        self.assertEqual("HOLD", second.action)
+        self.assertEqual(1, second.target_workers)
+        self.assertEqual([("acp-worker-01", 5554)], self.avd.started)
+        self.assertEqual([], self.avd.stopped)
+        worker = self.repo.get_worker("worker:acp-worker-01")
+        self.assertEqual("STARTING", worker["state"])
+        self.assertEqual(0, worker["draining"])
+
+    def test_social_only_swap_pressure_keeps_single_ready_avd_for_next_account(self):
+        self.repo.insert_worker({
+            "id": "worker:acp-worker-01",
+            "avd_name": "acp-worker-01",
+            "adb_serial": "emulator-5554",
+            "state": "READY",
+        })
+        sample = HostSample(
+            cpu_percent=22.94,
+            ram_available_mb=7427,
+            swap_used_mb=7157,
+            swap_in_rate=86.68,
+            load_1m=2.96,
+            load_5m=2.86,
+        )
+
+        decision = self.supervisor(sample).tick()
+
+        self.assertEqual("HOLD", decision.action)
+        self.assertEqual(1, decision.target_workers)
+        self.assertEqual([], self.avd.stopped)
+        self.assertEqual("READY", self.repo.get_worker("worker:acp-worker-01")["state"])
+
     def test_social_only_cold_start_allows_one_avd_with_swap_yellow_and_green_headroom(self):
         sample = HostSample(
             cpu_percent=25.0,
