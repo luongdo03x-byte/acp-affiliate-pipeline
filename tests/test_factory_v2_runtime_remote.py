@@ -21,7 +21,13 @@ class FakeConn:
             return None
         def fetchall(self):
             return []
+
+    def __init__(self):
+        self.statements = []
+
     def execute(self, *args, **kwargs):
+        if args:
+            self.statements.append(str(args[0]).strip())
         return self.Cursor()
 
 
@@ -197,6 +203,27 @@ class RemoteRuntimeTests(unittest.TestCase):
             service.events,
         )
         self.assertEqual("AUTOMATE_INSTAGRAM", runtime.running_actions[-1])
+
+    def test_running_instagram_username_update_and_ack_share_transaction(self):
+        acc = account()
+        repo = FakeRepo(acc, completion_mode="SOCIAL_ONLY")
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "result": {
+                    "screen": "IG_USERNAME_VALID",
+                    "profile_updates": {"username": "baongocd483102"},
+                },
+            }]),
+        )
+
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+
+        self.assertEqual(["BEGIN IMMEDIATE", "COMMIT"], repo.conn.statements)
 
     def test_running_instagram_result_without_profile_update_leaves_username_unchanged(self):
         acc = account()
