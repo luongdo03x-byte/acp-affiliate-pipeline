@@ -16,11 +16,15 @@ class Selector:
     resource_ids: tuple[str, ...] = ()
     content_descs: tuple[str, ...] = ()
     texts: tuple[str, ...] = ()
+    text_contains_all: tuple[str, ...] = ()
     class_names: tuple[str, ...] = ()
     require_clickable: bool = False
+    require_enabled: bool = True
 
     def _eligible(self, node: UiNode) -> bool:
-        return node.enabled and (not self.require_clickable or node.clickable)
+        if self.require_enabled and not node.enabled:
+            return False
+        return not self.require_clickable or node.clickable
 
     def find(self, snapshot: UiSnapshot) -> UiNode | None:
         nodes = tuple(node for node in snapshot.nodes if self._eligible(node))
@@ -39,6 +43,16 @@ class Selector:
         for expected in (normalize_ui_text(value) for value in self.texts):
             for node in nodes:
                 if normalize_ui_text(node.text) == expected:
+                    return node
+        contains = tuple(
+            normalize_ui_text(value)
+            for value in self.text_contains_all
+            if normalize_ui_text(value)
+        )
+        if contains:
+            for node in nodes:
+                actual = normalize_ui_text(node.text)
+                if all(expected in actual for expected in contains):
                     return node
         for expected in self.class_names:
             for node in nodes:
