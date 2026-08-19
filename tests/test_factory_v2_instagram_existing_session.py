@@ -127,6 +127,25 @@ class InstagramExistingSessionDetectorTests(unittest.TestCase):
         self.assertEqual("IG_EXISTING_PROFILE", detected.kind)
         self.assertTrue(detected.automation_allowed)
 
+    def test_profile_with_username_container_is_existing_profile(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (
+                node(content_desc="Home", resource_id="com.instagram.android:id/feed_tab", clickable=True),
+                node(content_desc="Profile", resource_id="com.instagram.android:id/profile_tab", clickable=True),
+                node(
+                    resource_id="com.instagram.android:id/action_bar_username_container",
+                    clickable=True,
+                ),
+            ),
+        )
+
+        detected = build_instagram_detector().detect(snapshot)
+
+        self.assertEqual("IG_EXISTING_PROFILE", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
     def test_add_instagram_account_sheet_is_account_switcher(self):
         snapshot = UiSnapshot(
             "com.instagram.android",
