@@ -64,6 +64,18 @@ CREATE_USERNAME_TITLE = Selector(
     texts=("Create a username", "Tạo tên người dùng"),
 )
 
+USERNAME_VALID_MARKER = Selector(
+    semantic="username_valid",
+    content_descs=("Input Username is valid.",),
+    texts=("Input Username is valid.",),
+    require_enabled=False,
+)
+
+USERNAME_UNAVAILABLE_MARKER = Selector(
+    semantic="username_unavailable",
+    text_contains_all=("username", "is not available"),
+)
+
 # Android 15 / current Instagram accessibility trees expose the signup username
 # field without a stable resource-id. It is only used together with the
 # CREATE_USERNAME_TITLE + CONTINUE screen signature, never as a global locator.
