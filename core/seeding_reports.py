@@ -154,6 +154,37 @@ def _default_sender(url: str, payload: dict) -> dict:
     return result
 
 
+def _reserve_push(conn, campaign_id: str, stamp: str) -> tuple[bool, dict]:
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO seeding_task_report(campaign_id,status,updated_at)
+           VALUES (?,'PUSHING',?)""",
+        (campaign_id, stamp),
+    )
+    if cur.rowcount == 1:
+        row = conn.execute(
+            "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
+        ).fetchone()
+        return True, dict(row)
+
+    row = conn.execute(
+        "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Không tạo được trạng thái report")
+    if row["status"] in {"PUSHING", "PUSHED"}:
+        return False, dict(row)
+    cur = conn.execute(
+        """UPDATE seeding_task_report
+           SET status='PUSHING',last_error=NULL,updated_at=?
+           WHERE campaign_id=? AND status IN ('FAILED','PENDING','READY')""",
+        (stamp, campaign_id),
+    )
+    current = conn.execute(
+        "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
+    ).fetchone()
+    return cur.rowcount == 1, dict(current)
+
+
 def push_to_sheet(
     conn,
     campaign_id: str,
@@ -163,15 +194,20 @@ def push_to_sheet(
     sender=None,
 ) -> dict:
     ensure_report_schema(conn)
-    existing = conn.execute(
-        "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
-    ).fetchone()
-    if existing is not None and existing["status"] == "PUSHED":
-        return dict(existing)
-
     completion = task_completion(conn, campaign_id)
     if not completion["complete"]:
         raise ValueError("Nhiệm vụ chưa hoàn thành đủ LIKE/comment để ghi Sheet")
+
+    url = str(webhook_url or "").strip()
+    token = str(secret or "").strip()
+    if not url or not token:
+        raise ValueError("Chưa cấu hình Google Sheets webhook/secret")
+
+    stamp = _now()
+    acquired, reservation = _reserve_push(conn, campaign_id, stamp)
+    if not acquired:
+        return reservation
+
     campaign = conn.execute(
         "SELECT name FROM seeding_campaign WHERE id=?", (campaign_id,)
     ).fetchone()
@@ -182,10 +218,6 @@ def push_to_sheet(
     if campaign is None or target is None:
         raise ValueError("Không tìm thấy nhiệm vụ hoặc link bài")
 
-    url = str(webhook_url or "").strip()
-    token = str(secret or "").strip()
-    if not url or not token:
-        raise ValueError("Chưa cấu hình Google Sheets webhook/secret")
     payload = {
         "secret": token,
         "campaign_id": campaign_id,
@@ -194,27 +226,23 @@ def push_to_sheet(
         "rows": build_sheet_rows(conn, campaign_id),
     }
     send = sender or _default_sender
-    stamp = _now()
     try:
         response = send(url, payload)
         if not isinstance(response, dict) or not response.get("ok"):
             raise ValueError("Google Sheets webhook không xác nhận thành công")
         sheet_ref = str(response.get("sheet_ref") or response.get("range") or "").strip() or None
         conn.execute(
-            """INSERT INTO seeding_task_report(campaign_id,status,last_error,sheet_ref,pushed_at,updated_at)
-               VALUES (?,'PUSHED',NULL,?,?,?)
-               ON CONFLICT(campaign_id) DO UPDATE SET
-                 status='PUSHED',last_error=NULL,sheet_ref=excluded.sheet_ref,
-                 pushed_at=excluded.pushed_at,updated_at=excluded.updated_at""",
-            (campaign_id, sheet_ref, stamp, stamp),
+            """UPDATE seeding_task_report
+               SET status='PUSHED',last_error=NULL,sheet_ref=?,pushed_at=?,updated_at=?
+               WHERE campaign_id=? AND status='PUSHING'""",
+            (sheet_ref, stamp, stamp, campaign_id),
         )
     except Exception as exc:
         conn.execute(
-            """INSERT INTO seeding_task_report(campaign_id,status,last_error,updated_at)
-               VALUES (?,'FAILED',?,?)
-               ON CONFLICT(campaign_id) DO UPDATE SET
-                 status='FAILED',last_error=excluded.last_error,updated_at=excluded.updated_at""",
-            (campaign_id, str(exc), stamp),
+            """UPDATE seeding_task_report
+               SET status='FAILED',last_error=?,updated_at=?
+               WHERE campaign_id=? AND status='PUSHING'""",
+            (str(exc), stamp, campaign_id),
         )
         raise
     return dict(
