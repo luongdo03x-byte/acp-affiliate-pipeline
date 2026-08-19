@@ -31,6 +31,7 @@ from ..core import connections
 from ..core.db import connect, now
 from ..core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
 from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
+from .threads_oauth import register_threads_channel_oauth_routes
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
 
@@ -118,6 +119,7 @@ def create_app():
     # lại. content._llm_fn là biến module-level, set một lần ở đây là đủ cho
     # mọi route.
     content.set_llm(factory.get_caption_llm())
+    register_threads_channel_oauth_routes(app, admin_password=admin_password)
 
     # ------------------------------------------------------------ xác thực
 
@@ -657,7 +659,6 @@ def create_app():
             applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
             row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
             saved = row["handle"] if row else cid
-
         rows = []
         for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
