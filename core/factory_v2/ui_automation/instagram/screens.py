@@ -19,6 +19,8 @@ from .selectors import (
     SIGNUP_CONTACT_INPUT,
     USERNAME_ENTRY_INPUT,
     USERNAME_INPUT,
+    USERNAME_UNAVAILABLE_MARKER,
+    USERNAME_VALID_MARKER,
 )
 
 PACKAGE = "com.instagram.android"
@@ -182,6 +184,24 @@ def build_instagram_detector() -> ScreenDetector:
             59,
         ),
         ScreenSignature("IG_POSTCHECK_OK", PACKAGE, (HOME, PROFILE), 2, 0.99, False, 60),
+        ScreenSignature(
+            "IG_USERNAME_UNAVAILABLE",
+            PACKAGE,
+            (CREATE_USERNAME_TITLE, USERNAME_ENTRY_INPUT, USERNAME_UNAVAILABLE_MARKER),
+            3,
+            0.99,
+            False,
+            74,
+        ),
+        ScreenSignature(
+            "IG_USERNAME_VALID",
+            PACKAGE,
+            (CREATE_USERNAME_TITLE, USERNAME_ENTRY_INPUT, USERNAME_VALID_MARKER, CONTINUE),
+            4,
+            0.99,
+            False,
+            75,
+        ),
         ScreenSignature(
             "IG_USERNAME_ENTRY",
             PACKAGE,
