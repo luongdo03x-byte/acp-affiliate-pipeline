@@ -25,6 +25,16 @@
     return Boolean(needle && haystack.includes(needle));
   }
 
+  function verifyManualSubmission(rootNode, composer, expectedText) {
+    const needle = parser.normalizeText(expectedText).toLowerCase();
+    if (!needle) return false;
+    if (composer && composer.isConnected !== false) {
+      const draft = parser.normalizeText(composer.textContent).toLowerCase();
+      if (draft && draft.includes(needle)) return false;
+    }
+    return verifyObservedComment(rootNode, expectedText);
+  }
+
   function hasFacebookSafetyBlock(text) {
     const value = parser.normalizeText(text).toLowerCase();
     return [
@@ -46,9 +56,6 @@
       const path = url.pathname.replace(/\/+$/, '') || '/';
       return {
         path,
-        // Facebook frequently appends volatile tracking query parameters to
-        // rendered /posts/<id> and /permalink/<id> URLs. Their paths already
-        // identify the post; query-based legacy targets still need the query.
         query: /\/(?:posts|permalink)\/[^/]+$/i.test(path) ? '' : url.search,
       };
     } catch (_) {
@@ -74,6 +81,7 @@
   return {
     shouldAttemptAutoSubmit,
     verifyObservedComment,
+    verifyManualSubmission,
     hasFacebookSafetyBlock,
     isSameFacebookTarget,
     performSingleSubmit,
