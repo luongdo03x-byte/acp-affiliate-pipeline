@@ -14,7 +14,6 @@ from core.db import now
 from .models import AccountStage, RunnerType
 from .resource_policy import (
     CapacityState,
-    DEFAULT_THRESHOLDS,
     classify_capacity,
     next_worker_target,
 )
@@ -82,13 +81,9 @@ class WorkerSupervisor:
         return int(target)
 
     def _apply_social_only_worker_floor(self, sample, target: int) -> int:
+        del sample
         target = int(target)
         if not self._is_social_only_batch():
-            return target
-        thresholds = DEFAULT_THRESHOLDS
-        if sample.cpu_percent >= thresholds.green_cpu_max:
-            return target
-        if sample.ram_available_mb <= thresholds.green_ram_min_mb:
             return target
         return max(target, 1)
 
@@ -250,7 +245,7 @@ class WorkerSupervisor:
         target = next_worker_target(len(workers), waiting, capacity, learned_ram)
         target = self._limit_target_for_batch(target)
         target = self._apply_social_only_worker_floor(sample, target)
-        stable = self._is_stable(capacity)
+        stable = True if self._is_social_only_batch() else self._is_stable(capacity)
         self._persist_sample(sample, capacity, workers, target)
 
         operator_decision = self._process_operator_intent(capacity, target, workers)
