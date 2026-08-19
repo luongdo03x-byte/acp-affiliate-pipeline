@@ -10,6 +10,23 @@ from acp.core import seeding_accounts, seeding_execution
 INSTRUCTION = "LIKE BÀI; mỗi acc 3 CMT (1 cmt chính + 2 reply); tối đa 3 acc; KHÔNG NHẮC SỮA"
 
 
+def distinct_plan():
+    return {
+        "accounts": [
+            {
+                "slot": 1,
+                "main_comments": ["Mình nghĩ nên tìm hiểu kỹ thông tin trước khi quyết định."],
+                "replies": ["Ý này khá hợp lý, hỏi thêm chi tiết sẽ dễ cân nhắc hơn.", "Mình cũng ưu tiên xem kỹ điều kiện trước rồi mới chọn."],
+            },
+            {
+                "slot": 2,
+                "main_comments": ["Có thể tham khảo thêm vài chia sẻ thực tế để có góc nhìn rộng hơn."],
+                "replies": ["Chuẩn, mỗi trường hợp sẽ khác nên xem nhu cầu cụ thể trước.", "Nếu còn phân vân thì hỏi trực tiếp bên hỗ trợ cho chắc nhé."],
+            },
+        ]
+    }
+
+
 class SeedingAccountExecutionTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", isolation_level=None)
@@ -88,27 +105,13 @@ class SeedingAccountExecutionTests(unittest.TestCase):
         self.assertEqual(1, work["account_slot"])
 
     def test_prepare_generates_only_selected_account_slots_and_keeps_texts_distinct(self):
-        response = {
-            "accounts": [
-                {
-                    "slot": 1,
-                    "main_comments": ["Mình nghĩ nên tìm hiểu kỹ thông tin trước khi quyết định."],
-                    "replies": ["Ý này khá hợp lý, hỏi thêm chi tiết sẽ dễ cân nhắc hơn.", "Mình cũng ưu tiên xem kỹ điều kiện trước rồi mới chọn."],
-                },
-                {
-                    "slot": 2,
-                    "main_comments": ["Có thể tham khảo thêm vài chia sẻ thực tế để có góc nhìn rộng hơn."],
-                    "replies": ["Chuẩn, mỗi trường hợp sẽ khác nên xem nhu cầu cụ thể trước.", "Nếu còn phân vân thì hỏi trực tiếp bên hỗ trợ cho chắc nhé."],
-                },
-            ]
-        }
         rows = seeding_execution.prepare_account_task(
             self.conn,
             instance_id="profile-1",
             campaign_id="TASK1",
             target_id="TARGET1",
             post_text="Nội dung bài Facebook cần phản hồi",
-            llm_fn=lambda _prompt: json.dumps(response, ensure_ascii=False),
+            llm_fn=lambda _prompt: json.dumps(distinct_plan(), ensure_ascii=False),
         )
         self.assertEqual(6, len(rows))
         self.assertEqual({1, 2}, {row["account_slot"] for row in rows})
@@ -118,6 +121,38 @@ class SeedingAccountExecutionTests(unittest.TestCase):
         self.assertEqual(3, untouched)
         generated = [row["generated_text"] for row in rows]
         self.assertEqual(6, len(set(generated)))
+
+    def test_prepare_reuses_plan_if_another_profile_finishes_during_llm_call(self):
+        plan = distinct_plan()
+
+        def competing_llm(_prompt):
+            rows = [
+                (1, "MAIN", 1, plan["accounts"][0]["main_comments"][0]),
+                (1, "REPLY", 1, plan["accounts"][0]["replies"][0]),
+                (1, "REPLY", 2, plan["accounts"][0]["replies"][1]),
+                (2, "MAIN", 1, plan["accounts"][1]["main_comments"][0]),
+                (2, "REPLY", 1, plan["accounts"][1]["replies"][0]),
+                (2, "REPLY", 2, plan["accounts"][1]["replies"][1]),
+            ]
+            for account_slot, comment_type, item_index, text in rows:
+                self.conn.execute(
+                    """UPDATE seeding_comment_slot SET generated_text=?,status='GENERATED'
+                       WHERE campaign_id='TASK1' AND target_id='TARGET1'
+                         AND account_slot=? AND comment_type=? AND item_index=?""",
+                    (text, account_slot, comment_type, item_index),
+                )
+            return json.dumps(plan, ensure_ascii=False)
+
+        rows = seeding_execution.prepare_account_task(
+            self.conn,
+            instance_id="profile-2",
+            campaign_id="TASK1",
+            target_id="TARGET1",
+            post_text="Nội dung bài Facebook cần phản hồi",
+            llm_fn=competing_llm,
+        )
+        self.assertEqual(6, len(rows))
+        self.assertTrue(all(row["status"] == "GENERATED" for row in rows))
 
     def test_like_done_then_returns_only_own_first_comment(self):
         self.conn.execute(
