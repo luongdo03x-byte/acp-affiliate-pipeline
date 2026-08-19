@@ -33,7 +33,9 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmp.name, "oauth.db")
         self.old_env = os.environ.get("ACP_ENV")
+        self.old_public_base = os.environ.get("ACP_PUBLIC_BASE_URL")
         os.environ["ACP_ENV"] = "development"
+        os.environ.pop("ACP_PUBLIC_BASE_URL", None)
         conn = self._connect()
         conn.executescript("""
             CREATE TABLE channel (
@@ -60,6 +62,10 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
             os.environ.pop("ACP_ENV", None)
         else:
             os.environ["ACP_ENV"] = self.old_env
+        if self.old_public_base is None:
+            os.environ.pop("ACP_PUBLIC_BASE_URL", None)
+        else:
+            os.environ["ACP_PUBLIC_BASE_URL"] = self.old_public_base
 
     def _connect(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
@@ -110,6 +116,19 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("@browser.account", row["handle"])
         self.assertEqual("ACTIVE", row["status"])
+
+    def test_start_uses_configured_public_base_url_for_redirect_uri(self):
+        os.environ["ACP_PUBLIC_BASE_URL"] = "https://public-acp.example/"
+        app = self._build_app()
+        with patch("web.threads_oauth.connect", side_effect=self._connect):
+            response = app.test_client().get(
+                "/oauth/threads/start", base_url="http://127.0.0.1:5000"
+            )
+        query = parse_qs(urlparse(response.headers["Location"]).query)
+        self.assertEqual(
+            ["https://public-acp.example/oauth/threads/connect/callback"],
+            query["redirect_uri"],
+        )
 
     def test_callback_rejects_unknown_state_without_creating_channel(self):
         app = self._build_app()
