@@ -38,7 +38,7 @@
       const path = url.pathname.replace(/\/+$/, '') || '/';
       // Modern post/group permalinks are identified by their path. Facebook may
       // append volatile tracking query parameters while rendering anchors.
-      if (/\/posts\/[^/]+$/i.test(path)) return path;
+      if (/\/(?:posts|permalink)\/[^/]+$/i.test(path)) return path;
       return `${path}${url.search}`;
     } catch (_) {
       return null;
