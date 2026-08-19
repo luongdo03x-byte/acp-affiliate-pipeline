@@ -28,9 +28,22 @@ function doPost(e) {
       return row.map(function (cell) { return String(cell == null ? '' : cell); });
     });
 
+    var campaignId = String(body.campaign_id);
+    var reportKey = 'ACP_SEEDING_REPORT_' + campaignId;
     var lock = LockService.getScriptLock();
     lock.waitLock(10000);
     try {
+      var existingRef = props.getProperty(reportKey);
+      if (existingRef) {
+        return jsonResponse({
+          ok: true,
+          duplicate: true,
+          sheet_ref: existingRef,
+          task_name: String(body.task_name || ''),
+          campaign_id: campaignId
+        });
+      }
+
       var spreadsheet = SpreadsheetApp.openById(spreadsheetId);
       var sheet = spreadsheet.getSheetByName(sheetName);
       if (!sheet) {
@@ -39,11 +52,14 @@ function doPost(e) {
       var startRow = Math.max(sheet.getLastRow() + 1, 1);
       sheet.getRange(startRow, 2, rows.length, 3).setValues(rows);
       var endRow = startRow + rows.length - 1;
+      var sheetRef = sheetName + '!B' + startRow + ':D' + endRow;
+      props.setProperty(reportKey, sheetRef);
       return jsonResponse({
         ok: true,
-        sheet_ref: sheetName + '!B' + startRow + ':D' + endRow,
+        duplicate: false,
+        sheet_ref: sheetRef,
         task_name: String(body.task_name || ''),
-        campaign_id: String(body.campaign_id || '')
+        campaign_id: campaignId
       });
     } finally {
       lock.releaseLock();
