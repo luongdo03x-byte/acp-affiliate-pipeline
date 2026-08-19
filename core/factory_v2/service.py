@@ -308,7 +308,9 @@ class FactoryService:
             or account.get("assigned_worker_id") != worker_id
         ):
             raise ValueError("worker profile update binding mismatch")
-        value = str(username or "").strip()
+        if not isinstance(username, str):
+            raise ValueError("invalid worker-selected username")
+        value = username.strip()
         if _WORKER_USERNAME_RE.fullmatch(value) is None:
             raise ValueError("invalid worker-selected username")
         self.repo.conn.execute(
