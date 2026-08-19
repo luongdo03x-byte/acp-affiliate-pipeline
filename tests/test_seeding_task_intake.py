@@ -30,12 +30,11 @@ class TaskIntakeTests(unittest.TestCase):
         db.init_db()
         self.conn = db.connect()
         seeding.set_llm(None)
-        seeding_tasks.ensure_task_schema(self.conn)
 
     def tearDown(self) -> None:
         self.conn.close()
 
-    def test_schema_has_task_rules_and_comment_slots(self) -> None:
+    def test_init_db_has_task_rules_and_comment_slots(self) -> None:
         campaign_cols = {
             row[1] for row in self.conn.execute("PRAGMA table_info(seeding_campaign)").fetchall()
         }
