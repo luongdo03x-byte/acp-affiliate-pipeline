@@ -83,10 +83,7 @@ def _target_payload(row) -> dict:
 
 
 def next_account_work(conn, instance_id: str) -> dict:
-    """Return only work mapped to the requesting Chrome Profile.
-
-    This never submits anything. LIKE and COMMENT are operator-confirmed actions.
-    """
+    """Return only work mapped to the requesting Chrome Profile."""
     account = _account_for_instance(conn, instance_id)
     for row in _mapped_tasks(conn, account["id"]):
         rules = _rules(row["task_rules"])
@@ -234,8 +231,6 @@ def prepare_account_task(
         conn.execute("ROLLBACK TO SAVEPOINT seeding_mapped_plan")
         conn.execute("RELEASE SAVEPOINT seeding_mapped_plan")
         current = _mapped_slot_rows(conn, campaign_id, target_id, mapped_slots)
-        # Another mapped profile may have completed the same generation while
-        # this request was waiting on the LLM. Reuse the winning full plan.
         if current and len(current) == len(existing_rows) and all(row["status"] != "EMPTY" for row in current):
             return [dict(row) for row in current]
         raise exc
@@ -257,6 +252,36 @@ def record_like(conn, instance_id: str, campaign_id: str, *, done: bool) -> dict
     result = dict(mapping)
     result.update(like_status=status, like_completed_at=completed_at)
     return result
+
+
+def _validate_final_comment(conn, row, text: str) -> None:
+    campaign = conn.execute(
+        "SELECT task_rules FROM seeding_campaign WHERE id=?", (row["campaign_id"],)
+    ).fetchone()
+    if campaign is None:
+        raise ValueError("Không tìm thấy nhiệm vụ")
+    mappings = conn.execute(
+        "SELECT account_slot FROM seeding_task_account WHERE campaign_id=? ORDER BY account_slot",
+        (row["campaign_id"],),
+    ).fetchall()
+    mapped_slots = [int(item["account_slot"]) for item in mappings]
+    if not mapped_slots:
+        raise ValueError("Nhiệm vụ chưa gán account")
+    slots = _mapped_slot_rows(conn, row["campaign_id"], row["target_id"], mapped_slots)
+    accounts = []
+    by_slot = {slot: {"slot": slot, "main_comments": [], "replies": []} for slot in mapped_slots}
+    for slot in slots:
+        candidate = text if slot["id"] == row["id"] else str(slot["final_text"] or slot["generated_text"] or "").strip()
+        if not candidate:
+            raise ValueError("Comment plan chưa đầy đủ")
+        target_list = by_slot[int(slot["account_slot"])][
+            "main_comments" if slot["comment_type"] == "MAIN" else "replies"
+        ]
+        target_list.append(candidate)
+    accounts.extend(by_slot[slot] for slot in mapped_slots)
+    rules = _rules(campaign["task_rules"])
+    rules["max_accounts"] = len(mapped_slots)
+    seeding_tasks.validate_comment_plan({"accounts": accounts}, rules)
 
 
 def record_comment_result(
@@ -291,8 +316,10 @@ def record_comment_result(
         raise ValueError("Comment slot chưa sẵn sàng")
 
     text = str(final_text or row["generated_text"] or "").strip()
-    if outcome == "DONE" and not text:
-        raise ValueError("Nội dung comment cuối không được để trống")
+    if outcome == "DONE":
+        if not text:
+            raise ValueError("Nội dung comment cuối không được để trống")
+        _validate_final_comment(conn, row, text)
     stamp = _now()
     conn.execute(
         """UPDATE seeding_comment_slot
