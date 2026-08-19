@@ -1,7 +1,12 @@
+import re
 import unittest
 from collections import Counter
 
-from core.factory_v2.identity import IdentityPools, generate_profiles
+from core.factory_v2.identity import (
+    IdentityPools,
+    generate_profiles,
+    username_fallback_candidates,
+)
 
 
 class FactoryV2IdentityTests(unittest.TestCase):
@@ -35,6 +40,32 @@ class FactoryV2IdentityTests(unittest.TestCase):
         rows = generate_profiles(2, seed=1, pools=pools)
         self.assertEqual(2, len({r.username for r in rows}))
         self.assertTrue(all(not any(ch.isdigit() for ch in r.username) for r in rows))
+
+    def test_username_fallback_candidates_are_stable_bounded_and_safe(self):
+        first = username_fallback_candidates("baongocd", "acc-1")
+        second = username_fallback_candidates("baongocd", "acc-1")
+        self.assertEqual(first, second)
+        self.assertEqual(5, len(first))
+        self.assertEqual(5, len(set(first)))
+        self.assertNotIn("baongocd", first)
+        self.assertTrue(all(len(value) <= 30 for value in first))
+        self.assertTrue(all(re.fullmatch(r"[a-z0-9._]+", value) for value in first))
+
+    def test_username_fallback_candidates_change_with_account_id(self):
+        self.assertNotEqual(
+            username_fallback_candidates("baongocd", "acc-1"),
+            username_fallback_candidates("baongocd", "acc-2"),
+        )
+
+    def test_username_fallback_candidates_never_exceed_five(self):
+        self.assertEqual(
+            5,
+            len(username_fallback_candidates("baongocd", "acc-1", max_candidates=99)),
+        )
+
+    def test_username_fallback_candidates_require_stable_account_id(self):
+        with self.assertRaisesRegex(ValueError, "account_id"):
+            username_fallback_candidates("baongocd", "")
 
 
 if __name__ == "__main__":
