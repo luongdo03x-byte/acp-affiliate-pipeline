@@ -20,6 +20,7 @@ class SeedingTaskRuleTests(unittest.TestCase):
         self.assertEqual(3, rules["max_accounts"])
         self.assertEqual(["sữa"], rules["forbidden_words"])
         self.assertIn("facebook", rules["platforms"])
+        self.assertIn("tiktok", rules["platforms"])
 
     def test_defaults_to_one_account_and_one_main_comment(self) -> None:
         rules = seeding_tasks.parse_task_instruction("Bình luận phù hợp nội dung bài")
