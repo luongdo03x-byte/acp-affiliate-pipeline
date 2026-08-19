@@ -51,7 +51,7 @@
     {% if selected %}
       <form method="post" action="/seeding/campaign/{{ selected.id }}/accounts" class="stack-form">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-        <p class="note">Chọn tối đa {{ selected.max_accounts }} account. Thứ tự checkbox được chọn sẽ map thành Account slot 1 → N.</p>
+        <p class="note">Chọn tối đa {{ selected.max_accounts }} account. Sau khi comment đã được sinh/LIKE đã xác nhận, mapping sẽ bị khóa để không gán nhầm nội dung sang profile khác.</p>
         {% if facebook_accounts %}
           {% for a in facebook_accounts %}
             <label class="checkbox-row">
@@ -77,4 +77,33 @@
     {% endif %}
   </section>
 </div>
+
+{% if selected and report_state %}
+<section class="card panel section-heading--spaced">
+  <div class="panel-header">
+    <div><h2>Tiến độ &amp; báo cáo</h2><p class="note">Báo cáo chỉ tự ghi Sheet khi tất cả account đã chọn hoàn thành đủ LIKE (nếu yêu cầu) và toàn bộ comment.</p></div>
+    <span class="tag {{ 'ok' if report_state.complete else '' }}">{{ 'COMPLETE' if report_state.complete else 'IN PROGRESS' }}</span>
+  </div>
+  <div class="kpi-grid kpi-grid--4">
+    <div class="kpi-card"><div class="kpi-label">ACCOUNT</div><div class="kpi-value">{{ report_state.account_count }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">COMMENT</div><div class="kpi-value">{{ report_state.comment_done }}/{{ report_state.comment_total }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">LIKE</div><div class="kpi-value">{{ report_state.like_done }}/{{ report_state.account_count if report_state.like_required else 0 }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">SHEET</div><div class="kpi-value" style="font-size:16px">{{ report_state.report.status if report_state.report else ('READY' if report_state.complete else 'WAIT') }}</div></div>
+  </div>
+  {% if report_state.report and report_state.report.last_error %}
+    <div class="alert alert--error"><strong>Sheet lỗi.</strong><span>{{ report_state.report.last_error }}</span></div>
+  {% endif %}
+  <div class="button-row" style="margin-top:12px;flex-wrap:wrap">
+    <a class="btn" href="/seeding/campaign/{{ selected.id }}/report.tsv">Tải TSV B/C/D</a>
+    {% if sheet_configured %}
+      <form method="post" action="/seeding/campaign/{{ selected.id }}/report/sheet">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--primary" type="submit" {{ 'disabled' if not report_state.complete }}>Ghi Google Sheet</button>
+      </form>
+    {% else %}
+      <span class="note">Chưa cấu hình ACP_SEEDING_SHEET_WEBHOOK_URL / ACP_SEEDING_SHEET_SECRET.</span>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 {% endblock %}
