@@ -81,6 +81,17 @@ class Scheduler:
                 return None
 
             placeholders = ",".join("?" for _ in _ACTIVE_JOB_STATES)
+            latest_batch = self.repo.latest_batch()
+            batch_scope_clause = ""
+            query_params = list(_ACTIVE_JOB_STATES)
+            if (
+                latest_batch is not None
+                and latest_batch["status"] in {"READY", "RUNNING"}
+                and str(latest_batch.get("completion_mode") or "").upper() == "SOCIAL_ONLY"
+            ):
+                batch_scope_clause = " AND a.batch_id=?"
+                query_params.append(latest_batch["id"])
+
             candidates = conn.execute(
                 f"""SELECT a.*, b.completion_mode AS completion_mode
                     FROM factory_account a
@@ -92,8 +103,9 @@ class Scheduler:
                           SELECT 1 FROM factory_job j
                           WHERE j.account_id=a.id AND j.state IN ({placeholders})
                       )
+                      {batch_scope_clause}
                     ORDER BY a.batch_id, a.sequence""",
-                _ACTIVE_JOB_STATES,
+                tuple(query_params),
             ).fetchall()
 
             account = None
