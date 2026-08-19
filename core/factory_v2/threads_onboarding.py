@@ -98,6 +98,24 @@ def mark_tester_accepted(conn, account_id: str, *, timestamp: str | None = None)
     return _get_account(conn, account_id)
 
 
+def accept_and_start_oauth(
+    conn,
+    account_id: str,
+    redirect_uri: str,
+    provider,
+    *,
+    timestamp: str | None = None,
+    start_oauth=None,
+) -> dict[str, Any]:
+    """Record tester acceptance and immediately hand the account to Threads OAuth."""
+    mark_tester_accepted(conn, account_id, timestamp=timestamp)
+    if start_oauth is None:
+        from .oauth_bridge import start_account_oauth
+
+        start_oauth = start_account_oauth
+    return start_oauth(conn, account_id, redirect_uri, provider)
+
+
 def list_onboarding_accounts(conn) -> list[dict[str, Any]]:
     """Return only accounts relevant to tester/OAuth onboarding, in batch sequence order."""
     result: list[dict[str, Any]] = []
