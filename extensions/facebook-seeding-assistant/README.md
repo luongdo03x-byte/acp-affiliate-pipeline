@@ -1,63 +1,93 @@
 # ACP Facebook Seeding Assistant
 
-Chrome Manifest V3 extension for the ACP `/seeding` workspace.
+Chrome Manifest V3 extension for ACP manual task intake + Facebook Profile routing.
+
+## Current execution model
+
+Each logged-in Facebook account uses a separate Chrome Profile. The extension stores a stable `extensionInstanceId` in that profile and pairs it to ACP with an operator label such as `FB01`.
+
+ACP can then map:
+
+```text
+Task A2GR-64
+Account slot 1 → FB01
+Account slot 2 → FB02
+Account slot 3 → FB03
+```
+
+Each profile only receives work for its mapped slot.
 
 ## Safety model
 
-- Processes only Facebook target URLs that were explicitly imported into ACP.
-- Does not discover groups/posts, rotate accounts, store Facebook cookies, bypass checkpoints, solve CAPTCHA, spoof fingerprints, or rotate proxies.
-- `AUTO_READY` comes from ACP. The extension still downgrades to review if the DOM is ambiguous.
-- Global pause is re-checked immediately before a submit action.
-- A submit control is clicked at most once. If the comment cannot be verified afterward, the target is recorded as `UNKNOWN` and automatic execution stops for that target.
+- Only processes Facebook target URLs explicitly supplied by the operator.
+- Does not discover targets, create/rotate accounts, store Facebook password/cookies/session in ACP, bypass checkpoint/CAPTCHA, spoof fingerprints, or rotate proxies.
+- The multi-profile flow does **not** click Like or Submit.
+- Main comments are filled only when the target composer is unambiguous.
+- For replies, the operator clicks **Reply** under the intended Facebook comment first; the extension remembers that Facebook composer and fills only that selected composer.
+- Operator manually presses Facebook **Post/Đăng**.
+- ACP records `DONE` only after the filled composer clears and the final text is observed in the target Facebook article.
+- Final edited text is revalidated server-side for forbidden words and exact/near duplicates.
+- Facebook checkpoint/rate restriction remains a hard stop.
 
 ## Local setup
 
-1. Start ACP with the normal operator command:
+1. Start ACP:
 
    ```bash
    cd ~/Downloads/ACP
    ./manage.sh start
    ```
 
-2. Put a random value in `shared/.env.local`:
+2. Configure `shared/.env.local`:
 
    ```text
-   ACP_SEEDING_EXTENSION_TOKEN=<your-random-local-token>
+   ACP_SEEDING_EXTENSION_TOKEN=<random-local-token>
+   ACP_CAPTION_LLM=gemini
+   ACP_GEMINI_API_KEY=<gemini-key>
    ```
 
-   Restart ACP after changing the environment file. Never commit the real token.
-
-3. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select:
+3. Open `chrome://extensions`, enable Developer mode and **Load unpacked**:
 
    ```text
    extensions/facebook-seeding-assistant/
    ```
 
-4. Open Facebook. The ACP panel appears in the bottom-right. Enter:
+4. In each Chrome Profile, open Facebook and fill the ACP panel:
 
-   - ACP URL: `http://127.0.0.1:5000`
-   - the same `ACP_SEEDING_EXTENSION_TOKEN`
+   ```text
+   Account label: FB01
+   ACP URL:       http://127.0.0.1:5000
+   Token:         ACP_SEEDING_EXTENSION_TOKEN
+   ```
 
-5. In ACP `/seeding`:
+5. Repeat for FB02/FB03 as needed.
 
-   - create a campaign;
-   - add approved claims/templates;
-   - import explicit Facebook target URLs;
-   - keep **auto-submit OFF** for the first selector/review check;
-   - start a shift.
+6. Create the task at `/seeding`, then map the connected accounts at `/seeding/accounts`.
 
-6. Validate at least one non-production/test target in review mode. Only enable campaign auto-submit after confirming the page structure, campaign content, and authorization are correct.
+The extension checks for newly assigned work again while IDLE, so an already-open profile can pick up a task after mapping without Facebook credentials being sent to ACP.
+
+## Operator flow
+
+```text
+pair Chrome Profiles
+→ create task
+→ map accounts
+→ profile opens target
+→ operator Like + confirm if required
+→ ACP reads post + generates distinct plan
+→ profile gets its own MAIN/REPLY slot
+→ extension fills composer only
+→ operator presses Facebook Post
+→ ACP verifies + records final text
+→ when all mapped accounts finish: report B/C/D / optional Google Sheet
+```
+
+Google Sheets setup: `docs/SEEDING_SHEET_SETUP.md`.
 
 ## Development tests
-
-Pure extension tests require only Node:
 
 ```bash
 node --test extensions/facebook-seeding-assistant/tests/*.test.cjs
 ```
 
 These tests do not open Facebook or publish anything.
-
-## Stop conditions
-
-Use **STOP NOW · Global pause** in ACP or stop the shift if Facebook displays a checkpoint, identity verification, rate restriction, wrong target, ambiguous composer, or unexpected behavior. The extension intentionally does not try to bypass those states.
