@@ -18,6 +18,13 @@ class SeedingSheetWebhookContracts(unittest.TestCase):
         self.assertIn("sheet.getRange(startRow, 2, rows.length, 3).setValues(rows)", source)
         self.assertIn("body.campaign_id", source)
 
+    def test_apps_script_deduplicates_retries_by_campaign_id(self):
+        source = (ROOT / "integrations" / "google_sheets_seeding_webhook.gs").read_text(encoding="utf-8")
+        self.assertIn("reportKey", source)
+        self.assertIn("props.getProperty(reportKey)", source)
+        self.assertIn("props.setProperty(reportKey", source)
+        self.assertIn("LockService.getScriptLock", source)
+
     def test_sheet_integration_does_not_contain_facebook_credentials(self):
         source = (ROOT / "docs" / "SEEDING_SHEET_SETUP.md").read_text(encoding="utf-8").lower()
         if (ROOT / "integrations" / "google_sheets_seeding_webhook.gs").exists():
