@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Facebook Accounts — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Facebook profiles</div>
+    <h1>Facebook Account Manager</h1>
+    <p class="lede">Mỗi Chrome Profile có một extension instance riêng. ACP chỉ lưu nhãn, instance id và heartbeat; không lưu mật khẩu hay cookie Facebook.</p>
+  </div>
+  <a class="btn" href="/seeding{% if selected %}?campaign_id={{ selected.id }}{% endif %}">← Quay lại Seeding</a>
+</div>
+
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if request.args.get('message') %}<div class="alert"><strong>Đã cập nhật.</strong><span>{{ request.args.get('message') }}</span></div>{% endif %}
+
+<div class="grid2">
+  <section class="card panel">
+    <div class="panel-header"><h2>Account đã kết nối</h2><span class="tag">{{ facebook_accounts|length }}</span></div>
+    <p class="note">Trong từng Chrome Profile: mở Facebook → ACP extension → nhập nhãn như FB01/FB02 → “Lưu & kết nối”. Heartbeat chạy mỗi phút.</p>
+    {% if facebook_accounts %}
+    <div class="table-card"><div class="table-scroll"><table class="data-table">
+      <thead><tr><th>Account</th><th>Trạng thái</th><th>Profile ID</th><th>Last seen</th></tr></thead>
+      <tbody>
+      {% for a in facebook_accounts %}
+        <tr>
+          <td><strong>{{ a.label }}</strong></td>
+          <td><span class="tag {{ 'ok' if a.online else 'bad' }}">{{ 'ONLINE' if a.online else 'OFFLINE' }}</span></td>
+          <td><code>{{ a.extension_instance_id[:12] }}…</code></td>
+          <td class="dim mono">{{ a.last_seen_at[5:16]|replace('T',' ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div></div>
+    {% else %}
+      <div class="empty-state">Chưa có Chrome Profile nào pair với ACP.</div>
+    {% endif %}
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Gán account cho nhiệm vụ</h2>{% if selected %}<span class="tag">max {{ selected.max_accounts }}</span>{% endif %}</div>
+    {% if campaigns %}
+      <form method="get" action="/seeding/accounts" class="stack-form">
+        <label>Nhiệm vụ
+          <select name="campaign_id" onchange="this.form.submit()">
+            {% for c in campaigns %}<option value="{{ c.id }}" {{ 'selected' if selected and c.id==selected.id }}>{{ c.name }} · max {{ c.max_accounts }}</option>{% endfor %}
+          </select>
+        </label>
+      </form>
+    {% endif %}
+
+    {% if selected %}
+      <form method="post" action="/seeding/campaign/{{ selected.id }}/accounts" class="stack-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <p class="note">Chọn tối đa {{ selected.max_accounts }} account. Thứ tự checkbox được chọn sẽ map thành Account slot 1 → N.</p>
+        {% if facebook_accounts %}
+          {% for a in facebook_accounts %}
+            <label class="checkbox-row">
+              <input type="checkbox" name="account_ids" value="{{ a.id }}" {{ 'checked' if a.id in task_account_ids }}>
+              <span><strong>{{ a.label }}</strong> · {{ 'ONLINE' if a.online else 'OFFLINE' }}</span>
+            </label>
+          {% endfor %}
+          <button class="btn btn--primary" type="submit">Lưu mapping account</button>
+        {% else %}
+          <div class="empty-state">Kết nối ít nhất một Chrome Profile trước.</div>
+        {% endif %}
+      </form>
+
+      {% if task_accounts %}
+        <div class="section-heading section-heading--spaced"><div><h3>Mapping hiện tại</h3></div></div>
+        <div class="table-card"><table class="data-table">
+          <thead><tr><th>Slot</th><th>Facebook account</th></tr></thead>
+          <tbody>{% for row in task_accounts %}<tr><td>Account {{ row.account_slot }}</td><td>{{ row.label }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      {% endif %}
+    {% else %}
+      <div class="empty-state">Tạo nhiệm vụ trước rồi quay lại đây để gán account.</div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
