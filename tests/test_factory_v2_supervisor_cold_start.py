@@ -154,21 +154,44 @@ class FactoryV2SupervisorColdStartTests(unittest.TestCase):
         self.assertEqual(1, decision.target_workers)
         self.assertEqual([("acp-worker-01", 5554)], self.avd.started)
 
-    def test_social_only_cold_start_stays_blocked_when_red_has_low_ram(self):
+    def test_social_only_cold_start_ignores_emergency_cpu_ram_and_swap_pressure(self):
         sample = HostSample(
-            cpu_percent=20.0,
-            ram_available_mb=2500,
-            swap_used_mb=7157,
-            swap_in_rate=86.68,
-            load_1m=2.0,
-            load_5m=2.0,
+            cpu_percent=99.0,
+            ram_available_mb=512,
+            swap_used_mb=12000,
+            swap_in_rate=128.0,
+            load_1m=12.0,
+            load_5m=10.0,
         )
 
         decision = self.supervisor(sample).tick()
 
-        self.assertEqual("HOLD", decision.action)
-        self.assertEqual(0, decision.target_workers)
-        self.assertEqual([], self.avd.started)
+        self.assertEqual("START", decision.action)
+        self.assertEqual(1, decision.target_workers)
+        self.assertEqual([("acp-worker-01", 5554)], self.avd.started)
+
+    def test_social_only_does_not_wait_for_resource_stability_before_first_avd(self):
+        sample = HostSample(
+            cpu_percent=20.0,
+            ram_available_mb=4729,
+            swap_used_mb=6771,
+            swap_in_rate=0.10,
+            load_1m=2.25,
+            load_5m=2.38,
+        )
+        supervisor = WorkerSupervisor(
+            self.repo,
+            self.avd,
+            FakeMetrics(sample),
+            stability_seconds=45,
+            clock=lambda: 100.0,
+        )
+
+        decision = supervisor.tick()
+
+        self.assertEqual("START", decision.action)
+        self.assertEqual(1, decision.target_workers)
+        self.assertEqual([("acp-worker-01", 5554)], self.avd.started)
 
 
 if __name__ == "__main__":
