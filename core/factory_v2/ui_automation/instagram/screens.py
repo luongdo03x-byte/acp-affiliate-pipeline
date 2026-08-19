@@ -10,12 +10,14 @@ from .selectors import (
     BIO_INPUT,
     BIRTH_DATE_INPUT,
     CONTINUE,
+    CREATE_USERNAME_TITLE,
     DISPLAY_NAME_INPUT,
     FINAL_SIGNUP_SUBMIT,
     HOME,
     PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
+    USERNAME_ENTRY_INPUT,
     USERNAME_INPUT,
 )
 
@@ -180,6 +182,15 @@ def build_instagram_detector() -> ScreenDetector:
             59,
         ),
         ScreenSignature("IG_POSTCHECK_OK", PACKAGE, (HOME, PROFILE), 2, 0.99, False, 60),
+        ScreenSignature(
+            "IG_USERNAME_ENTRY",
+            PACKAGE,
+            (CREATE_USERNAME_TITLE, USERNAME_ENTRY_INPUT, CONTINUE),
+            3,
+            0.97,
+            False,
+            76,
+        ),
         ScreenSignature(
             "IG_AVATAR_SETUP",
             PACKAGE,
