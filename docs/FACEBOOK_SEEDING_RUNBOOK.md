@@ -1,81 +1,90 @@
 # Facebook Seeding Assistant — Operator Runbook
 
-Tài liệu này hướng dẫn chạy thử nghiệm Facebook Seeding Assistant trên ACP mà không đụng dữ liệu/secrets live ngoài những cấu hình operator chủ động đặt.
+Tài liệu này mô tả flow hiện tại của ACP cho **nhiệm vụ Facebook do operator nhập sẵn**. Luồng multi-account dùng Chrome Profile riêng và luôn giữ bước thao tác/submit Facebook ở người vận hành.
 
-## 1. Phạm vi MVP
+## 1. Phạm vi
 
-MVP chỉ xử lý **Facebook target URL do operator/company nhập sẵn**. Tool không tự tìm group/post, không tạo/rotate account, không giữ cookie Facebook, không bypass checkpoint/CAPTCHA/rate limit và không dùng proxy/fingerprint spoofing.
+Tool hỗ trợ:
 
-Luồng chuẩn:
+- nhập tên nhiệm vụ + nguyên văn yêu cầu + link bài Facebook;
+- parse LIKE, số main/reply, số account tối đa và từ cấm;
+- kết nối nhiều Chrome Profile bằng nhãn `FB01`, `FB02`...;
+- map account thật vào `Account slot 1..N`;
+- đọc bài Facebook đang render;
+- Gemini sinh một bộ comment khác nhau cho các account đã chọn;
+- chống từ cấm và exact/near-duplicate;
+- mỗi Chrome Profile chỉ nhận đúng phần việc của account đó;
+- fill comment/reply vào composer đã xác định;
+- ghi nội dung cuối thực tế sau khi operator đăng;
+- tạo report B/C/D và tùy chọn append Google Sheets.
 
-```text
-Target URL đã nhập
-→ extension mở đúng URL
-→ đọc context đang render
-→ ACP chọn template + tạo draft
-→ risk/confidence gate
-→ AUTO_READY: re-check pause + shift rồi submit một lần
-→ REVIEW_REQUIRED: operator duyệt/sửa/skip
-→ verify comment
-→ POSTED hoặc UNKNOWN
-→ KPI/report
-```
+Tool **không**:
 
-`UNKNOWN` là terminal cho auto execution: tool **không click submit lần hai**.
+- tạo/nuôi/rotate account;
+- lưu Facebook password/cookie/session trong ACP;
+- tự click Like/Đăng trong flow multi-account;
+- tự chọn người/comment để reply;
+- bypass checkpoint/CAPTCHA/rate restriction;
+- dùng proxy/fingerprint/anti-detection để né giới hạn;
+- tự tìm group/post mục tiêu.
 
 ## 2. Chuẩn bị ACP
 
-Dùng release/branch chứa feature và chạy qua interface chuẩn:
-
 ```bash
+cd ~/Downloads/ACP/acp
+git fetch origin
+git switch feat/facebook-seeding-assistant
+git pull --ff-only
+
 cd ~/Downloads/ACP
 ./manage.sh test
-./manage.sh start
 ```
 
-Không đổi `ACP_ADAPTER=live` để thử feature này. Release tests ép `ACP_ADAPTER=mock`, `ACP_SOURCE=mock` và không mở Facebook thật.
+Trong `~/Downloads/ACP/shared/.env.local` cần ít nhất:
 
-## 3. Tạo token local cho extension
-
-Thêm một giá trị ngẫu nhiên vào `~/Downloads/ACP/shared/.env.local`:
-
-```text
-ACP_SEEDING_EXTENSION_TOKEN=<random-local-secret>
+```bash
+ACP_SEEDING_EXTENSION_TOKEN=<random-secret>
+ACP_CAPTION_LLM=gemini
+ACP_GEMINI_API_KEY=<gemini-key>
 ```
 
 Sau đó:
 
 ```bash
-cd ~/Downloads/ACP
 ./manage.sh restart
 ```
 
-Không commit giá trị thật. `.env.example` chỉ chứa tên biến trống.
+## 3. Kết nối Facebook account
 
-## 4. Load extension
+Mỗi Facebook account dùng **một Chrome Profile riêng** đã login bằng tay.
 
-Chrome/Chromium:
+Trong từng profile:
 
 1. Mở `chrome://extensions`.
-2. Bật **Developer mode**.
-3. Chọn **Load unpacked**.
-4. Chọn thư mục:
+2. Load/reload `extensions/facebook-seeding-assistant/`.
+3. Mở Facebook.
+4. Panel ACP xuất hiện.
+5. Nhập:
 
 ```text
-extensions/facebook-seeding-assistant/
+Tên/nhãn account: FB01
+ACP URL:          http://127.0.0.1:5000
+Token:            ACP_SEEDING_EXTENSION_TOKEN
 ```
 
-5. Mở Facebook. Panel `ACP` xuất hiện ở góc dưới phải.
-6. Điền:
+6. Bấm **Lưu & kết nối**.
+
+Làm tương tự `FB02`, `FB03`...
+
+Mở:
 
 ```text
-ACP URL: http://127.0.0.1:5000
-Token:   cùng giá trị ACP_SEEDING_EXTENSION_TOKEN
+http://127.0.0.1:5000/seeding/accounts
 ```
 
-Extension chỉ xin quyền `storage`, host Facebook và loopback ACP. Không xin `cookies`, `debugger` hay `<all_urls>`.
+để xem `ONLINE/OFFLINE`. Extension heartbeat mỗi phút và khi đang IDLE sẽ hỏi ACP lại sau khoảng 15 giây để nhận task mới.
 
-## 5. Tạo campaign thử nghiệm
+## 4. Tạo nhiệm vụ
 
 Mở:
 
@@ -83,122 +92,207 @@ Mở:
 http://127.0.0.1:5000/seeding
 ```
 
-Tạo campaign với:
-
-- tên/brand;
-- brief;
-- allowed claims;
-- prohibited topics;
-- disclosure/promotion policy;
-- confidence threshold (mặc định `0.90`, không cho dưới `0.85`);
-- **auto-submit OFF** ở lần kiểm tra selector đầu tiên.
-
-Thêm template theo intent, ví dụ:
+Chỉ cần ba trường:
 
 ```text
-recommendation_request
-price_question
-service_question
-generic
+Tên nhiệm vụ: A2GR-64
+
+Nội dung/yêu cầu:
+LIKE BÀI ĐĂNG
+mỗi acc 3 CMT (1 cmt chính + 2 reply)
+tối đa 3 acc
+KHÔNG NHẮC SỮA
+
+Link Facebook:
+https://www.facebook.com/groups/.../permalink/.../?rdid=...
 ```
 
-Template không được chứa trải nghiệm cá nhân/testimonial giả.
+Tên nhiệm vụ được phép trùng; mỗi lần tạo vẫn có internal id riêng.
 
-## 6. Import target
+ACP lưu nguyên brief và URL gốc để dùng cho báo cáo.
 
-Mỗi dòng một Facebook HTTPS URL:
+## 5. Gán account
+
+Vào **FB Accounts**, chọn nhiệm vụ rồi tick các account muốn dùng, tối đa theo `max_accounts` parser đã hiểu.
+
+Ví dụ:
 
 ```text
-https://www.facebook.com/groups/.../posts/.../
+Account slot 1 → FB01
+Account slot 2 → FB02
+Account slot 3 → FB03
 ```
 
-MVP chỉ chấp nhận host Facebook hợp lệ. URL trùng trong cùng campaign được bỏ qua.
+Sau khi LIKE đã được xác nhận hoặc comment plan đã sinh, mapping bị khóa để nội dung không bị chuyển nhầm sang profile khác.
 
-## 7. Dry-run bắt buộc trước auto-submit
+## 6. Profile nhận việc
 
-1. Giữ `auto-submit OFF`.
-2. Import một target test/được phép sử dụng.
-3. Start shift.
-4. Để extension mở target và đọc context.
-5. Kiểm tra:
-   - target đúng;
-   - draft đúng brief;
-   - không bịa claim/trải nghiệm;
-   - extension tìm đúng composer;
-   - panel review hoạt động.
-6. Chỉ sau khi selector/context đúng mới cân nhắc bật `auto-submit` cho campaign được phép.
+Mỗi profile chỉ hỏi endpoint profile-scoped bằng `extensionInstanceId` của chính nó.
 
-## 8. Điều kiện AUTO_READY
+Flow:
 
-ACP chỉ cho phép auto khi đồng thời:
+```text
+IDLE
+→ task được map
+→ tự mở đúng URL
+→ LIKE nếu nhiệm vụ yêu cầu
+→ NEEDS_CONTEXT nếu chưa có comment plan
+→ COMMENT main/reply của đúng account slot
+→ IDLE khi account đó xong
+```
 
-- global pause OFF;
-- shift hiện tại vẫn ACTIVE;
-- campaign ACTIVE và `auto_submit=1`;
-- URL hiện tại khớp target đã nhập;
-- risk LOW;
-- confidence đạt threshold;
-- factual claims nằm trong allowed claims;
-- không có complaint/refund/legal/medical/fraud/sensitive/ambiguous label;
-- không có testimonial/trải nghiệm cá nhân bị cấm;
-- comment không quá giống recent posted comment;
-- disclosure policy đã cấu hình.
+Account không được map không nhận task.
 
-Extension vẫn có quyền **downgrade** AUTO_READY thành review nếu DOM/composer/nút submit mơ hồ.
+Nếu hai profile cùng yêu cầu sinh nội dung đúng lúc, plan đầu tiên ghi thành công sẽ được dùng chung; request còn lại reload plan đã thắng thay vì regenerate bộ khác.
 
-## 9. Kill switch / pause
+## 7. LIKE
 
-Có hai tầng:
+Nếu brief yêu cầu Like, panel hiển thị **LIKE · xác nhận thủ công**.
 
-- **STOP NOW · Global pause**: chặn toàn bộ auto-submit.
-- **Pause shift**: dừng riêng shift hiện tại.
+Operator:
 
-Extension re-check trạng thái ngay trước click submit và yêu cầu `active_shift_id` đúng shift đang xử lý. Nếu operator pause shift ở thời điểm đó, click không diễn ra.
+1. Like bài trên Facebook bằng đúng profile.
+2. Kiểm tra Facebook đã hiển thị trạng thái Like.
+3. Bấm **Đã LIKE** trên panel ACP.
 
-## 10. Facebook checkpoint/rate restriction
+Extension không tự click Like.
 
-Nếu Facebook hiển thị identity verification, temporary block, rate restriction hoặc trạng thái tương tự:
+## 8. Sinh nội dung
+
+Profile đầu tiên đi tới `NEEDS_CONTEXT` sẽ đọc article mục tiêu và gửi context cho ACP.
+
+Prompt dùng:
+
+```text
+brief gốc
++ parsed rules
++ từ cấm
++ nội dung bài Facebook
++ số account thực sự được map
+```
+
+Validator bắt buộc:
+
+- đúng số main/reply;
+- mọi câu có nội dung;
+- không chứa từ cấm;
+- không exact/near-duplicate giữa các account;
+- không bịa trải nghiệm mua/dùng/khách hàng nếu brief không cung cấp thông tin thật.
+
+Chỉ slot của account đã map được generate; slot chưa dùng vẫn `EMPTY`.
+
+## 9. Comment chính
+
+Panel hiển thị câu của đúng account.
+
+1. Có thể sửa câu trong textarea ACP.
+2. Bấm **Điền CMT chính**.
+3. Kiểm tra ô comment Facebook.
+4. **Operator tự bấm Đăng trên Facebook.**
+5. Bấm **Đã đăng · xác nhận** trên ACP.
+
+ACP chỉ ghi `DONE` khi:
+
+- composer vừa được fill không còn giữ nguyên draft sau submit; và
+- đúng text xuất hiện trong article Facebook mục tiêu, không tính text trong panel ACP.
+
+Final text được server validate lại. Nếu operator sửa thành câu chứa từ cấm hoặc trùng/near-duplicate với account khác, ACP từ chối ghi `DONE`.
+
+## 10. Reply
+
+Reply không tự chọn comment/người cần trả lời.
+
+Cho mỗi reply:
+
+1. Trên Facebook, operator bấm **Reply** dưới comment phù hợp.
+2. Extension nhớ composer Facebook vừa được focus.
+3. Quay lại panel ACP và bấm **Điền vào ô đã chọn**.
+4. Kiểm tra câu đã điền đúng reply composer.
+5. Operator tự bấm Đăng.
+6. Bấm **Đã đăng · xác nhận**.
+
+Mỗi reply mới yêu cầu chọn lại comment Reply để tránh điền nhầm thread.
+
+Nếu muốn dừng giữa chừng, bấm **Dừng · làm tiếp sau**. Slot không bị đổi trạng thái; mở/reload lại để tiếp tục. Không có nút Skip làm mất khả năng hoàn thành report.
+
+## 11. Hoàn thành nhiệm vụ
+
+Task chỉ `COMPLETE` khi các account **đã map** hoàn thành:
+
+- toàn bộ LIKE nếu `like_required=true`;
+- toàn bộ main comment;
+- toàn bộ reply.
+
+Slot của account không được chọn không tính vào completion.
+
+## 12. Report B/C/D
+
+Tại `/seeding/accounts`, mục **Tiến độ & báo cáo** hiển thị Account / Comment / Like / Sheet.
+
+**Tải TSV B/C/D** luôn cho phép lấy dữ liệu cuối đã ghi.
+
+Format:
+
+```text
+B                         C                       D
+A2GR-64                   main account 1          reply 1 account 1
+<link Facebook gốc>       main account 2          reply 2 account 1
+                          main account 3          reply 1 account 2
+                                                  reply 2 account 2
+                                                  reply 1 account 3
+                                                  reply 2 account 3
+```
+
+Cột C/D dùng `final_text` thực tế operator đã đăng; chỉ fallback về generated text khi phù hợp với record DONE.
+
+## 13. Google Sheets tự động
+
+Xem `docs/SEEDING_SHEET_SETUP.md` và deploy:
+
+```text
+integrations/google_sheets_seeding_webhook.gs
+```
+
+ACP env:
+
+```bash
+ACP_SEEDING_SHEET_WEBHOOK_URL=https://script.google.com/macros/s/.../exec
+ACP_SEEDING_SHEET_SECRET=<same-secret-as-apps-script>
+```
+
+Khi task đủ điều kiện COMPLETE, ACP tự thử push một lần. Có hai tầng chống append trùng:
+
+1. ACP lưu trạng thái `PUSHING/PUSHED` trước/sau network call.
+2. Apps Script dedupe bằng `campaign_id` dưới `ScriptLock` và trả lại `sheet_ref` cũ khi retry.
+
+Nếu Sheet lỗi, comment đã DONE vẫn giữ nguyên. Sửa cấu hình rồi dùng **Ghi Google Sheet** để retry; Facebook không bị làm lại.
+
+## 14. Facebook checkpoint/rate restriction
+
+Nếu extension thấy identity verification, temporary block, rate restriction hoặc tương tự:
 
 ```text
 DỪNG
 → không bypass
 → không CAPTCHA solver
-→ không đổi proxy/account để tiếp tục
-→ operator tự xử lý trạng thái account/platform
+→ không đổi proxy/account để né
+→ operator tự xử lý trạng thái tài khoản/platform
 ```
 
-## 11. UNKNOWN
+## 15. Test
 
-Nếu extension đã click submit đúng một lần nhưng không thể xác minh comment xuất hiện trong cửa sổ verify:
-
-```text
-result = UNKNOWN
-→ ghi activity
-→ clear auto execution cho target
-→ không click lại
-```
-
-Operator kiểm tra Facebook bằng tay trước khi quyết định xử lý tiếp để tránh duplicate.
-
-## 12. Test dành cho developer
-
-Python domain/web contract:
+Python:
 
 ```bash
 ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= python3 -m acp.tests.test_seeding
 ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= python3 -m acp.tests.test_seeding_web
+python3 tests/test_manage.py
 ```
 
-Extension pure tests:
+Extension:
 
 ```bash
 node --test extensions/facebook-seeding-assistant/tests/*.test.cjs
-```
-
-Manager regression tests khi `manage.sh` thay đổi:
-
-```bash
-python3 tests/test_manage.py
 ```
 
 Release gate:
@@ -207,15 +301,4 @@ Release gate:
 ./manage.sh test
 ```
 
-`./manage.sh test` chạy pipeline, pilot, seeding domain, seeding web contracts và doctor ở mock mode.
-
-## 13. Không làm trong MVP
-
-- tự tìm target/post/group;
-- tự tạo/nuôi/rotate account;
-- giả khách hàng độc lập hoặc fake testimonial/review;
-- CAPTCHA/checkpoint bypass;
-- anti-detection/fingerprint spoofing;
-- proxy/VPN rotation để né limit;
-- retry submit tự động sau `UNKNOWN`;
-- TikTok/Threads/Instagram.
+Automated tests không đăng Facebook thật.
