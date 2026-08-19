@@ -8,8 +8,8 @@ from core.factory_v2.ui_automation.threads.screens import build_threads_detector
 from core.factory_v2.ui_automation.selectors import Selector
 
 
-def node(*, text="", content_desc="", resource_id="", class_name="android.widget.TextView", clickable=False):
-    return UiNode(text, content_desc, resource_id, class_name, clickable, True, UiBounds(0, 0, 100, 100))
+def node(*, text="", content_desc="", resource_id="", class_name="android.widget.TextView", clickable=False, enabled=True):
+    return UiNode(text, content_desc, resource_id, class_name, clickable, enabled, UiBounds(0, 0, 100, 100))
 
 
 class SelectorTests(unittest.TestCase):
@@ -27,6 +27,31 @@ class SelectorTests(unittest.TestCase):
         snapshot = UiSnapshot("x", "y", (node(text="  tiếp   TỤC  ", clickable=True),))
         selector = Selector(semantic="continue", texts=("Tiếp tục",), require_clickable=True)
         self.assertEqual("  tiếp   TỤC  ", selector.find(snapshot).text)
+
+    def test_text_contains_all_is_normalized_and_requires_every_term(self):
+        snapshot = UiSnapshot("x", "y", (
+            node(text="The username BAONGOCD   is not available."),
+            node(text="Username is valid."),
+        ))
+        selector = Selector(
+            semantic="username_unavailable",
+            text_contains_all=("username", "is not available"),
+        )
+        self.assertEqual(
+            "The username BAONGOCD   is not available.",
+            selector.find(snapshot).text,
+        )
+
+    def test_selector_can_observe_disabled_marker_without_enabling_mutation(self):
+        snapshot = UiSnapshot("x", "y", (
+            node(content_desc="Input Username is valid.", enabled=False),
+        ))
+        selector = Selector(
+            semantic="username_valid",
+            content_descs=("Input Username is valid.",),
+            require_enabled=False,
+        )
+        self.assertEqual("Input Username is valid.", selector.find(snapshot).content_desc)
 
     def test_initial_signup_selector_does_not_match_final_sign_up_submit(self):
         snapshot = UiSnapshot(
@@ -160,6 +185,74 @@ class DetectorTests(unittest.TestCase):
 
         self.assertEqual("IG_USERNAME_ENTRY", detected.kind)
         self.assertTrue(detected.automation_allowed)
+
+    def test_username_unavailable_requires_create_username_context(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (
+                node(text="Create a username", content_desc="Create a username", class_name="android.view.View"),
+                node(
+                    text="baongocd",
+                    content_desc="Username,dragon.3275826",
+                    class_name="android.widget.EditText",
+                    clickable=True,
+                ),
+                node(text="The username baongocd is not available."),
+            ),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_USERNAME_UNAVAILABLE", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_username_valid_accepts_disabled_accessibility_marker_and_next(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (
+                node(text="Create a username", content_desc="Create a username", class_name="android.view.View"),
+                node(
+                    text="baongocd483102",
+                    content_desc="Username,baongocd483102",
+                    class_name="android.widget.EditText",
+                    clickable=True,
+                ),
+                node(
+                    content_desc="Input Username is valid.",
+                    class_name="android.widget.ImageView",
+                    clickable=True,
+                    enabled=False,
+                ),
+                node(content_desc="Next", class_name="android.widget.Button", clickable=True),
+            ),
+        )
+        detected = build_instagram_detector().detect(snapshot)
+        self.assertEqual("IG_USERNAME_VALID", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_generic_not_available_text_does_not_become_username_unavailable(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (node(text="This feature is not available."),),
+        )
+        self.assertNotEqual(
+            "IG_USERNAME_UNAVAILABLE",
+            build_instagram_detector().detect(snapshot).kind,
+        )
+
+    def test_rate_limit_still_wins_over_username_context(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (
+                node(text="Create a username", content_desc="Create a username", class_name="android.view.View"),
+                node(text="baongocd", class_name="android.widget.EditText", clickable=True),
+                node(text="The username baongocd is not available."),
+                node(text="Try again later"),
+            ),
+        )
+        self.assertEqual("RATE_LIMITED", build_instagram_detector().detect(snapshot).kind)
 
     def test_threads_postcheck_requires_home_and_profile(self):
         snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (node(content_desc="Home", clickable=True), node(content_desc="Profile", clickable=True)))
