@@ -4,17 +4,20 @@ from __future__ import annotations
 from ..flow_result import FlowResult
 from .screens import PACKAGE
 from .selectors import (
+    ACCOUNT_SWITCHER,
+    ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
     BIO_INPUT,
     BIRTH_DATE_INPUT,
     CONTINUE,
     DISPLAY_NAME_INPUT,
+    PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
     USERNAME_INPUT,
 )
 
-_SUCCESS = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
+_EXISTING_SESSION_HOME = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK"})
 _IG_PROTECTED = (
     "PASSWORD_REQUIRED",
@@ -33,6 +36,22 @@ _IG_ERRORS = (
     "ACTION_BLOCKED",
     "ACCOUNT_DISABLED",
     "APP_CRASH",
+)
+_AFTER_EXISTING_HOME = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_EXISTING_PROFILE",
+    "IG_ACCOUNT_SWITCHER",
+    "IG_SIGNUP_ENTRY",
+)
+_AFTER_EXISTING_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_ACCOUNT_SWITCHER",
+    "IG_SIGNUP_ENTRY",
+)
+_AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_SIGNUP_ENTRY",
+    "IG_CONTACT_ENTRY",
+    "IG_BIRTHDAY_ENTRY",
+    "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
     "IG_CONTACT_ENTRY",
@@ -93,8 +112,6 @@ class InstagramFlow:
     def _handle_detected(self, detected, profile: dict, *, crash_reopened: bool = False) -> FlowResult:
         if detected.protected:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
-        if detected.kind in _SUCCESS:
-            return FlowResult("completed", detected.kind, last_safe_step="IG_POSTCHECK_OK")
         error = self._result_for_error(detected)
         if error is not None:
             return error
@@ -112,6 +129,45 @@ class InstagramFlow:
                 return FlowResult("needs_confirmation", detected.kind, "APP_CRASH")
             self.driver.open_package(PACKAGE)
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
+        if detected.kind in _EXISTING_SESSION_HOME:
+            if self.driver.find(PROFILE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    PROFILE,
+                    expected_screens=_AFTER_EXISTING_HOME,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_EXISTING_SESSION")
+        if detected.kind == "IG_EXISTING_PROFILE":
+            if self.driver.find(ACCOUNT_SWITCHER) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    ACCOUNT_SWITCHER,
+                    expected_screens=_AFTER_EXISTING_PROFILE,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_EXISTING_PROFILE")
+        if detected.kind == "IG_ACCOUNT_SWITCHER":
+            if self.driver.find(ADD_ACCOUNT) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    ADD_ACCOUNT,
+                    expected_screens=_AFTER_ADD_ACCOUNT,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_ACCOUNT_SWITCHER")
         if detected.kind == "IG_SIGNUP_ENTRY":
             if self.driver.find(SIGN_UP) is None:
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
