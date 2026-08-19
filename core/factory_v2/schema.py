@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS factory_account (
     threads_user_id TEXT,
     channel_id TEXT,
     channel_code TEXT,
+    tester_invited_at TEXT,
+    tester_accepted_at TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
     last_error_code TEXT,
     last_error_message TEXT,
@@ -304,6 +306,18 @@ def _migrate_runner_columns(conn) -> None:
         "factory_account",
         "birth_date",
         "ALTER TABLE factory_account ADD COLUMN birth_date TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "tester_invited_at",
+        "ALTER TABLE factory_account ADD COLUMN tester_invited_at TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "factory_account",
+        "tester_accepted_at",
+        "ALTER TABLE factory_account ADD COLUMN tester_accepted_at TEXT",
     )
     _add_column_if_missing(
         conn,
