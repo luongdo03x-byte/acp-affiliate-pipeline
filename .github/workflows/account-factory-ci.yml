@@ -10,9 +10,13 @@ on:
       - "web/account_factory.py"
       - "web/factory_app.py"
       - "web/factory_v2.py"
+      - "web/threads_oauth.py"
+      - "web/server.py"
+      - "web/templates/channels.html"
       - "workers/account_factory_worker.py"
       - "account_factory_server.py"
       - "tests/test_account_factory.py"
+      - "tests/test_threads_channel_oauth.py"
       - "tests/test_factory_v2_*.py"
       - "android/account-factory/**"
       - ".github/workflows/account-factory-ci.yml"
@@ -36,6 +40,7 @@ jobs:
         run: |
           python -m unittest \
             tests.test_account_factory \
+            tests.test_threads_channel_oauth \
             tests.test_factory_v2_schema \
             tests.test_factory_v2_state_machine \
             tests.test_factory_v2_identity \
