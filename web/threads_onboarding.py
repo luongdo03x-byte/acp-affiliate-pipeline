@@ -21,7 +21,9 @@ if __package__ and "." in __package__:
     )
     from ..core.db import connect, now
     from ..core.factory_v2.oauth_bridge import sync_account_from_oauth_session
+    from ..core.factory_v2.repository import FactoryRepository
     from ..core.factory_v2.schema import ensure_schema as ensure_factory_schema
+    from ..core.factory_v2.service import FactoryService
     from ..core.factory_v2.threads_onboarding import (
         accept_and_start_oauth,
         list_onboarding_accounts,
@@ -38,7 +40,9 @@ else:
     )
     from core.db import connect, now
     from core.factory_v2.oauth_bridge import sync_account_from_oauth_session
+    from core.factory_v2.repository import FactoryRepository
     from core.factory_v2.schema import ensure_schema as ensure_factory_schema
+    from core.factory_v2.service import FactoryService
     from core.factory_v2.threads_onboarding import (
         accept_and_start_oauth,
         list_onboarding_accounts,
@@ -107,6 +111,10 @@ def register_threads_onboarding_routes(app, *, admin_password: str):
         conn = connect()
         try:
             ensure_factory_schema(conn)
+            accounts = list_onboarding_accounts(conn)
+            for account in accounts:
+                if account["onboarding_status"] == "OAUTH_IN_PROGRESS":
+                    _sync_safely(conn, account.get("oauth_session_id"))
             accounts = list_onboarding_accounts(conn)
         finally:
             conn.close()
@@ -229,9 +237,15 @@ def register_threads_onboarding_routes(app, *, admin_password: str):
             )
         except AccountMismatchError:
             _sync_safely(conn, session_id)
+            account_id = oauth_session.get("account_local_id") if oauth_session else None
+            if account_id:
+                try:
+                    FactoryService(FactoryRepository(conn)).retry_account(account_id)
+                except (KeyError, ValueError):
+                    pass
             return redirect(url_for(
                 "threads_onboarding",
-                err="Sai tài khoản Threads; không có token nào được gắn vào kênh",
+                err="Sai tài khoản Threads; hãy đăng nhập đúng account rồi thử OAuth lại",
             ))
         except OAuthSessionError:
             _sync_safely(conn, session_id)
