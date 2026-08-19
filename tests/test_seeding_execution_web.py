@@ -35,6 +35,13 @@ class SeedingExecutionWebContracts(unittest.TestCase):
         self.assertIn("findFocusedComposer", source)
         self.assertNotIn("submitControl.click()", source)
 
+    def test_manual_done_requires_cleared_composer_and_idle_profile_polls_for_new_work(self):
+        source = (ROOT / "extensions" / "facebook-seeding-assistant" / "content.js").read_text(encoding="utf-8")
+        self.assertIn("verifyManualSubmission", source)
+        self.assertIn("lastFilledComposer", source)
+        self.assertIn("scheduleIdlePoll", source)
+        self.assertIn("setTimeout", source)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
