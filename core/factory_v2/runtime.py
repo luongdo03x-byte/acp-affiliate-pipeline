@@ -413,8 +413,25 @@ class FactoryControllerRuntime:
             )
             return
         if status == "needs_confirmation":
+            username_exhausted = (
+                flow == "instagram"
+                and reason == "USERNAME_UNAVAILABLE"
+            )
             self._ensure_remote_checkpoint(
-                job, account, flow=flow, screen=screen, confirmation=True
+                job,
+                account,
+                flow=flow,
+                screen=screen,
+                confirmation=True,
+                error_code=(
+                    "USERNAME_UNAVAILABLE" if username_exhausted else "UI_CHANGED"
+                ),
+                error_message=(
+                    "All bounded Instagram username fallback candidates are unavailable; "
+                    "verify or choose a username before continuing."
+                    if username_exhausted
+                    else None
+                ),
             )
             return
         if status == "completed":
