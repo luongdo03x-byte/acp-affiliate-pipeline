@@ -121,6 +121,8 @@ stable account identifier
 maximum candidate count
 ```
 
+The stable account identifier comes from the existing `WorkerCommand.account_id`; it is not added to the public/profile payload.
+
 Output: an ordered tuple of fallback usernames.
 
 The generator must be:
@@ -128,16 +130,17 @@ The generator must be:
 - deterministic across process restarts;
 - bounded;
 - free of random/runtime-clock dependence;
-- limited to the same conservative username character set already used by generated profiles;
+- limited to a conservative lowercase username character set already compatible with generated profiles;
 - length-bounded so suffixing cannot produce oversized values;
 - stable for a given account, so retrying a job does not create an unbounded stream of new names.
 
 Initial implementation:
 
-1. retain a normalized/truncated prefix derived from the requested username;
+1. retain a normalized/truncated lowercase prefix derived from the requested username;
 2. derive a stable numeric suffix from a cryptographic hash of `account_id + attempt_index`;
 3. generate at most five fallback candidates;
-4. de-duplicate candidates and skip the original requested username.
+4. de-duplicate candidates and skip the original requested username;
+5. enforce a conservative implementation cap of 30 characters per candidate.
 
 Example shape only:
 
@@ -147,6 +150,8 @@ fallbacks: baongocd483102, baongocd071944, ...
 ```
 
 Exact suffix values are implementation details and must be covered by deterministic unit tests rather than relied on by UI code.
+
+`WorkerAgent` uses the current command's `account_id` plus the sanitized requested username to build the fallback sequence before invoking `InstagramFlow`; the Controller does not send credentials or any new secret material for this purpose.
 
 The flow may test the requested username plus at most five fallback candidates in one signup episode. If all bounded candidates are unavailable, stop with `USERNAME_UNAVAILABLE`; do not generate more candidates in a tight loop.
 
@@ -198,6 +203,8 @@ all candidates unavailable:
 ```
 
 A new candidate must not be sent until Instagram has produced a terminal validation result for the previous candidate.
+
+The same algorithm also handles recovery when the worker starts directly on `IG_USERNAME_UNAVAILABLE`: it skips re-submitting the known-unavailable requested value and begins the deterministic fallback sequence.
 
 ## 7. Driver behavior
 
@@ -263,16 +270,18 @@ Rules:
 - only `username` is accepted;
 - value must be a non-empty bounded plain string;
 - no control characters;
-- values outside the approved username format are rejected/fail closed;
+- value must satisfy the same conservative lowercase username format/cap used by the fallback generator;
 - all unknown keys are discarded or rejected rather than forwarded.
 
 This is defense in depth. The Controller remains authoritative and validates again before database mutation.
 
-The profile input supplied to the worker may include the stable account identifier only as a non-secret candidate seed if required by the pure candidate generator. It must not expose credentials or security secrets.
+No change to `WorkerCommand` schema is required: `account_id` already exists and is the deterministic candidate seed.
 
 ## 10. Controller persistence
 
 The Controller is authoritative for `factory_account.username`.
+
+Add a narrow `FactoryService` operation for an accepted Instagram username update. It must validate the value and update only the currently leased account.
 
 When an Instagram `running` result contains an approved username update:
 
@@ -281,7 +290,7 @@ receive worker response
   -> validate profile_updates schema
   -> validate username value
   -> verify update applies to the currently leased account/job
-  -> UPDATE factory_account.username, updated_at
+  -> FactoryService updates factory_account.username + updated_at
   -> only then advance/refresh the remote RUNNING job
 ```
 
@@ -336,11 +345,12 @@ core/factory_v2/ui_automation/instagram/selectors.py
 core/factory_v2/ui_automation/instagram/screens.py
 core/factory_v2/ui_automation/instagram/flow.py
 core/factory_v2/ui_automation/flow_result.py
+core/factory_v2/service.py
 workers/account_factory_worker.py
 core/factory_v2/runtime.py
 ```
 
-Tests will be extended in the corresponding existing test modules. No new database column is required.
+Tests will be extended in the corresponding existing test modules. No new database column and no `WorkerCommand` schema change are required.
 
 If implementation reveals that a larger persistent candidate-attempt subsystem or new database schema is required, stop and revise this design instead of expanding scope silently.
 
@@ -373,8 +383,9 @@ Tests:
 
 - requested username valid -> Next, no profile update if username did not change;
 - requested username unavailable -> first fallback valid -> Next + username profile update;
+- direct restart on `IG_USERNAME_UNAVAILABLE` starts with fallback candidate rather than re-entering the unavailable requested value;
 - multiple unavailable candidates -> next candidate is tried only after unavailable state;
-- five fallback failures -> `USERNAME_UNAVAILABLE` without a sixth attempt;
+- five fallback failures -> `USERNAME_UNAVAILABLE` without a sixth fallback attempt;
 - rate-limit/action-blocked stops immediately;
 - unknown validation state fails closed;
 - password/OTP/final-submit behavior does not regress.
@@ -383,12 +394,13 @@ Tests:
 
 Tests:
 
+- worker derives the same fallback sequence from `WorkerCommand.account_id` across restarts;
 - allowed username update is returned;
 - unknown profile-update keys are not forwarded;
 - password/OTP/security values can never be returned through profile updates;
 - invalid username update fails closed.
 
-### 14.5 Runtime persistence
+### 14.5 Service/runtime persistence
 
 Tests:
 
@@ -396,6 +408,7 @@ Tests:
 - result without profile updates leaves username unchanged;
 - profile update for the wrong account/job is rejected;
 - DB uniqueness conflict does not silently continue;
+- `USERNAME_UNAVAILABLE` confirmation preserves that error code instead of rewriting it to generic `UI_CHANGED`;
 - `SOCIAL_ONLY` and legacy `ACP_ACTIVE` stage behavior remain unchanged.
 
 ## 15. Acceptance criteria
