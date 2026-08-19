@@ -45,16 +45,39 @@ class AdbClient:
             raise RuntimeError(str(result.stderr or "ADB command failed").strip())
         return result
 
-    def foreground(self) -> tuple[str | None, str | None]:
-        result = self._run(["shell", "dumpsys", "window", "windows"])
-        patterns = (
-            r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
-            r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
-        )
+    @staticmethod
+    def _foreground_from_output(output: str, patterns: tuple[str, ...]):
         for pattern in patterns:
-            match = re.search(pattern, result.stdout or "")
+            match = re.search(pattern, output or "")
             if match:
                 return match.group(1), match.group(2)
+        return None
+
+    def foreground(self) -> tuple[str | None, str | None]:
+        result = self._run(["shell", "dumpsys", "window", "windows"])
+        window_match = self._foreground_from_output(
+            result.stdout or "",
+            (
+                r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+                r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+            ),
+        )
+        if window_match is not None:
+            return window_match
+
+        result = self._run(["shell", "dumpsys", "activity", "activities"])
+        activity_match = self._foreground_from_output(
+            result.stdout or "",
+            (
+                r"topResumedActivity=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+                r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+                r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+                r"ResumedActivity:.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+                r"Resumed:.*?\s([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)",
+            ),
+        )
+        if activity_match is not None:
+            return activity_match
         return None, None
 
     def dump_hierarchy(self) -> str:
