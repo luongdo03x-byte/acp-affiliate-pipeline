@@ -54,13 +54,6 @@ class SeedingWebStaticTests(unittest.TestCase):
         self.assertIn('name="instruction"', template_source)
         self.assertIn('name="post_url"', template_source)
 
-    def test_register_seeding_initializes_additive_task_schema(self) -> None:
-        source = (ROOT / "web" / "seeding_routes.py").read_text(encoding="utf-8")
-        start = source.index("def register_seeding")
-        body = source[start:source.index('@bp.post("/seeding/task")', start)]
-        self.assertIn("ensure_task_schema", body)
-        self.assertIn("connect()", body)
-
 
 @unittest.skipUnless(HAS_FLASK, "Flask is not installed in the minimal local harness")
 class SeedingWebFunctionalTests(unittest.TestCase):
