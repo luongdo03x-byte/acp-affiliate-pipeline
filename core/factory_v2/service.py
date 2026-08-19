@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import re
 
 from core.db import now, transaction, ulid
 
@@ -26,6 +27,7 @@ _ALLOWED_ERROR_CODES = frozenset({
 })
 _ALLOWED_COMPLETION_MODES = frozenset({"ACP_ACTIVE", "SOCIAL_ONLY"})
 _ALLOWED_SIGNUP_CONTACT_TYPES = frozenset({"phone", "email"})
+_WORKER_USERNAME_RE = re.compile(r"^[a-z0-9._]{1,30}$")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -289,6 +291,31 @@ class FactoryService:
             worker_id,
             last_heartbeat_at=now(),
         )
+
+    def update_worker_selected_username(
+        self,
+        account_id: str,
+        *,
+        job_id: str,
+        worker_id: str,
+        username: str,
+    ) -> dict:
+        account = self.repo.get_account(account_id)
+        if account is None:
+            raise KeyError(account_id)
+        if (
+            account.get("current_job_id") != job_id
+            or account.get("assigned_worker_id") != worker_id
+        ):
+            raise ValueError("worker profile update binding mismatch")
+        value = str(username or "").strip()
+        if _WORKER_USERNAME_RE.fullmatch(value) is None:
+            raise ValueError("invalid worker-selected username")
+        self.repo.conn.execute(
+            "UPDATE factory_account SET username=?, updated_at=? WHERE id=?",
+            (value, now(), account_id),
+        )
+        return self.repo.get_account(account_id)
 
     def transition_account(
         self,
