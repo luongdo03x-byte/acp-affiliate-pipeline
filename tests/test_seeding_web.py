@@ -94,14 +94,16 @@ class SeedingWebFunctionalTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertTrue(response.get_json()["ok"])
 
-    def test_dashboard_renders_seeding_controls(self) -> None:
+    def test_dashboard_renders_manual_task_controls(self) -> None:
         response = self.client.get("/seeding")
         self.assertEqual(200, response.status_code)
         body = response.get_data(as_text=True)
         self.assertIn("Seeding", body)
         self.assertIn("Global pause", body)
-        self.assertIn("confidence_threshold", body)
         self.assertIn("Tạo nhiệm vụ", body)
+        self.assertIn('name="task_name"', body)
+        self.assertIn('name="instruction"', body)
+        self.assertIn('name="post_url"', body)
 
     def test_manual_task_create_redirects_to_new_task_and_shows_parsed_rules(self) -> None:
         response = self.client.post(
@@ -124,6 +126,22 @@ class SeedingWebFunctionalTests(unittest.TestCase):
         self.assertIn("2 reply", body)
         self.assertIn("sữa", body.lower())
         self.assertGreaterEqual(body.count("Account "), 3)
+
+
+def load_tests(loader, tests, pattern):
+    """Keep task-intake regressions inside the existing manage.sh seeding gate."""
+    from acp.tests import (
+        test_seeding_task_comment_plan,
+        test_seeding_task_intake,
+        test_seeding_task_rules,
+    )
+
+    suite = unittest.TestSuite()
+    suite.addTests(tests)
+    suite.addTests(loader.loadTestsFromModule(test_seeding_task_rules))
+    suite.addTests(loader.loadTestsFromModule(test_seeding_task_intake))
+    suite.addTests(loader.loadTestsFromModule(test_seeding_task_comment_plan))
+    return suite
 
 
 if __name__ == "__main__":
