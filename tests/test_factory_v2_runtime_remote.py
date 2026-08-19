@@ -258,6 +258,29 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertEqual([], service.username_updates)
         self.assertEqual([], runtime.running_actions)
 
+    def test_username_unavailable_confirmation_preserves_specific_error_code(self):
+        acc = account()
+        repo = FakeRepo(acc)
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "needs_confirmation",
+                "result": {
+                    "screen": "IG_USERNAME_UNAVAILABLE",
+                    "reason": "USERNAME_UNAVAILABLE",
+                },
+            }]),
+        )
+
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+
+        self.assertEqual("NEEDS_CONFIRMATION", acc["stage"])
+        self.assertEqual("USERNAME_UNAVAILABLE", service.transitions[-1][2])
+        self.assertEqual([], runtime.running_actions)
+
     def test_remote_prepare_routes_to_avd_automation_and_waits_legally(self):
         acc = account()
         repo = FakeRepo(acc)
