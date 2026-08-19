@@ -214,6 +214,36 @@ class InstagramFlowTests(unittest.TestCase):
         self.assertEqual("UI_CHANGED", result.reason)
         self.assertNotIn(("tap", "continue"), driver.mutations)
 
+    def test_username_validation_app_crash_reopens_once_then_rechecks(self):
+        username_entry = DetectedScreen("IG_USERNAME_ENTRY", 0.97, (), False)
+        driver = FakeDriver(
+            [username_entry, username_entry],
+            available=("username", "continue"),
+            node_texts={"username": "dragon.3275826"},
+            wait_screens=[
+                DetectedScreen("APP_CRASH", 0.99, ("crash",), False),
+                DetectedScreen("IG_USERNAME_VALID", 0.99, ("valid",), False),
+            ],
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("running", result.status)
+        self.assertEqual(["com.instagram.android"], driver.opened)
+        self.assertIn(("tap", "continue"), driver.mutations)
+
+    def test_username_validation_repeated_app_crash_reopens_only_once(self):
+        username_entry = DetectedScreen("IG_USERNAME_ENTRY", 0.97, (), False)
+        crash = DetectedScreen("APP_CRASH", 0.99, ("crash",), False)
+        driver = FakeDriver(
+            [username_entry, username_entry],
+            available=("username", "continue"),
+            node_texts={"username": "dragon.3275826"},
+            wait_screens=[crash, crash],
+        )
+        result = InstagramFlow(driver).run(self.profile, account_id="acc-1")
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("APP_CRASH", result.reason)
+        self.assertEqual(["com.instagram.android"], driver.opened)
+
     def test_unavailable_username_without_account_id_fails_closed(self):
         driver = FakeDriver(
             [DetectedScreen("IG_USERNAME_UNAVAILABLE", 0.99, (), False)],
