@@ -14,6 +14,7 @@ from .selectors import (
     PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
+    USERNAME_ENTRY_INPUT,
     USERNAME_INPUT,
 )
 
@@ -48,12 +49,22 @@ _AFTER_EXISTING_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
 )
 _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_SIGNUP_ENTRY",
+    "IG_USERNAME_ENTRY",
     "IG_CONTACT_ENTRY",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
     "IG_AVATAR_SETUP",
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_USERNAME_ENTRY",
+    "IG_CONTACT_ENTRY",
+    "IG_BIRTHDAY_ENTRY",
+    "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
+_AFTER_USERNAME = _IG_PROTECTED + _IG_ERRORS + (
     "IG_CONTACT_ENTRY",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
@@ -181,6 +192,27 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_SIGNUP_ENTRY")
+        if detected.kind == "IG_USERNAME_ENTRY":
+            username = str(profile.get("username") or "").strip()
+            if not username:
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_USERNAME")
+            if self.driver.find(USERNAME_ENTRY_INPUT) is None or self.driver.find(CONTINUE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.set_text(USERNAME_ENTRY_INPUT, username)
+            )
+            if action.status not in {"completed", "noop"}:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    CONTINUE,
+                    expected_screens=_AFTER_USERNAME,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_USERNAME_ENTRY")
         if detected.kind == "IG_CONTACT_ENTRY":
             contact = str(profile.get("signup_contact") or "").strip()
             if not contact:
