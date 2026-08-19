@@ -51,6 +51,53 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         active = self.repo.get_active_job_for_account(first["account_id"])
         self.assertEqual("worker-01", active["worker_id"])
 
+    def test_latest_social_only_batch_scopes_assignment_to_that_batch(self):
+        social_batch = self.service.create_batch(
+            "Latest social-only", count=1, seed=13, completion_mode="SOCIAL_ONLY"
+        )
+        social_account = self.repo.list_accounts(social_batch["id"])[0]
+        self.conn.execute(
+            "UPDATE factory_batch SET created_at=? WHERE id=?",
+            ("2026-08-19T00:00:00+00:00", self.batch["id"]),
+        )
+        self.conn.execute(
+            "UPDATE factory_batch SET created_at=? WHERE id=?",
+            ("2026-08-19T00:00:01+00:00", social_batch["id"]),
+        )
+
+        assigned = self.scheduler.assign_next("worker-01")
+
+        self.assertIsNotNone(assigned)
+        self.assertEqual(social_account["id"], assigned["account_id"])
+        self.assertEqual(social_batch["id"], self.repo.get_account(assigned["account_id"])["batch_id"])
+
+    def test_latest_acp_active_batch_keeps_legacy_cross_batch_ordering(self):
+        latest_batch = self.service.create_batch(
+            "Latest ACP", count=1, seed=17, completion_mode="ACP_ACTIVE"
+        )
+        self.conn.execute(
+            "UPDATE factory_batch SET created_at=? WHERE id=?",
+            ("2026-08-19T00:00:00+00:00", self.batch["id"]),
+        )
+        self.conn.execute(
+            "UPDATE factory_batch SET created_at=? WHERE id=?",
+            ("2026-08-19T00:00:01+00:00", latest_batch["id"]),
+        )
+        expected = self.conn.execute(
+            """SELECT a.id
+               FROM factory_account a
+               JOIN factory_batch b ON b.id=a.batch_id
+               WHERE b.status IN ('READY','RUNNING')
+                 AND a.stage IN ('PROFILE_READY','RETRY_PENDING')
+               ORDER BY a.batch_id, a.sequence
+               LIMIT 1"""
+        ).fetchone()["id"]
+
+        assigned = self.scheduler.assign_next("worker-01")
+
+        self.assertIsNotNone(assigned)
+        self.assertEqual(expected, assigned["account_id"])
+
     def test_social_only_threads_created_retry_does_not_enqueue_start_acp(self):
         account = self._seed_threads_retry("SOCIAL_ONLY")
 
