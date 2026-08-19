@@ -132,6 +132,35 @@ class DetectorTests(unittest.TestCase):
         self.assertEqual("IG_PROFILE_SETUP", detected.kind)
         self.assertTrue(detected.automation_allowed)
 
+    def test_username_entry_matches_android15_accessibility_tree(self):
+        snapshot = UiSnapshot(
+            "com.instagram.android",
+            ".activity.MainTabActivity",
+            (
+                node(
+                    text="Create a username",
+                    content_desc="Create a username",
+                    class_name="android.view.View",
+                ),
+                node(
+                    text="dragon.3275826",
+                    content_desc="Username,dragon.3275826",
+                    class_name="android.widget.EditText",
+                    clickable=True,
+                ),
+                node(
+                    content_desc="Next",
+                    class_name="android.widget.Button",
+                    clickable=True,
+                ),
+            ),
+        )
+
+        detected = build_instagram_detector().detect(snapshot)
+
+        self.assertEqual("IG_USERNAME_ENTRY", detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
     def test_threads_postcheck_requires_home_and_profile(self):
         snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (node(content_desc="Home", clickable=True), node(content_desc="Profile", clickable=True)))
         detected = build_threads_detector().detect(snapshot)
