@@ -12,7 +12,12 @@ import time
 from core.db import now
 
 from .models import AccountStage, RunnerType
-from .resource_policy import CapacityState, classify_capacity, next_worker_target
+from .resource_policy import (
+    CapacityState,
+    DEFAULT_THRESHOLDS,
+    classify_capacity,
+    next_worker_target,
+)
 
 
 @dataclass(frozen=True)
@@ -67,11 +72,24 @@ class WorkerSupervisor:
             self._stable_since is not None and current - self._stable_since >= self.stability_seconds
         )
 
-    def _limit_target_for_batch(self, target: int) -> int:
+    def _is_social_only_batch(self) -> bool:
         batch = self.repo.latest_batch()
-        if batch is not None and str(batch.get("completion_mode") or "").upper() == "SOCIAL_ONLY":
+        return batch is not None and str(batch.get("completion_mode") or "").upper() == "SOCIAL_ONLY"
+
+    def _limit_target_for_batch(self, target: int) -> int:
+        if self._is_social_only_batch():
             return min(int(target), 1)
         return int(target)
+
+    def _allow_social_only_cold_start(self, sample, workers, target: int) -> int:
+        if workers or int(target) > 0 or not self._is_social_only_batch():
+            return int(target)
+        thresholds = DEFAULT_THRESHOLDS
+        if sample.cpu_percent >= thresholds.green_cpu_max:
+            return int(target)
+        if sample.ram_available_mb <= thresholds.green_ram_min_mb:
+            return int(target)
+        return 1
 
     def _persist_sample(self, sample, capacity, workers, target):
         self.repo.insert_resource_sample({
@@ -216,6 +234,7 @@ class WorkerSupervisor:
         learned_ram = int(sum(ram_values) / len(ram_values)) if ram_values else 2048
         target = next_worker_target(len(workers), waiting, capacity, learned_ram)
         target = self._limit_target_for_batch(target)
+        target = self._allow_social_only_cold_start(sample, workers, target)
         stable = self._is_stable(capacity)
         self._persist_sample(sample, capacity, workers, target)
 
