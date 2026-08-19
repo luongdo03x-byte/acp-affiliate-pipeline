@@ -96,7 +96,7 @@ def ensure_schema(conn) -> None:
 def create_oauth_session(
     conn,
     *,
-    expected_username: str,
+    expected_username: str | None = None,
     batch_id: str | None = None,
     account_local_id: str | None = None,
     ttl_seconds: int = 600,
@@ -104,7 +104,8 @@ def create_oauth_session(
     if ttl_seconds < 60 or ttl_seconds > 3600:
         raise ValueError("ttl_seconds ngoài phạm vi cho phép")
     ensure_schema(conn)
-    username = normalize_username(expected_username)
+    expected_raw = str(expected_username or "").strip()
+    username = normalize_username(expected_raw) if expected_raw else ""
     now_dt = _now_dt()
     row = {
         "id": _new_id(),
@@ -219,14 +220,16 @@ def complete_oauth_session(conn, *, state: str, code: str, redirect_uri: str, pr
         _set_terminal(conn, session["id"], "OAUTH_ERROR", error="Không thể hoàn tất Threads OAuth")
         raise ThreadsOAuthError("Không thể hoàn tất Threads OAuth") from exc
 
-    expected = normalize_username(session["expected_username"])
-    if actual != expected:
-        _set_terminal(
-            conn, session["id"], "ACCOUNT_MISMATCH",
-            error="Tài khoản OAuth không khớp account đang onboarding",
-            actual_username=actual, threads_user_id=user_id,
-        )
-        raise AccountMismatchError(f"Expected @{expected}, received @{actual}")
+    expected_raw = str(session["expected_username"] or "").strip()
+    if expected_raw:
+        expected = normalize_username(expected_raw)
+        if actual != expected:
+            _set_terminal(
+                conn, session["id"], "ACCOUNT_MISMATCH",
+                error="Tài khoản OAuth không khớp account đang onboarding",
+                actual_username=actual, threads_user_id=user_id,
+            )
+            raise AccountMismatchError(f"Expected @{expected}, received @{actual}")
 
     encrypted = crypto.encrypt(long_token)
     token_expires_at = _iso(_now_dt() + timedelta(seconds=expires_in))
