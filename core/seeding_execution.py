@@ -136,6 +136,16 @@ def _assert_account_mapped(conn, instance_id: str, campaign_id: str):
     return account, row
 
 
+def _mapped_slot_rows(conn, campaign_id: str, target_id: str, mapped_slots: list[int]):
+    return conn.execute(
+        f"""SELECT * FROM seeding_comment_slot
+            WHERE campaign_id=? AND target_id=?
+              AND account_slot IN ({','.join('?' for _ in mapped_slots)})
+            ORDER BY account_slot,CASE comment_type WHEN 'MAIN' THEN 0 ELSE 1 END,item_index""",
+        (campaign_id, target_id, *mapped_slots),
+    ).fetchall()
+
+
 def prepare_account_task(
     conn,
     *,
@@ -175,13 +185,7 @@ def prepare_account_task(
     if mapped_slots != list(range(1, len(mapped_slots) + 1)):
         raise ValueError("Account slot của nhiệm vụ không liên tục")
 
-    existing_rows = conn.execute(
-        f"""SELECT * FROM seeding_comment_slot
-            WHERE campaign_id=? AND target_id=?
-              AND account_slot IN ({','.join('?' for _ in mapped_slots)})
-            ORDER BY account_slot,CASE comment_type WHEN 'MAIN' THEN 0 ELSE 1 END,item_index""",
-        (campaign_id, target_id, *mapped_slots),
-    ).fetchall()
+    existing_rows = _mapped_slot_rows(conn, campaign_id, target_id, mapped_slots)
     if existing_rows and all(row["status"] != "EMPTY" for row in existing_rows):
         return [dict(row) for row in existing_rows]
     if any(row["status"] != "EMPTY" for row in existing_rows):
@@ -224,23 +228,19 @@ def prepare_account_task(
                 ),
             )
             if cur.rowcount != 1:
-                raise ValueError("Không ghi được comment plan")
+                raise ValueError("comment_plan_conflict")
         conn.execute("RELEASE SAVEPOINT seeding_mapped_plan")
-    except Exception:
+    except Exception as exc:
         conn.execute("ROLLBACK TO SAVEPOINT seeding_mapped_plan")
         conn.execute("RELEASE SAVEPOINT seeding_mapped_plan")
-        raise
+        current = _mapped_slot_rows(conn, campaign_id, target_id, mapped_slots)
+        # Another mapped profile may have completed the same generation while
+        # this request was waiting on the LLM. Reuse the winning full plan.
+        if current and len(current) == len(existing_rows) and all(row["status"] != "EMPTY" for row in current):
+            return [dict(row) for row in current]
+        raise exc
 
-    return [
-        dict(row)
-        for row in conn.execute(
-            f"""SELECT * FROM seeding_comment_slot
-                WHERE campaign_id=? AND target_id=?
-                  AND account_slot IN ({','.join('?' for _ in mapped_slots)})
-                ORDER BY account_slot,CASE comment_type WHEN 'MAIN' THEN 0 ELSE 1 END,item_index""",
-            (campaign_id, target_id, *mapped_slots),
-        ).fetchall()
-    ]
+    return [dict(row) for row in _mapped_slot_rows(conn, campaign_id, target_id, mapped_slots)]
 
 
 def record_like(conn, instance_id: str, campaign_id: str, *, done: bool) -> dict:
