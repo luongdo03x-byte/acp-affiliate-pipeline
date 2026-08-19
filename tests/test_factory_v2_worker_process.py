@@ -3,6 +3,7 @@ import json
 import unittest
 
 from core.factory_v2.worker_process import WorkerProcessManager
+from core.factory_v2.worker_protocol import WorkerCommand
 
 
 class FakeStdin(io.StringIO):
@@ -83,6 +84,83 @@ class WorkerProcessTransportTests(unittest.TestCase):
         command = json.loads(written.strip())
         self.assertEqual("HEARTBEAT", command["action"])
         self.assertTrue(command["command_id"])
+
+    def test_ui_command_uses_extended_response_timeout(self):
+        process = FakeProcess()
+        observed_timeouts = []
+
+        def line_reader(stream, timeout):
+            observed_timeouts.append(timeout)
+            return json.dumps({"ok": True, "status": "running"}) + "\n"
+
+        manager = WorkerProcessManager(
+            popen_factory=lambda argv, **kwargs: process,
+            line_reader=line_reader,
+            base_env={"PATH": "/usr/bin"},
+            response_timeout_seconds=10,
+        )
+        manager.start("worker-01", "acp-worker-01", "emulator-5554")
+
+        manager.request(
+            "worker-01",
+            WorkerCommand(
+                command_id="ui-1",
+                action="AUTOMATE_INSTAGRAM",
+                account_id="account-1",
+                payload={},
+            ),
+        )
+
+        self.assertEqual([60.0], observed_timeouts)
+
+    def test_heartbeat_keeps_short_response_timeout(self):
+        process = FakeProcess()
+        observed_timeouts = []
+
+        def line_reader(stream, timeout):
+            observed_timeouts.append(timeout)
+            return stream.readline()
+
+        manager = WorkerProcessManager(
+            popen_factory=lambda argv, **kwargs: process,
+            line_reader=line_reader,
+            base_env={"PATH": "/usr/bin"},
+            response_timeout_seconds=10,
+        )
+        manager.start("worker-01", "acp-worker-01", "emulator-5554")
+
+        manager.heartbeat("worker-01")
+
+        self.assertEqual([10.0], observed_timeouts)
+
+    def test_timeout_terminates_and_removes_worker_process(self):
+        process = FakeProcess()
+
+        def line_reader(stream, timeout):
+            raise TimeoutError("worker response timed out")
+
+        manager = WorkerProcessManager(
+            popen_factory=lambda argv, **kwargs: process,
+            line_reader=line_reader,
+            base_env={"PATH": "/usr/bin"},
+            response_timeout_seconds=10,
+        )
+        manager.start("worker-01", "acp-worker-01", "emulator-5554")
+
+        with self.assertRaises(TimeoutError):
+            manager.request(
+                "worker-01",
+                WorkerCommand(
+                    command_id="ui-timeout",
+                    action="AUTOMATE_INSTAGRAM",
+                    account_id="account-1",
+                    payload={},
+                ),
+            )
+
+        self.assertTrue(process.terminated)
+        self.assertNotIn("worker-01", manager.processes)
+        self.assertFalse(manager.is_running("worker-01"))
 
     def test_stop_terminates_worker_process(self):
         process = FakeProcess()
