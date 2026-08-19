@@ -275,14 +275,16 @@ class WorkerSupervisor:
 
     def _start_one(self, capacity, target, workers):
         active_names = {w["avd_name"] for w in workers if w["avd_name"]}
-        configured_avds = sorted(self.avd.list_avds())
-        candidates = [name for name in configured_avds if name.startswith("acp-worker-") and name not in active_names]
+        configured_factory_avds = sorted(
+            name for name in self.avd.list_avds() if name.startswith("acp-worker-")
+        )
+        candidates = [name for name in configured_factory_avds if name not in active_names]
         if not candidates:
             return SupervisorDecision("HOLD", capacity, len(workers))
         avd_name = candidates[0]
         existing = self.repo.conn.execute("SELECT * FROM factory_worker WHERE avd_name=?", (avd_name,)).fetchone()
         worker_id = existing["id"] if existing else f"worker:{avd_name}"
-        worker_index = configured_avds.index(avd_name)
+        worker_index = configured_factory_avds.index(avd_name)
         port = 5554 + worker_index * 2
         adb_serial = f"emulator-{port}"
         intent_at = now()
