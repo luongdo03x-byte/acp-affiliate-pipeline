@@ -5,6 +5,8 @@ only receives the provider authorization URL and the final success/error redirec
 """
 from __future__ import annotations
 
+import os
+
 from flask import redirect, request, session, url_for
 
 # Main ACP imports this module as ``acp.web.threads_oauth`` while focused tests
@@ -31,7 +33,9 @@ else:
 
 
 def _redirect_uri() -> str:
-    return request.host_url.rstrip("/") + "/oauth/threads/connect/callback"
+    public_base = os.environ.get("ACP_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    base = public_base or request.host_url.rstrip("/")
+    return base + "/oauth/threads/connect/callback"
 
 
 def _provider(app):
