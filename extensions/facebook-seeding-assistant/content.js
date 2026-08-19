@@ -21,15 +21,6 @@
     return response.data;
   }
 
-  async function getAssignment() {
-    const response = await bridge({ type: 'ACP_GET_ASSIGNMENT' });
-    return response && response.data ? response.data : null;
-  }
-
-  async function setAssignment(assignment) {
-    await bridge({ type: 'ACP_SET_ASSIGNMENT', assignment: assignment || null });
-  }
-
   function panel() {
     let node = document.getElementById(PANEL_ID);
     if (node) return node;
@@ -37,7 +28,7 @@
     node.id = PANEL_ID;
     node.style.cssText = [
       'position:fixed', 'right:16px', 'bottom:16px', 'z-index:2147483647',
-      'width:360px', 'max-height:75vh', 'overflow:auto', 'padding:14px',
+      'width:380px', 'max-height:78vh', 'overflow:auto', 'padding:14px',
       'border-radius:12px', 'background:#0d1b2a', 'color:#f8fafc',
       'border:1px solid rgba(148,163,184,.28)', 'box-shadow:0 18px 48px rgba(0,0,0,.35)',
       'font:13px/1.45 system-ui,sans-serif',
@@ -88,16 +79,11 @@
           accountLabel: node.querySelector('#acp-seed-account-label').value,
         },
       });
-      if (!response || !response.ok) {
-        showFatal(new Error('Không lưu được cấu hình extension'));
-        return;
-      }
-      if (response.pairing && !response.pairing.ok) {
-        const error = response.pairing.data && response.pairing.data.error
+      if (!response || !response.ok || (response.pairing && !response.pairing.ok)) {
+        const error = response && response.pairing && response.pairing.data
           ? response.pairing.data.error
           : 'Không kết nối được account với ACP';
-        showFatal(new Error(error));
-        return;
+        return showFatal(new Error(error));
       }
       running = false;
       run().catch(showFatal);
@@ -106,11 +92,12 @@
 
   function showFatal(error) {
     running = false;
-    setPanel(
+    const node = setPanel(
       'DỪNG',
       `<div>${escapeHtml(error && error.message ? error.message : error)}</div>${button('Cấu hình', 'acp-seed-config')}`,
       'danger',
-    ).querySelector('#acp-seed-config').addEventListener('click', showConfig);
+    );
+    node.querySelector('#acp-seed-config').addEventListener('click', showConfig);
   }
 
   function setComposerText(composer, text) {
@@ -127,112 +114,155 @@
     composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
   }
 
-  async function waitForVerification(expectedText, composer) {
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const composerText = parser.normalizeText(composer && composer.textContent);
-      if (!composerText && runner.verifyObservedComment(document.body, expectedText)) return true;
-    }
+  function ensureTarget(work) {
+    if (runner.isSameFacebookTarget(location.href, work.target.url)) return true;
+    setPanel(
+      'OPENING',
+      `<div><strong>${escapeHtml(work.campaign_name)}</strong></div><div style="margin-top:6px">${escapeHtml(work.target.url)}</div>`,
+    );
+    location.assign(work.target.url);
     return false;
   }
 
-  async function clearAndAdvance() {
-    await setAssignment(null);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    running = false;
-    return run();
+  async function fetchNextWork(config) {
+    const response = await api('/api/seeding/account/next-work', {
+      method: 'POST',
+      body: { instance_id: config.extensionInstanceId },
+    });
+    return response.work;
   }
 
-  async function recordResult(assignment, result, mode, finalText, proofRef = null, errorDetail = null) {
-    const path = mode === 'reviewed' ? '/api/seeding/review-result' : '/api/seeding/result';
-    return api(path, {
+  async function prepareContext(work, config) {
+    const extracted = parser.extractPostContext(document, location.href);
+    if (!extracted.ok) {
+      throw new Error(`Không đọc chắc chắn được bài Facebook: ${extracted.error}`);
+    }
+    setPanel('ĐANG SINH NỘI DUNG', `<div>${escapeHtml(work.campaign_name)} · đọc bài xong, đang tạo bộ comment khác nhau cho các account đã chọn.</div>`);
+    await api('/api/seeding/account/prepare', {
       method: 'POST',
       body: {
-        shift_id: assignment.shift_id,
-        target_id: assignment.target.id,
-        result,
-        mode,
-        final_text: finalText || null,
-        proof_ref: proofRef,
-        error_detail: errorDetail,
+        instance_id: config.extensionInstanceId,
+        campaign_id: work.campaign_id,
+        target_id: work.target.id,
+        context: extracted.context,
       },
     });
   }
 
-  async function submitPrepared(assignment, decision, finalText, mode) {
+  function showLike(work, config) {
+    const node = setPanel('LIKE · xác nhận thủ công', `
+      <div><strong>${escapeHtml(work.campaign_name)}</strong> · ${escapeHtml(config.accountLabel)}</div>
+      <div style="margin-top:8px">Hãy LIKE bài bằng đúng profile này. Extension không tự click Like.</div>
+      <div id="acp-seed-like-status" style="margin-top:8px;color:#94a3b8">Sau khi Facebook đã hiện trạng thái Like, bấm nút xác nhận.</div>
+      ${button('Đã LIKE', 'acp-seed-like-done')}
+      ${button('Dừng', 'acp-seed-like-stop', true)}
+    `);
+    node.querySelector('#acp-seed-like-done').addEventListener('click', async () => {
+      try {
+        await api('/api/seeding/account/like-result', {
+          method: 'POST',
+          body: {
+            instance_id: config.extensionInstanceId,
+            campaign_id: work.campaign_id,
+            done: true,
+          },
+        });
+        running = false;
+        run().catch(showFatal);
+      } catch (error) { showFatal(error); }
+    });
+    node.querySelector('#acp-seed-like-stop').addEventListener('click', () => {
+      running = false;
+      setPanel('PAUSED', '<div>Profile này đã dừng tại bước LIKE.</div>', 'danger');
+    });
+  }
+
+  function composerForWork(work) {
+    if (work.slot.comment_type === 'REPLY') {
+      return parser.findFocusedComposer(document);
+    }
     const extracted = parser.extractPostContext(document, location.href);
     const scope = extracted.ok && extracted.article ? extracted.article : document;
-    const composer = parser.findCommentComposer(scope) || parser.findCommentComposer(document);
-    if (!composer) throw new Error('REVIEW_REQUIRED: không xác định duy nhất ô comment');
-    const submitControl = parser.findSubmitControl(composer);
-    if (!submitControl) throw new Error('REVIEW_REQUIRED: không xác định duy nhất nút đăng');
-
-    setComposerText(composer, finalText);
-    setPanel('Sẵn sàng gửi', `<div>${escapeHtml(finalText)}</div>`, 'ok');
-
-    const result = await runner.performSingleSubmit({
-      decision: { decision: 'AUTO_READY' },
-      expectedShiftId: assignment.shift_id,
-      getStatus: async () => api(`/api/seeding/status?shift_id=${encodeURIComponent(assignment.shift_id)}`),
-      submit: async () => submitControl.click(),
-      verify: async () => waitForVerification(finalText, composer),
-    });
-
-    if (result === 'PAUSED') {
-      setPanel('PAUSED', '<div>Global pause hoặc shift pause đang bật. Không submit.</div>', 'danger');
-      return;
-    }
-    if (result === 'UNKNOWN') {
-      await recordResult(assignment, 'UNKNOWN', mode, finalText, null, 'Không verify được comment sau một lần submit');
-      await setAssignment(null);
-      setPanel('UNKNOWN', '<div>Đã click đúng một lần nhưng không verify được. Tool dừng và không thử lại để tránh duplicate.</div>', 'danger');
-      return;
-    }
-    await recordResult(assignment, 'POSTED', mode, finalText, `observed:${Date.now()}`);
-    setPanel('POSTED', '<div>Đã verify comment và ghi KPI.</div>', 'ok');
-    return clearAndAdvance();
+    return parser.findCommentComposer(scope) || parser.findCommentComposer(document);
   }
 
-  async function showReview(assignment, decision, extraReason = '') {
-    const drafts = Array.isArray(decision.drafts) ? decision.drafts : [];
-    const risk = Array.isArray(decision.risk_labels) ? decision.risk_labels.join(', ') : '';
-    const first = drafts[0] || '';
-    const node = setPanel('REVIEW_REQUIRED', `
-      <div style="color:#fca5a5">${escapeHtml(extraReason || risk || 'Cần operator kiểm tra')}</div>
-      <div style="margin-top:8px">Confidence: ${escapeHtml(decision.confidence ?? '—')}</div>
-      <textarea id="acp-seed-review-text" style="width:100%;box-sizing:border-box;min-height:96px;margin-top:8px;padding:8px">${escapeHtml(first)}</textarea>
-      ${button('Đăng bản đã duyệt', 'acp-seed-review-post')}
-      ${button('Skip', 'acp-seed-review-skip')}
-      ${button('Pause shift', 'acp-seed-review-pause', true)}
-    `, 'danger');
+  function showComment(work, config) {
+    const isReply = work.slot.comment_type === 'REPLY';
+    const kind = isReply ? `Reply ${work.slot.item_index}` : `CMT chính ${work.slot.item_index}`;
+    const initial = String(work.slot.final_text || work.slot.generated_text || '').trim();
+    const instruction = isReply
+      ? 'Bấm Reply dưới comment phù hợp trên Facebook để ô reply được focus, sau đó bấm “Điền vào ô đang chọn”. Tool không tự chọn người để reply.'
+      : 'Bấm “Điền CMT chính”; extension chỉ điền nội dung, không tự bấm Đăng.';
+    const node = setPanel(`${kind} · ${config.accountLabel}`, `
+      <div><strong>${escapeHtml(work.campaign_name)}</strong> · Account slot ${escapeHtml(work.account_slot)}</div>
+      <div style="margin-top:8px;color:#cbd5e1">${escapeHtml(instruction)}</div>
+      <textarea id="acp-seed-work-text" style="width:100%;box-sizing:border-box;min-height:100px;margin-top:10px;padding:8px">${escapeHtml(initial)}</textarea>
+      <div id="acp-seed-work-status" style="margin-top:8px;color:#94a3b8">Bạn có thể sửa câu trước khi điền.</div>
+      ${button(isReply ? 'Điền vào ô đang chọn' : 'Điền CMT chính', 'acp-seed-fill')}
+      ${button('Đã đăng · xác nhận', 'acp-seed-confirm')}
+      ${button('Skip', 'acp-seed-skip', true)}
+    `);
 
-    node.querySelector('#acp-seed-review-post').addEventListener('click', async () => {
-      const text = node.querySelector('#acp-seed-review-text').value.trim();
+    const textArea = node.querySelector('#acp-seed-work-text');
+    const status = node.querySelector('#acp-seed-work-status');
+    node.querySelector('#acp-seed-fill').addEventListener('click', () => {
+      const text = textArea.value.trim();
+      if (!text) {
+        status.textContent = 'Nội dung đang rỗng.';
+        return;
+      }
+      const composer = composerForWork(work);
+      if (!composer) {
+        status.textContent = isReply
+          ? 'Chưa thấy ô reply đang focus. Hãy bấm Reply dưới comment cần trả lời rồi thử lại.'
+          : 'Không xác định duy nhất ô comment chính; không điền để tránh nhầm.';
+        return;
+      }
+      setComposerText(composer, text);
+      status.textContent = 'Đã điền. Hãy kiểm tra trên Facebook và tự bấm Đăng.';
+    });
+
+    node.querySelector('#acp-seed-confirm').addEventListener('click', async () => {
+      const text = textArea.value.trim();
       if (!text) return;
-      try { await submitPrepared(assignment, decision, text, 'reviewed'); } catch (error) { showFatal(error); }
-    });
-    node.querySelector('#acp-seed-review-skip').addEventListener('click', async () => {
+      if (!runner.verifyObservedComment(document.body, text)) {
+        status.textContent = 'Chưa nhìn thấy đúng nội dung này trên trang. Không ghi DONE để tránh báo cáo sai.';
+        return;
+      }
       try {
-        await recordResult(assignment, 'SKIPPED', 'reviewed', null, null, 'Operator skipped');
-        await clearAndAdvance();
+        const result = await api('/api/seeding/account/work-result', {
+          method: 'POST',
+          body: {
+            instance_id: config.extensionInstanceId,
+            slot_id: work.slot.id,
+            result: 'DONE',
+            final_text: text,
+            proof_ref: `observed:${Date.now()}`,
+          },
+        });
+        if (result.report && result.report.status === 'FAILED') {
+          status.textContent = `Comment đã ghi DONE nhưng Sheet lỗi: ${result.report.error || 'unknown'}`;
+        }
+        running = false;
+        run().catch(showFatal);
       } catch (error) { showFatal(error); }
     });
-    node.querySelector('#acp-seed-review-pause').addEventListener('click', async () => {
-      try {
-        await api('/api/seeding/pause-shift', { method: 'POST', body: { shift_id: assignment.shift_id } });
-        setPanel('PAUSED', '<div>Shift đã pause trên ACP.</div>', 'danger');
-      } catch (error) { showFatal(error); }
-    });
-  }
 
-  async function acquireAssignment() {
-    let assignment = await getAssignment();
-    if (assignment && assignment.target && assignment.shift_id) return assignment;
-    const next = await api('/api/seeding/next-target', { method: 'POST', body: {} });
-    if (next.done || !next.target) return null;
-    assignment = { shift_id: next.shift_id, target: next.target };
-    await setAssignment(assignment);
-    return assignment;
+    node.querySelector('#acp-seed-skip').addEventListener('click', async () => {
+      try {
+        await api('/api/seeding/account/work-result', {
+          method: 'POST',
+          body: {
+            instance_id: config.extensionInstanceId,
+            slot_id: work.slot.id,
+            result: 'SKIPPED',
+            final_text: textArea.value.trim() || null,
+          },
+        });
+        running = false;
+        run().catch(showFatal);
+      } catch (error) { showFatal(error); }
+    });
   }
 
   async function run() {
@@ -241,7 +271,7 @@
     try {
       const configResult = await bridge({ type: 'ACP_GET_CONFIG' });
       const config = (configResult && configResult.data) || {};
-      if (!config.seedingToken || !config.accountLabel) {
+      if (!config.seedingToken || !config.accountLabel || !config.extensionInstanceId) {
         running = false;
         return showConfig();
       }
@@ -253,53 +283,33 @@
       if (runner.hasFacebookSafetyBlock(document.body && document.body.innerText)) {
         throw new Error('Facebook đang hiển thị checkpoint/rate restriction. Tool dừng; không bypass.');
       }
-      const status = await api('/api/seeding/status');
-      if (status.paused) {
+
+      const work = await fetchNextWork(config);
+      if (!work || work.done) {
         running = false;
-        setPanel('PAUSED', '<div>Global pause đang bật.</div>', 'danger');
+        setPanel(
+          'IDLE',
+          `<div><strong>${escapeHtml(config.accountLabel)}</strong> đang kết nối.</div><div style="margin-top:6px">Không còn phần việc được gán cho profile này.</div>`,
+          'ok',
+        );
         return;
       }
-      const assignment = await acquireAssignment();
-      if (!assignment) {
-        running = false;
-        setPanel('DONE', `<div>${escapeHtml(config.accountLabel)} đã kết nối. Không còn target READY.</div>`, 'ok');
-        return;
-      }
-      if (!runner.isSameFacebookTarget(location.href, assignment.target.url)) {
-        setPanel('OPENING', `<div>${escapeHtml(assignment.target.url)}</div>`);
-        location.assign(assignment.target.url);
-        return;
-      }
+      if (!ensureTarget(work)) return;
 
-      const extracted = parser.extractPostContext(document, location.href);
-      const context = extracted.ok
-        ? extracted.context
-        : { url: location.href, post_text: '', surface_name: '', post_ref: '' };
-      const decision = await api('/api/seeding/analyze', {
-        method: 'POST',
-        body: {
-          shift_id: assignment.shift_id,
-          target_id: assignment.target.id,
-          context,
-        },
-      });
-
-      if (decision.decision !== 'AUTO_READY') {
+      if (work.action === 'NEEDS_CONTEXT') {
+        await prepareContext(work, config);
         running = false;
-        return showReview(assignment, decision, extracted.ok ? '' : extracted.error);
+        return run();
       }
-
-      const draft = Array.isArray(decision.drafts) ? String(decision.drafts[0] || '').trim() : '';
-      if (!draft) {
+      if (work.action === 'LIKE') {
         running = false;
-        return showReview(assignment, { ...decision, decision: 'REVIEW_REQUIRED' }, 'Draft rỗng');
+        return showLike(work, config);
       }
-      try {
-        await submitPrepared(assignment, decision, draft, 'auto');
-      } catch (error) {
+      if (work.action === 'COMMENT') {
         running = false;
-        return showReview(assignment, { ...decision, decision: 'REVIEW_REQUIRED' }, error.message);
+        return showComment(work, config);
       }
+      throw new Error(`Action không hỗ trợ: ${work.action}`);
     } catch (error) {
       return showFatal(error);
     }
