@@ -16,9 +16,9 @@ class Selector:
     resource_ids: tuple[str, ...] = ()
     content_descs: tuple[str, ...] = ()
     texts: tuple[str, ...] = ()
-    text_contains_all: tuple[str, ...] = ()
     class_names: tuple[str, ...] = ()
     require_clickable: bool = False
+    text_contains_all: tuple[str, ...] = ()
     require_enabled: bool = True
 
     def _eligible(self, node: UiNode) -> bool:
