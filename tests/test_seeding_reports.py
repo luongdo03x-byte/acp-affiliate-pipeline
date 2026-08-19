@@ -97,20 +97,13 @@ class SeedingReportTests(unittest.TestCase):
         def sender(url, payload):
             calls.append((url, payload))
             return {"ok": True, "sheet_ref": "sheet:123"}
-
         first = seeding_reports.push_to_sheet(
-            self.conn,
-            "TASK1",
-            webhook_url="https://script.google.com/macros/s/test/exec",
-            secret="secret",
-            sender=sender,
+            self.conn, "TASK1", webhook_url="https://script.google.com/macros/s/test/exec",
+            secret="secret", sender=sender,
         )
         second = seeding_reports.push_to_sheet(
-            self.conn,
-            "TASK1",
-            webhook_url="https://script.google.com/macros/s/test/exec",
-            secret="secret",
-            sender=sender,
+            self.conn, "TASK1", webhook_url="https://script.google.com/macros/s/test/exec",
+            secret="secret", sender=sender,
         )
         self.assertEqual("PUSHED", first["status"])
         self.assertEqual("PUSHED", second["status"])
@@ -118,20 +111,31 @@ class SeedingReportTests(unittest.TestCase):
         self.assertEqual("A2GR-64", calls[0][1]["task_name"])
         self.assertEqual(4, len(calls[0][1]["rows"]))
 
-    def test_existing_pushing_reservation_does_not_send_again(self):
+    def test_fresh_pushing_reservation_does_not_send_again(self):
+        now = seeding_reports._now()
         self.conn.execute(
-            "INSERT INTO seeding_task_report(campaign_id,status,updated_at) VALUES ('TASK1','PUSHING','2026')"
+            "INSERT INTO seeding_task_report(campaign_id,status,updated_at) VALUES ('TASK1','PUSHING',?)",
+            (now,),
         )
         calls = []
         result = seeding_reports.push_to_sheet(
-            self.conn,
-            "TASK1",
-            webhook_url="https://script.google.com/macros/s/test/exec",
-            secret="secret",
-            sender=lambda url, payload: calls.append((url, payload)) or {"ok": True},
+            self.conn, "TASK1", webhook_url="https://script.google.com/macros/s/test/exec",
+            secret="secret", sender=lambda url, payload: calls.append((url, payload)) or {"ok": True},
         )
         self.assertEqual("PUSHING", result["status"])
         self.assertEqual([], calls)
+
+    def test_stale_pushing_reservation_is_reclaimed_safely(self):
+        self.conn.execute(
+            "INSERT INTO seeding_task_report(campaign_id,status,updated_at) VALUES ('TASK1','PUSHING','2000-01-01T00:00:00+00:00')"
+        )
+        calls = []
+        result = seeding_reports.push_to_sheet(
+            self.conn, "TASK1", webhook_url="https://script.google.com/macros/s/test/exec",
+            secret="secret", sender=lambda url, payload: calls.append((url, payload)) or {"ok": True, "sheet_ref": "sheet:recovered"},
+        )
+        self.assertEqual("PUSHED", result["status"])
+        self.assertEqual(1, len(calls))
 
 
 if __name__ == "__main__":
