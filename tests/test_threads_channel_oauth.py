@@ -31,11 +31,11 @@ class FakeThreadsOAuth:
 class ThreadsChannelOAuthTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp.name, "oauth.db")
         self.old_env = os.environ.get("ACP_ENV")
         os.environ["ACP_ENV"] = "development"
-        self.conn = sqlite3.connect(os.path.join(self.tmp.name, "oauth.db"), isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript("""
+        conn = self._connect()
+        conn.executescript("""
             CREATE TABLE channel (
                 id TEXT PRIMARY KEY,
                 code TEXT UNIQUE NOT NULL,
@@ -51,15 +51,20 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
                 created_at TEXT NOT NULL
             );
         """)
-        ensure_schema(self.conn)
+        ensure_schema(conn)
+        conn.close()
 
     def tearDown(self):
-        self.conn.close()
         self.tmp.cleanup()
         if self.old_env is None:
             os.environ.pop("ACP_ENV", None)
         else:
             os.environ["ACP_ENV"] = self.old_env
+
+    def _connect(self):
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _build_app(self):
         from web.threads_oauth import register_threads_channel_oauth_routes
@@ -77,7 +82,7 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
 
     def test_start_and_callback_auto_discover_and_activate_threads_account(self):
         app = self._build_app()
-        with patch("web.threads_oauth.connect", side_effect=lambda: self.conn):
+        with patch("web.threads_oauth.connect", side_effect=self._connect):
             client = app.test_client()
             start = client.get("/oauth/threads/start", base_url="https://acp.example")
             self.assertEqual(302, start.status_code)
@@ -97,16 +102,18 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
             self.assertEqual(302, callback.status_code)
             self.assertIn("/kenh?summary=", callback.headers["Location"])
 
-        row = self.conn.execute(
+        conn = self._connect()
+        row = conn.execute(
             "SELECT * FROM channel WHERE external_user_id='uid-browser'"
         ).fetchone()
+        conn.close()
         self.assertIsNotNone(row)
         self.assertEqual("@browser.account", row["handle"])
         self.assertEqual("ACTIVE", row["status"])
 
     def test_callback_rejects_unknown_state_without_creating_channel(self):
         app = self._build_app()
-        with patch("web.threads_oauth.connect", side_effect=lambda: self.conn):
+        with patch("web.threads_oauth.connect", side_effect=self._connect):
             client = app.test_client()
             response = client.get(
                 "/oauth/threads/connect/callback?state=unknown&code=browser-code",
@@ -115,7 +122,9 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
             self.assertEqual(302, response.status_code)
             self.assertIn("/kenh?err=", response.headers["Location"])
 
-        count = self.conn.execute("SELECT COUNT(*) FROM channel").fetchone()[0]
+        conn = self._connect()
+        count = conn.execute("SELECT COUNT(*) FROM channel").fetchone()[0]
+        conn.close()
         self.assertEqual(0, count)
 
 
