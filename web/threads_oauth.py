@@ -7,14 +7,27 @@ from __future__ import annotations
 
 from flask import redirect, request, session, url_for
 
-from ..core.account_factory import (
-    OAuthSessionError,
-    ThreadsOAuthClient,
-    ThreadsOAuthError,
-    complete_oauth_session,
-    create_oauth_session,
-)
-from ..core.db import connect
+# Main ACP imports this module as ``acp.web.threads_oauth`` while focused tests
+# import it as ``web.threads_oauth`` from the repository root. Support both
+# package layouts without changing the OAuth behavior.
+if __package__ and "." in __package__:
+    from ..core.account_factory import (
+        OAuthSessionError,
+        ThreadsOAuthClient,
+        ThreadsOAuthError,
+        complete_oauth_session,
+        create_oauth_session,
+    )
+    from ..core.db import connect
+else:
+    from core.account_factory import (
+        OAuthSessionError,
+        ThreadsOAuthClient,
+        ThreadsOAuthError,
+        complete_oauth_session,
+        create_oauth_session,
+    )
+    from core.db import connect
 
 
 def _redirect_uri() -> str:
