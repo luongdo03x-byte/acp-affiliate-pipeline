@@ -148,6 +148,26 @@ class InstagramFlow:
             return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
         return None
 
+    def _username_validation_result(
+        self,
+        validation,
+        profile: dict,
+        account_id: str | None,
+        *,
+        crash_reopened: bool,
+    ) -> FlowResult | None:
+        if validation.kind == "APP_CRASH":
+            if crash_reopened:
+                return FlowResult("needs_confirmation", validation.kind, "APP_CRASH")
+            self.driver.open_package(PACKAGE)
+            return self._handle_detected(
+                self._detect_bounded(),
+                profile,
+                account_id=account_id,
+                crash_reopened=True,
+            )
+        return self._username_terminal_result(validation)
+
     def _accept_username(
         self,
         selected: str,
@@ -178,6 +198,8 @@ class InstagramFlow:
         detected,
         profile: dict,
         account_id: str | None,
+        *,
+        crash_reopened: bool = False,
     ) -> FlowResult:
         requested = str(profile.get("username") or "").strip()
         if not requested:
@@ -196,7 +218,12 @@ class InstagramFlow:
                 if action.status not in {"completed", "noop"}:
                     return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             validation = self.driver.wait_for(_USERNAME_VALIDATION_STATES, 8.0)
-            terminal = self._username_terminal_result(validation)
+            terminal = self._username_validation_result(
+                validation,
+                profile,
+                account_id,
+                crash_reopened=crash_reopened,
+            )
             if terminal is not None:
                 return terminal
             if validation.kind == "IG_USERNAME_VALID":
@@ -221,7 +248,12 @@ class InstagramFlow:
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
 
             validation = self.driver.wait_for(_USERNAME_VALIDATION_STATES, 8.0)
-            terminal = self._username_terminal_result(validation)
+            terminal = self._username_validation_result(
+                validation,
+                profile,
+                account_id,
+                crash_reopened=crash_reopened,
+            )
             if terminal is not None:
                 return terminal
             if validation.kind == "IG_USERNAME_UNAVAILABLE":
@@ -329,7 +361,12 @@ class InstagramFlow:
             "IG_USERNAME_VALID",
             "IG_USERNAME_UNAVAILABLE",
         }:
-            return self._handle_username(detected, profile, account_id)
+            return self._handle_username(
+                detected,
+                profile,
+                account_id,
+                crash_reopened=crash_reopened,
+            )
         if detected.kind == "IG_CONTACT_ENTRY":
             contact = str(profile.get("signup_contact") or "").strip()
             if not contact:
