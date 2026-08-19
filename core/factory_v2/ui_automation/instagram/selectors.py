@@ -18,6 +18,7 @@ CONTINUE = Selector(
 # this selector without stronger screen context.
 SIGN_UP = Selector(
     semantic="sign_up",
+    content_descs=("Create new account", "Tạo tài khoản mới"),
     texts=("Create new account", "Tạo tài khoản mới"),
     require_clickable=True,
 )
