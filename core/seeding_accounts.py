@@ -19,6 +19,12 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
 def ensure_account_schema(conn) -> None:
     conn.executescript(
         """
@@ -154,6 +160,28 @@ def _max_accounts(conn, campaign_id: str) -> int:
         return 1
 
 
+def _mapping_locked(conn, campaign_id: str) -> bool:
+    if _table_exists(conn, "seeding_comment_slot"):
+        row = conn.execute(
+            """SELECT 1 FROM seeding_comment_slot
+               WHERE campaign_id=? AND status<>'EMPTY' LIMIT 1""",
+            (campaign_id,),
+        ).fetchone()
+        if row is not None:
+            return True
+    if _table_exists(conn, "seeding_task_account"):
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(seeding_task_account)").fetchall()}
+        if "like_status" in cols:
+            row = conn.execute(
+                """SELECT 1 FROM seeding_task_account
+                   WHERE campaign_id=? AND like_status<>'PENDING' LIMIT 1""",
+                (campaign_id,),
+            ).fetchone()
+            if row is not None:
+                return True
+    return False
+
+
 def assign_task_accounts(conn, campaign_id: str, account_ids) -> list[dict]:
     ensure_account_schema(conn)
     ids = [
@@ -173,6 +201,19 @@ def assign_task_accounts(conn, campaign_id: str, account_ids) -> list[dict]:
         ).fetchall()
         if {row["id"] for row in rows} != set(ids):
             raise ValueError("Có tài khoản không hợp lệ hoặc đã bị tắt")
+
+    current = [
+        row["account_id"]
+        for row in conn.execute(
+            "SELECT account_id FROM seeding_task_account WHERE campaign_id=? ORDER BY account_slot",
+            (campaign_id,),
+        ).fetchall()
+    ]
+    if current == ids:
+        return list_task_accounts(conn, campaign_id)
+    if current and _mapping_locked(conn, campaign_id):
+        raise ValueError("Không thể đổi tài khoản sau khi nhiệm vụ đã bắt đầu")
+
     conn.execute("SAVEPOINT seeding_task_accounts")
     try:
         conn.execute(
