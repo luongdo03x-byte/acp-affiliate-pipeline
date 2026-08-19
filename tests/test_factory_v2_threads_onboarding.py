@@ -2,6 +2,7 @@ import sqlite3
 import unittest
 
 from core.factory_v2.threads_onboarding import (
+    accept_and_start_oauth,
     list_onboarding_accounts,
     mark_tester_accepted,
     mark_tester_invited,
@@ -119,6 +120,43 @@ class ThreadsOnboardingTests(unittest.TestCase):
         self.assertEqual(first["tester_invited_at"], second["tester_invited_at"])
         self.assertEqual(first["tester_accepted_at"], second["tester_accepted_at"])
         self.assertEqual("READY_FOR_OAUTH", onboarding_status(second))
+
+    def test_accept_and_start_backfills_milestones_before_opening_oauth(self):
+        self.insert_account("a1", "alpha")
+        observed = {}
+        provider = object()
+
+        def fake_start(conn, account_id, redirect_uri, oauth_provider):
+            row = dict(conn.execute(
+                "SELECT * FROM factory_account WHERE id=?", (account_id,)
+            ).fetchone())
+            observed.update(
+                account_id=account_id,
+                redirect_uri=redirect_uri,
+                provider=oauth_provider,
+                invited_at=row["tester_invited_at"],
+                accepted_at=row["tester_accepted_at"],
+            )
+            return {"authorization_url": "https://threads.example/authorize"}
+
+        result = accept_and_start_oauth(
+            self.conn,
+            "a1",
+            "https://acp.example/oauth/threads/onboarding/callback",
+            provider,
+            timestamp="2026-08-19T03:07:00+00:00",
+            start_oauth=fake_start,
+        )
+
+        self.assertEqual("https://threads.example/authorize", result["authorization_url"])
+        self.assertEqual("a1", observed["account_id"])
+        self.assertEqual(
+            "https://acp.example/oauth/threads/onboarding/callback",
+            observed["redirect_uri"],
+        )
+        self.assertIs(provider, observed["provider"])
+        self.assertEqual("2026-08-19T03:07:00+00:00", observed["invited_at"])
+        self.assertEqual("2026-08-19T03:07:00+00:00", observed["accepted_at"])
 
     def test_mark_invited_is_idempotent(self):
         self.insert_account("a1", "alpha")
