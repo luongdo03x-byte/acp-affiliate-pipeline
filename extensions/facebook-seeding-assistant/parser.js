@@ -36,8 +36,6 @@
       const url = new URL(String(value || ''));
       if (url.protocol !== 'https:' || !FACEBOOK_HOSTS.has(url.hostname.toLowerCase())) return null;
       const path = url.pathname.replace(/\/+$/, '') || '/';
-      // Modern post/group permalinks are identified by their path. Facebook may
-      // append volatile tracking query parameters while rendering anchors.
       if (/\/(?:posts|permalink)\/[^/]+$/i.test(path)) return path;
       return `${path}${url.search}`;
     } catch (_) {
@@ -102,6 +100,18 @@
     return candidates.length === 1 ? candidates[0] : null;
   }
 
+  function findFocusedComposer(rootNode) {
+    const element = rootNode && rootNode.activeElement;
+    if (!element || !isVisible(element)) return null;
+    const contenteditable = typeof element.getAttribute === 'function'
+      ? element.getAttribute('contenteditable')
+      : null;
+    if (element.isContentEditable === true || String(contenteditable).toLowerCase() === 'true') {
+      return element;
+    }
+    return null;
+  }
+
   function findSubmitControl(composer) {
     if (!composer) return null;
     const scope = typeof composer.closest === 'function' ? composer.closest('form') : null;
@@ -128,6 +138,7 @@
     findTargetArticle,
     extractPostContext,
     findCommentComposer,
+    findFocusedComposer,
     findSubmitControl,
   };
 });
