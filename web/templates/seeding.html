@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Facebook workflow</div>
     <h1>Seeding</h1>
-    <p class="lede">Queue target do operator cung cấp, template-first, hybrid auto-submit và dừng an toàn khi context không chắc chắn.</p>
+    <p class="lede">Tạo nhiệm vụ từ yêu cầu gốc, lưu link bài, parse rule và chuẩn bị comment khác nhau theo từng account.</p>
   </div>
   <form method="post" action="/seeding/global-pause">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
@@ -21,12 +21,88 @@
 {% if request.args.get('message') %}<div class="alert"><strong>Đã cập nhật.</strong><span>{{ request.args.get('message') }}</span></div>{% endif %}
 {% if global_paused %}<div class="alert alert--error"><strong>Global pause đang BẬT.</strong><span>Extension không được lấy target mới hoặc auto-submit cho tới khi operator tắt pause.</span></div>{% endif %}
 
-<div class="grid2">
+<section class="card panel card--elevated">
+  <div class="panel-header">
+    <div>
+      <div class="eyebrow">Task intake</div>
+      <h2>Tạo nhiệm vụ</h2>
+      <p class="note">Chỉ cần nhập tên nhiệm vụ, nguyên văn yêu cầu và link bài Facebook. Tên nhiệm vụ có thể trùng; mỗi lần tạo vẫn là một task riêng.</p>
+    </div>
+  </div>
+  <form method="post" action="/seeding/task" class="stack-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Tên nhiệm vụ
+      <input name="task_name" required placeholder="A2GR-64" autocomplete="off">
+    </label>
+    <label>Nội dung / yêu cầu
+      <textarea name="instruction" rows="6" required placeholder="LIKE BÀI ĐĂNG; mỗi acc 3 CMT (1 cmt chính + 2 reply); tối đa 3 acc; KHÔNG NHẮC SỮA..."></textarea>
+    </label>
+    <label>Link bài Facebook
+      <input name="post_url" type="url" required placeholder="https://www.facebook.com/groups/.../permalink/.../">
+    </label>
+    <button class="btn btn--primary" type="submit">Phân tích &amp; tạo nhiệm vụ</button>
+  </form>
+</section>
+
+{% if selected and task_rules %}
+<div class="grid2 section-heading--spaced">
   <section class="card panel">
-    <div class="panel-header"><h2>Campaign</h2>{% if selected %}<span class="tag {{ 'ok' if selected.status=='ACTIVE' else 'bad' }}">{{ selected.status }}</span>{% endif %}</div>
+    <div class="panel-header"><h2>Nhiệm vụ đã hiểu</h2><span class="tag ok">READY</span></div>
+    <p><strong>{{ selected.name }}</strong></p>
+    {% if task_target %}<p class="note"><a href="{{ task_target.url }}" target="_blank" rel="noopener">{{ task_target.url }}</a></p>{% endif %}
+    <div class="button-row" style="flex-wrap:wrap; margin-top:12px">
+      <span class="tag">{{ task_rules.max_accounts }} account</span>
+      <span class="tag">{{ task_rules.main_comments_per_account }} main</span>
+      <span class="tag">{{ task_rules.replies_per_account }} reply</span>
+      <span class="tag">{{ task_rules.comments_per_account }} CMT/account</span>
+      <span class="tag {{ 'ok' if task_rules.like_required else '' }}">Like: {{ 'Có' if task_rules.like_required else 'Không' }}</span>
+    </div>
+    {% if task_rules.forbidden_words %}
+      <p class="note"><strong>Không nhắc:</strong> {{ task_rules.forbidden_words|join(', ') }}</p>
+    {% endif %}
+    {% if task_rules.platforms %}
+      <p class="note"><strong>Platform được nhắc trong yêu cầu:</strong> {{ task_rules.platforms|join(', ') }}</p>
+    {% endif %}
+    <details style="margin-top:12px">
+      <summary>Yêu cầu gốc</summary>
+      <p class="note" style="white-space:pre-wrap">{{ selected.brief }}</p>
+    </details>
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Account / comment slots</h2><span class="tag">{{ comment_slots|length }}</span></div>
+    {% if comment_slots %}
+      {% for account_slot in range(1, task_rules.max_accounts + 1) %}
+        <div class="card" style="margin-top:10px">
+          <strong>Account {{ account_slot }}</strong>
+          <div class="table-card" style="margin-top:8px">
+            <table class="data-table">
+              <thead><tr><th>Loại</th><th>#</th><th>Nội dung</th><th>Trạng thái</th></tr></thead>
+              <tbody>
+              {% for slot in comment_slots if slot.account_slot == account_slot %}
+                <tr>
+                  <td>{{ 'CMT chính' if slot.comment_type=='MAIN' else 'Reply' }}</td>
+                  <td>{{ slot.item_index }}</td>
+                  <td>{{ slot.final_text or slot.generated_text or 'Chờ đọc bài để sinh nội dung' }}</td>
+                  <td><span class="tag {{ 'ok' if slot.status=='GENERATED' else '' }}">{{ slot.status }}</span></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}<div class="empty-state">Campaign cũ chưa có task slots.</div>{% endif %}
+  </section>
+</div>
+{% endif %}
+
+<div class="grid2 section-heading--spaced">
+  <section class="card panel">
+    <div class="panel-header"><h2>Cấu hình nâng cao</h2>{% if selected %}<span class="tag {{ 'ok' if selected.status=='ACTIVE' else 'bad' }}">{{ selected.status }}</span>{% endif %}</div>
     {% if campaigns %}
       <form method="get" action="/seeding" class="stack-form">
-        <label>Chọn campaign
+        <label>Chọn nhiệm vụ / campaign
           <select name="campaign_id" onchange="this.form.submit()">
           {% for c in campaigns %}<option value="{{ c.id }}" {{ 'selected' if selected and c.id==selected.id }}>{{ c.name }}</option>{% endfor %}
           </select>
@@ -55,17 +131,7 @@
       <button class="btn btn--primary" type="submit">Lưu campaign</button>
     </form>
     {% else %}
-    <form method="post" action="/seeding/campaign" class="stack-form">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-      <label>Tên<input name="name" required placeholder="Campaign test"></label>
-      <label>Brand<input name="brand"></label>
-      <label>Brief<textarea name="brief" rows="4" required></textarea></label>
-      <label>Allowed claims<textarea name="allowed_claims" rows="3"></textarea></label>
-      <label>Prohibited topics<textarea name="prohibited_topics" rows="3"></textarea></label>
-      <label>Disclosure / promotion policy<input name="disclosure_policy" value="promotional"></label>
-      <label>confidence_threshold<input type="number" name="confidence_threshold" min="0.85" max="1" step="0.01" value="0.90"></label>
-      <button class="btn btn--primary" type="submit">Tạo campaign</button>
-    </form>
+    <div class="empty-state">Tạo nhiệm vụ bằng form phía trên.</div>
     {% endif %}
   </section>
 
@@ -87,7 +153,7 @@
       {% else %}
         <form method="post" action="/seeding/campaign/{{ selected.id }}/shift/start"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--primary" type="submit">Start shift</button></form>
       {% endif %}
-    {% else %}<div class="empty-state">Tạo campaign trước.</div>{% endif %}
+    {% else %}<div class="empty-state">Tạo nhiệm vụ trước.</div>{% endif %}
   </section>
 </div>
 
