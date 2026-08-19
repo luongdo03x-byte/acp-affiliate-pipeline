@@ -138,10 +138,24 @@ class WorkerSupervisor:
         for worker in workers:
             if worker["state"] == "RECOVERING" and worker["last_error"] == "manual restart requested":
                 continue
-            serial = worker["adb_serial"]
-            if not serial or serial not in online or not self.avd.is_boot_completed(serial):
-                continue
             worker_id = worker["id"]
+            serial = worker["adb_serial"]
+            if not serial or serial not in online:
+                if (
+                    worker["state"] == "RECOVERING"
+                    and not worker["current_job_id"]
+                    and not worker["current_account_id"]
+                ):
+                    self.worker_processes.stop(worker_id)
+                    self.repo.conn.execute(
+                        """UPDATE factory_worker
+                           SET state='STOPPED', pid=NULL, draining=0
+                           WHERE id=?""",
+                        (worker_id,),
+                    )
+                continue
+            if not self.avd.is_boot_completed(serial):
+                continue
             started_here = False
             try:
                 if not self.worker_processes.is_running(worker_id):
