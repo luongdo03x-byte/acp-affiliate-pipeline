@@ -134,6 +134,21 @@ class InstagramFlowTests(unittest.TestCase):
         self.assertEqual("MISSING_AVATAR", result.reason)
         self.assertEqual([], driver.mutations)
 
+    def test_username_entry_sets_supplied_username_then_continues(self):
+        driver = FakeDriver([
+            DetectedScreen("IG_USERNAME_ENTRY", 0.97, ("create_username", "username_input", "continue"), False)
+        ])
+
+        result = InstagramFlow(driver).run(self.profile)
+
+        self.assertEqual("running", result.status)
+        self.assertEqual([("username", "sample_user")], driver.set_values)
+        self.assertEqual(
+            [("set_text", "username"), ("tap", "continue")],
+            driver.mutations,
+        )
+        self.assertEqual("IG_USERNAME_ENTRY", result.last_safe_step)
+
     def test_profile_setup_sets_only_approved_fields(self):
         driver = FakeDriver([DetectedScreen("IG_PROFILE_SETUP", 0.96, ("profile",), False)])
         result = InstagramFlow(driver).run(self.profile)
