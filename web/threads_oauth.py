@@ -35,7 +35,7 @@ else:
 def _redirect_uri() -> str:
     public_base = os.environ.get("ACP_PUBLIC_BASE_URL", "").strip().rstrip("/")
     base = public_base or request.host_url.rstrip("/")
-    return base + "/oauth/threads/connect/callback"
+    return base + "/oauth/threads/callback"
 
 
 def _provider(app):
@@ -64,7 +64,7 @@ def register_threads_channel_oauth_routes(app, *, admin_password: str):
             conn.close()
         return redirect(provider.authorization_url(oauth_session["state"], _redirect_uri()))
 
-    @app.get("/oauth/threads/connect/callback")
+    @app.get("/oauth/threads/callback")
     def threads_channel_oauth_callback():
         if admin_password and not session.get("uid"):
             return redirect(url_for("login", next="/oauth/threads/start"))
