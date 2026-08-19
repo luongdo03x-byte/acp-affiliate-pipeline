@@ -416,3 +416,102 @@ def create_task(conn, *, name: str, instruction: str, post_url: str) -> dict:
         "slots": list_comment_slots(conn, campaign_id),
         "rules": rules,
     }
+
+
+def generate_comment_plan(
+    conn,
+    *,
+    campaign_id: str,
+    target_id: str,
+    post_text: str,
+    llm_fn,
+) -> list[dict]:
+    """Generate and atomically persist one validated multi-account comment plan."""
+    ensure_task_schema(conn)
+    if not callable(llm_fn):
+        raise ValueError("Chưa cấu hình LLM để sinh comment")
+    context = str(post_text or "").strip()
+    if not context:
+        raise ValueError("Nội dung bài Facebook không được để trống")
+
+    campaign = conn.execute(
+        "SELECT id,name,brief,task_rules FROM seeding_campaign WHERE id=?",
+        (campaign_id,),
+    ).fetchone()
+    target = conn.execute(
+        "SELECT id,url FROM seeding_target WHERE id=? AND campaign_id=?",
+        (target_id, campaign_id),
+    ).fetchone()
+    if campaign is None or target is None:
+        raise ValueError("Nhiệm vụ hoặc target không hợp lệ")
+
+    rules = get_task_rules(conn, campaign_id)
+    if not rules:
+        raise ValueError("Nhiệm vụ chưa có parsed rules")
+    prompt = build_comment_plan_prompt(
+        task_name=campaign["name"],
+        instruction=campaign["brief"],
+        post_url=target["url"],
+        post_text=context,
+        rules=rules,
+    )
+    rows = parse_comment_plan_response(llm_fn(prompt), rules)
+
+    existing = {
+        (row["account_slot"], row["comment_type"], row["item_index"])
+        for row in conn.execute(
+            """SELECT account_slot,comment_type,item_index
+               FROM seeding_comment_slot
+               WHERE campaign_id=? AND target_id=?""",
+            (campaign_id, target_id),
+        ).fetchall()
+    }
+    incoming = {(row["account_slot"], row["comment_type"], row["item_index"]) for row in rows}
+    if incoming != existing:
+        raise ValueError("comment_plan không khớp slot của nhiệm vụ")
+
+    stamp = _now()
+    conn.execute("SAVEPOINT seeding_comment_plan")
+    try:
+        for row in rows:
+            cur = conn.execute(
+                """UPDATE seeding_comment_slot
+                   SET generated_text=?, status='GENERATED', updated_at=?
+                   WHERE campaign_id=? AND target_id=? AND account_slot=?
+                     AND comment_type=? AND item_index=?""",
+                (
+                    row["text"],
+                    stamp,
+                    campaign_id,
+                    target_id,
+                    row["account_slot"],
+                    row["comment_type"],
+                    row["item_index"],
+                ),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Không cập nhật được comment slot")
+        conn.execute("RELEASE SAVEPOINT seeding_comment_plan")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT seeding_comment_plan")
+        conn.execute("RELEASE SAVEPOINT seeding_comment_plan")
+        raise
+
+    _audit(
+        conn,
+        "seeding_campaign",
+        campaign_id,
+        "generate_comment_plan",
+        detail={"target_id": target_id, "slot_count": len(rows)},
+    )
+    return [
+        dict(row)
+        for row in conn.execute(
+            """SELECT * FROM seeding_comment_slot
+               WHERE campaign_id=? AND target_id=?
+               ORDER BY account_slot,
+                        CASE comment_type WHEN 'MAIN' THEN 0 ELSE 1 END,
+                        item_index""",
+            (campaign_id, target_id),
+        ).fetchall()
+    ]
