@@ -2,7 +2,7 @@ name: Account Factory CI
 
 on:
   push:
-    branches: ["feat/account-factory-android"]
+    branches: ["feat/account-factory-android", "feat/threads-oauth-kenh"]
   pull_request:
     paths:
       - "core/account_factory.py"
@@ -11,12 +11,15 @@ on:
       - "web/factory_app.py"
       - "web/factory_v2.py"
       - "web/threads_oauth.py"
+      - "web/threads_onboarding.py"
       - "web/server.py"
       - "web/templates/channels.html"
+      - "web/templates/threads_onboarding.html"
       - "workers/account_factory_worker.py"
       - "account_factory_server.py"
       - "tests/test_account_factory.py"
       - "tests/test_threads_channel_oauth.py"
+      - "tests/test_threads_onboarding_web.py"
       - "tests/test_factory_v2_*.py"
       - "android/account-factory/**"
       - ".github/workflows/account-factory-ci.yml"
@@ -41,6 +44,8 @@ jobs:
           python -m unittest \
             tests.test_account_factory \
             tests.test_threads_channel_oauth \
+            tests.test_threads_onboarding_web \
+            tests.test_factory_v2_threads_onboarding \
             tests.test_factory_v2_schema \
             tests.test_factory_v2_state_machine \
             tests.test_factory_v2_identity \
