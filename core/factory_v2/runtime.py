@@ -379,15 +379,27 @@ class FactoryControllerRuntime:
         reason = str(detail.get("reason") or screen)[:120]
 
         if status == "running":
-            try:
-                applied = self._apply_profile_updates(
+            has_profile_updates = detail.get("profile_updates") not in {None, {}}
+            if not has_profile_updates:
+                self._set_remote_running(
                     job,
-                    account,
-                    flow=flow,
-                    detail=detail,
+                    "AUTOMATE_INSTAGRAM" if flow == "instagram" else "AUTOMATE_THREADS",
                 )
-                if not applied:
-                    raise ValueError("invalid worker profile_updates")
+                return
+            try:
+                with transaction(self.repo.conn):
+                    applied = self._apply_profile_updates(
+                        job,
+                        account,
+                        flow=flow,
+                        detail=detail,
+                    )
+                    if not applied:
+                        raise ValueError("invalid worker profile_updates")
+                    self._set_remote_running(
+                        job,
+                        "AUTOMATE_INSTAGRAM" if flow == "instagram" else "AUTOMATE_THREADS",
+                    )
             except (ValueError, KeyError, sqlite3.IntegrityError):
                 self._ensure_remote_checkpoint(
                     job,
@@ -402,10 +414,6 @@ class FactoryControllerRuntime:
                     ),
                 )
                 return
-            self._set_remote_running(
-                job,
-                "AUTOMATE_INSTAGRAM" if flow == "instagram" else "AUTOMATE_THREADS",
-            )
             return
         if status == "waiting_human":
             self._ensure_remote_checkpoint(
