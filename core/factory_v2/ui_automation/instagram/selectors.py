@@ -87,4 +87,27 @@ PROFILE = Selector(
     semantic="profile",
     content_descs=("Profile", "Trang cá nhân"),
     resource_ids=("com.instagram.android:id/profile_tab",),
+    require_clickable=True,
+)
+ACCOUNT_SWITCHER = Selector(
+    semantic="account_switcher",
+    content_descs=("Switch accounts", "Chuyển tài khoản"),
+    texts=("Switch accounts", "Chuyển tài khoản"),
+    require_clickable=True,
+)
+ADD_ACCOUNT = Selector(
+    semantic="add_account",
+    content_descs=(
+        "Add Instagram account",
+        "Add account",
+        "Thêm tài khoản Instagram",
+        "Thêm tài khoản",
+    ),
+    texts=(
+        "Add Instagram account",
+        "Add account",
+        "Thêm tài khoản Instagram",
+        "Thêm tài khoản",
+    ),
+    require_clickable=True,
 )
