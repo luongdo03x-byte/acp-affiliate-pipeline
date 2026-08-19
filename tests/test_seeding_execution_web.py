@@ -33,6 +33,8 @@ class SeedingExecutionWebContracts(unittest.TestCase):
         source = (ROOT / "extensions" / "facebook-seeding-assistant" / "content.js").read_text(encoding="utf-8")
         self.assertIn("REPLY", source)
         self.assertIn("findFocusedComposer", source)
+        self.assertIn("lastFacebookComposer", source)
+        self.assertIn("focusin", source)
         self.assertNotIn("submitControl.click()", source)
 
     def test_manual_done_requires_cleared_composer_and_idle_profile_polls_for_new_work(self):
@@ -43,6 +45,11 @@ class SeedingExecutionWebContracts(unittest.TestCase):
         self.assertIn("setTimeout", source)
         self.assertIn("verifyManualSubmission(extracted.article", source)
         self.assertNotIn("verifyManualSubmission(document.body", source)
+
+    def test_unfinished_comment_is_not_irreversibly_skipped(self):
+        source = (ROOT / "extensions" / "facebook-seeding-assistant" / "content.js").read_text(encoding="utf-8")
+        self.assertNotIn("result: 'SKIPPED'", source)
+        self.assertIn("acp-seed-stop-work", source)
 
 
 if __name__ == "__main__":
