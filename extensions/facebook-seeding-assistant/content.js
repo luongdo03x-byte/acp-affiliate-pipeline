@@ -5,6 +5,7 @@
 
   const PANEL_ID = 'acp-facebook-seeding-panel';
   let running = false;
+  let idleTimer = null;
 
   function bridge(message) {
     return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
@@ -55,6 +56,15 @@
 
   function button(label, id, danger = false) {
     return `<button id="${id}" style="margin:6px 6px 0 0;padding:7px 10px;border-radius:8px;border:1px solid ${danger ? '#ef4444' : '#64748b'};background:${danger ? '#3f1118' : '#162a40'};color:#fff;cursor:pointer">${escapeHtml(label)}</button>`;
+  }
+
+  function scheduleIdlePoll() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      running = false;
+      run().catch(showFatal);
+    }, 15000);
   }
 
   async function showConfig() {
@@ -190,6 +200,7 @@
     const isReply = work.slot.comment_type === 'REPLY';
     const kind = isReply ? `Reply ${work.slot.item_index}` : `CMT chính ${work.slot.item_index}`;
     const initial = String(work.slot.final_text || work.slot.generated_text || '').trim();
+    let lastFilledComposer = null;
     const instruction = isReply
       ? 'Bấm Reply dưới comment phù hợp trên Facebook để ô reply được focus, sau đó bấm “Điền vào ô đang chọn”. Tool không tự chọn người để reply.'
       : 'Bấm “Điền CMT chính”; extension chỉ điền nội dung, không tự bấm Đăng.';
@@ -219,14 +230,19 @@
         return;
       }
       setComposerText(composer, text);
+      lastFilledComposer = composer;
       status.textContent = 'Đã điền. Hãy kiểm tra trên Facebook và tự bấm Đăng.';
     });
 
     node.querySelector('#acp-seed-confirm').addEventListener('click', async () => {
       const text = textArea.value.trim();
       if (!text) return;
-      if (!runner.verifyObservedComment(document.body, text)) {
-        status.textContent = 'Chưa nhìn thấy đúng nội dung này trên trang. Không ghi DONE để tránh báo cáo sai.';
+      if (!lastFilledComposer) {
+        status.textContent = 'Hãy dùng nút Điền trước để ACP theo dõi đúng ô composer.';
+        return;
+      }
+      if (!runner.verifyManualSubmission(document.body, lastFilledComposer, text)) {
+        status.textContent = 'Chưa xác minh được comment đã đăng: ô composer còn nội dung hoặc comment chưa render trên trang.';
         return;
       }
       try {
@@ -267,6 +283,10 @@
 
   async function run() {
     if (running) return;
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     running = true;
     try {
       const configResult = await bridge({ type: 'ACP_GET_CONFIG' });
@@ -289,9 +309,10 @@
         running = false;
         setPanel(
           'IDLE',
-          `<div><strong>${escapeHtml(config.accountLabel)}</strong> đang kết nối.</div><div style="margin-top:6px">Không còn phần việc được gán cho profile này.</div>`,
+          `<div><strong>${escapeHtml(config.accountLabel)}</strong> đang kết nối.</div><div style="margin-top:6px">Không còn phần việc được gán. ACP sẽ kiểm tra lại sau 15 giây.</div>`,
           'ok',
         );
+        scheduleIdlePoll();
         return;
       }
       if (!ensureTarget(work)) return;
