@@ -78,10 +78,7 @@ class TaskIntakeTests(unittest.TestCase):
             (first["campaign"]["id"],),
         ).fetchone()
         self.assertIsNotNone(target)
-        self.assertEqual(
-            "https://www.facebook.com/groups/467062964514242/permalink/1737872480766611/",
-            target["url"],
-        )
+        self.assertEqual(POST_URL, target["url"])
 
 
 if __name__ == "__main__":
