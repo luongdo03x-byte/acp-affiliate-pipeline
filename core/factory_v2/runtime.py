@@ -379,7 +379,7 @@ class FactoryControllerRuntime:
         reason = str(detail.get("reason") or screen)[:120]
 
         if status == "running":
-            has_profile_updates = detail.get("profile_updates") not in {None, {}}
+            has_profile_updates = detail.get("profile_updates") not in (None, {})
             if not has_profile_updates:
                 self._set_remote_running(
                     job,
