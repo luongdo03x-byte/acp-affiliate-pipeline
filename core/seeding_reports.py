@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from . import seeding_execution
 
+_PUSH_RESERVATION_STALE_SECONDS = 300
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -154,6 +156,19 @@ def _default_sender(url: str, payload: dict) -> dict:
     return result
 
 
+def _is_stale_push(updated_at: str, stamp: str) -> bool:
+    try:
+        old = datetime.fromisoformat(str(updated_at))
+        current = datetime.fromisoformat(str(stamp))
+        if old.tzinfo is None:
+            old = old.replace(tzinfo=timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return (current.astimezone(timezone.utc) - old.astimezone(timezone.utc)).total_seconds() > _PUSH_RESERVATION_STALE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
 def _reserve_push(conn, campaign_id: str, stamp: str) -> tuple[bool, dict]:
     cur = conn.execute(
         """INSERT OR IGNORE INTO seeding_task_report(campaign_id,status,updated_at)
@@ -171,8 +186,22 @@ def _reserve_push(conn, campaign_id: str, stamp: str) -> tuple[bool, dict]:
     ).fetchone()
     if row is None:
         raise ValueError("Không tạo được trạng thái report")
-    if row["status"] in {"PUSHING", "PUSHED"}:
+    if row["status"] == "PUSHED":
         return False, dict(row)
+    if row["status"] == "PUSHING":
+        if not _is_stale_push(row["updated_at"], stamp):
+            return False, dict(row)
+        cur = conn.execute(
+            """UPDATE seeding_task_report
+               SET last_error=NULL,updated_at=?
+               WHERE campaign_id=? AND status='PUSHING' AND updated_at=?""",
+            (stamp, campaign_id, row["updated_at"]),
+        )
+        current = conn.execute(
+            "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
+        ).fetchone()
+        return cur.rowcount == 1, dict(current)
+
     cur = conn.execute(
         """UPDATE seeding_task_report
            SET status='PUSHING',last_error=NULL,updated_at=?
