@@ -97,6 +97,10 @@ class ThreadsOnboardingTests(unittest.TestCase):
         )
         self.assertEqual("READY_FOR_OAUTH", onboarding_status(oauth_retry))
 
+        cleared_retry = dict(oauth_retry)
+        cleared_retry["last_error_code"] = None
+        self.assertEqual("READY_FOR_OAUTH", onboarding_status(cleared_retry))
+
         other_retry = dict(oauth_retry)
         other_retry["last_error_code"] = "NETWORK_TRANSIENT"
         self.assertIsNone(onboarding_status(other_retry))
