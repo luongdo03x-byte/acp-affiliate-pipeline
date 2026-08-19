@@ -38,6 +38,7 @@ _APPROVED_PROFILE_KEYS = (
     "avatar_file",
 )
 _ALLOWED_CONTACT_TYPES = frozenset({"phone", "email"})
+_USERNAME_UPDATE_RE = re.compile(r"^[a-z0-9._]{1,30}$")
 
 
 def _now() -> str:
@@ -130,6 +131,17 @@ def _safe_profile(payload: dict) -> dict[str, str]:
     return clean
 
 
+def _safe_profile_updates(value) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) - {"username"}:
+        raise ValueError("invalid profile_updates")
+    username = _clean_profile_text(value.get("username"), "username", max_length=30)
+    if username is None or _USERNAME_UPDATE_RE.fullmatch(username) is None:
+        raise ValueError("invalid profile_updates")
+    return {"username": username}
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -216,6 +228,7 @@ class WorkerAgent:
         screen = _safe_text(getattr(result, "screen", None)) or "UNKNOWN"
         reason = _safe_text(getattr(result, "reason", None))
         safe_step = _safe_text(getattr(result, "last_safe_step", None))
+        profile_updates = _safe_profile_updates(getattr(result, "profile_updates", None))
         status = str(getattr(result, "status", "needs_confirmation"))
         if status not in {
             "running", "waiting_human", "completed",
@@ -245,6 +258,7 @@ class WorkerAgent:
                 "screen": screen,
                 "reason": reason,
                 "last_safe_step": self.last_safe_step,
+                "profile_updates": profile_updates,
             },
         }
 
@@ -308,7 +322,7 @@ class WorkerAgent:
                 self._stage_avatar(profile)
                 return self._flow_response(
                     "instagram",
-                    self.instagram_flow.run(profile),
+                    self.instagram_flow.run(profile, account_id=command.account_id),
                 )
             if action == "AUTOMATE_THREADS":
                 self.threads_flow.driver.open_package(_THREADS_PACKAGE)
