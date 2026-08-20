@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import os
 from pathlib import Path
 import re
 
 from core.db import now, transaction, ulid
 
+from .account_credentials import store_account_password
 from .avatar_pool import AvatarPool, configured_avatar_root, validate_avatar_reference
 from .identity import generate_profiles
 from .models import AccountStage, BatchStatus, RunnerType, WorkerState
@@ -29,6 +31,7 @@ _ALLOWED_ERROR_CODES = frozenset({
 _ALLOWED_COMPLETION_MODES = frozenset({"ACP_ACTIVE", "SOCIAL_ONLY"})
 _ALLOWED_SIGNUP_CONTACT_TYPES = frozenset({"phone", "email"})
 _WORKER_USERNAME_RE = re.compile(r"^[a-z0-9._]{1,30}$")
+_DEFAULT_PASSWORD_ENV = "ACP_DEFAULT_ACCOUNT_PASSWORD"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -106,6 +109,15 @@ def _validate_avatar_file(value, *, avatar_root: Path) -> str | None:
         raise ValueError("invalid avatar_file") from exc
 
 
+def _configured_default_account_password() -> str | None:
+    value = os.environ.get(_DEFAULT_PASSWORD_ENV)
+    if value is None or not value:
+        if os.environ.get("ACP_ENV") == "production":
+            raise RuntimeError(f"{_DEFAULT_PASSWORD_ENV} is required in production")
+        return None
+    return value
+
+
 class FactoryService:
     def __init__(self, repository, *, avatar_dir=None, avatar_rng=None):
         self.repo = repository
@@ -124,6 +136,7 @@ class FactoryService:
         if count <= 0:
             raise ValueError("count must be positive")
         completion_mode = _validate_completion_mode(completion_mode)
+        default_password = _configured_default_account_password()
         batch_id = ulid()
         created_at = now()
         profiles = generate_profiles(count, seed=seed)
@@ -173,6 +186,13 @@ class FactoryService:
                 })
             self.repo.create_batch(batch_row)
             self.repo.insert_accounts(account_rows)
+            if default_password is not None:
+                for account_row in account_rows:
+                    store_account_password(
+                        self.repo.conn,
+                        account_row["id"],
+                        default_password,
+                    )
         return self.repo.get_batch(batch_id)
 
     def _validate_execution_target(self, execution_target: str) -> str:
