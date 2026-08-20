@@ -58,6 +58,7 @@ class WorkerProcessTransportTests(unittest.TestCase):
                 "PATH": "/usr/bin",
                 "HOME": "/tmp/home",
                 "ANDROID_HOME": "/opt/android",
+                "ACP_AVATAR_DIR": "/srv/acp/shared/avatars",
                 "THREADS_APP_SECRET": "must-not-leak",
                 "ACP_MASTER_KEY": "must-not-leak",
                 "ACP_DEFAULT_ACCOUNT_PASSWORD": "must-not-leak",
@@ -75,6 +76,7 @@ class WorkerProcessTransportTests(unittest.TestCase):
         self.assertIn("acp-worker-01", argv)
         self.assertIn("--serial", argv)
         self.assertIn("emulator-5554", argv)
+        self.assertEqual("/srv/acp/shared/avatars", kwargs["env"].get("ACP_AVATAR_DIR"))
         self.assertNotIn("THREADS_APP_SECRET", kwargs["env"])
         self.assertNotIn("ACP_MASTER_KEY", kwargs["env"])
         self.assertNotIn("ACP_DEFAULT_ACCOUNT_PASSWORD", kwargs["env"])
