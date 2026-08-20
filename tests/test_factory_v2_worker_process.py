@@ -60,6 +60,7 @@ class WorkerProcessTransportTests(unittest.TestCase):
                 "ANDROID_HOME": "/opt/android",
                 "THREADS_APP_SECRET": "must-not-leak",
                 "ACP_MASTER_KEY": "must-not-leak",
+                "ACP_DEFAULT_ACCOUNT_PASSWORD": "must-not-leak",
                 "ACP_FACTORY_API_KEY": "must-not-leak",
             },
         )
@@ -76,6 +77,7 @@ class WorkerProcessTransportTests(unittest.TestCase):
         self.assertIn("emulator-5554", argv)
         self.assertNotIn("THREADS_APP_SECRET", kwargs["env"])
         self.assertNotIn("ACP_MASTER_KEY", kwargs["env"])
+        self.assertNotIn("ACP_DEFAULT_ACCOUNT_PASSWORD", kwargs["env"])
         self.assertNotIn("ACP_FACTORY_API_KEY", kwargs["env"])
         self.assertEqual("worker-01", heartbeat["worker_id"])
         self.assertEqual("READY", heartbeat["state"])
@@ -108,6 +110,34 @@ class WorkerProcessTransportTests(unittest.TestCase):
                 action="AUTOMATE_INSTAGRAM",
                 account_id="account-1",
                 payload={},
+            ),
+        )
+
+        self.assertEqual([60.0], observed_timeouts)
+
+    def test_transient_browser_login_uses_extended_response_timeout(self):
+        process = FakeProcess()
+        observed_timeouts = []
+
+        def line_reader(stream, timeout):
+            observed_timeouts.append(timeout)
+            return json.dumps({"ok": True, "status": "waiting_human"}) + "\n"
+
+        manager = WorkerProcessManager(
+            popen_factory=lambda argv, **kwargs: process,
+            line_reader=line_reader,
+            base_env={"PATH": "/usr/bin"},
+            response_timeout_seconds=10,
+        )
+        manager.start("worker-01", "acp-worker-01", "emulator-5554")
+
+        manager.request(
+            "worker-01",
+            WorkerCommand(
+                command_id="oauth-login-1",
+                action="TRANSIENT_BROWSER_LOGIN",
+                account_id="account-1",
+                payload={"username": "user1", "password": "test-secret"},
             ),
         )
 
