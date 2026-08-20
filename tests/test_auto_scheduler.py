@@ -467,16 +467,17 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
         scheduled_at,
         updated_at=None,
         external_post_id=None,
+        auto_scheduled=0,
     ):
         ts = updated_at or scheduled_at
         self.conn.execute(
             """
             INSERT INTO publish_target (
-                id, post_id, channel_id, status, scheduled_at, external_post_id,
+                id, post_id, channel_id, status, scheduled_at, auto_scheduled, external_post_id,
                 created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?)
             """,
-            (target_id, post_id, channel_id, status, scheduled_at, external_post_id, ts, ts),
+            (target_id, post_id, channel_id, status, scheduled_at, auto_scheduled, external_post_id, ts, ts),
         )
 
     def _insert_post_metrics(self, post_id, *, clicks):
@@ -484,6 +485,15 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
             "INSERT INTO post_metrics (post_id, clicks, updated_at) VALUES (?,?,?)",
             (post_id, clicks, db.now()),
         )
+
+    def _preflight_auto_target(self):
+        from acp.core import auto_scheduler
+
+        self.assertTrue(
+            hasattr(auto_scheduler, "preflight_auto_target"),
+            "preflight_auto_target(conn, target, post, channel, now_utc=None) is missing",
+        )
+        return auto_scheduler.preflight_auto_target
 
     def test_candidate_channels_requires_exact_niche_match_and_no_empty_niche_fallback(self):
         from acp.core.auto_scheduler import candidate_channels
@@ -664,6 +674,153 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
         self.assertGreater(ranked[0]["hour_score"], ranked[1]["hour_score"])
         self.assertEqual([row["slot"] for row in fallback], slots)
         self.assertEqual([row["sample_size"] for row in fallback], [0, 0, 0])
+
+    def test_preflight_auto_target_rejects_unavailable_product(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-1", name="Serum dưỡng ẩm", is_available=0)
+        self._insert_post("post-stale-1", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-stale-1", "post-stale-1", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-1'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-1'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "product_unavailable"))
+
+    def test_preflight_auto_target_rejects_stale_product_sync(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        old_seen = (now_utc - timedelta(hours=73)).isoformat(timespec="seconds")
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-2", name="Kem dưỡng phục hồi")
+        self.conn.execute("UPDATE product SET last_seen_at=? WHERE id=?", (old_seen, product["id"]))
+        self._insert_post("post-stale-2", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-stale-2", "post-stale-2", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-2'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-2'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "product_sync_stale"))
+
+    def test_preflight_auto_target_rejects_empty_inventory(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-inventory", name="Kem dưỡng phục hồi")
+        self.conn.execute("UPDATE product SET has_inventory=0 WHERE id=?", (product["id"],))
+        self._insert_post("post-stale-inventory", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-stale-inventory", "post-stale-inventory", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-inventory'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-inventory'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "product_inventory_empty"))
+
+    def test_preflight_auto_target_rejects_invalid_affiliate_url(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-3", name="Kem chống nắng dịu da")
+        self._insert_post("post-stale-3", product["id"], "channel-beauty", status="SCHEDULED")
+        self.conn.execute("UPDATE post SET affiliate_link=? WHERE id='post-stale-3'", ("not a url with secret-token-123",))
+        self._insert_publish_target(
+            "target-stale-3", "post-stale-3", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-3'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-3'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "affiliate_link_invalid"))
+
+    def test_preflight_auto_target_rejects_stale_affiliate_link_status(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-link", name="Kem chống nắng dịu da")
+        self.conn.execute("UPDATE product SET affiliate_link_status=? WHERE id=?", ("STALE", product["id"]))
+        self._insert_post("post-stale-link", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-stale-link", "post-stale-link", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-link'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-link'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "affiliate_link_invalid"))
+
+    def test_preflight_auto_target_rechecks_channel_hard_filter(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-4", name="Serum dưỡng ẩm", category_code="my-pham")
+        self._insert_post("post-stale-4", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-stale-4", "post-stale-4", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+        self.conn.execute("UPDATE channel SET niches=? WHERE id='channel-beauty'", (json.dumps(["gia-dung"]),))
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-4'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-4'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(
+            preflight_auto_target(self.conn, target, post, channel, now_utc),
+            (False, "product_no_longer_matches_channel"),
+        )
+
+    def test_preflight_auto_target_rejects_already_published_target_for_idempotency(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-stale-5", name="Sữa rửa mặt dịu nhẹ")
+        self._insert_post("post-stale-5", product["id"], "channel-beauty", status="PUBLISHED")
+        self._insert_publish_target(
+            "target-stale-5", "post-stale-5", "channel-beauty",
+            status="SUCCESS", scheduled_at=now_utc.isoformat(timespec="seconds"),
+            external_post_id="threads-existing", auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-stale-5'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-stale-5'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (False, "target_already_published"))
+
+    def test_preflight_auto_target_accepts_fresh_matching_auto_target(self):
+        preflight_auto_target = self._preflight_auto_target()
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-fresh-1", name="Kem dưỡng phục hồi")
+        self.conn.execute("UPDATE product SET last_seen_at=? WHERE id=?", (now_utc.isoformat(timespec="seconds"), product["id"]))
+        self._insert_post("post-fresh-1", product["id"], "channel-beauty", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-fresh-1", "post-fresh-1", "channel-beauty",
+            status="SCHEDULED", scheduled_at=now_utc.isoformat(timespec="seconds"), auto_scheduled=1)
+
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='target-fresh-1'").fetchone()
+        post = self.conn.execute("SELECT * FROM post WHERE id='post-fresh-1'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-beauty'").fetchone()
+
+        self.assertEqual(preflight_auto_target(self.conn, target, post, channel, now_utc), (True, "ok"))
 
 
 class AutoScheduleFillTests(unittest.TestCase):

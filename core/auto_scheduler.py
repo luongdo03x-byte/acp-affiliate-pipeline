@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from . import niche, scoring
@@ -8,6 +9,98 @@ LIVE_TARGET_STATUSES = ("SCHEDULED", "PENDING", "RUNNING", "SUCCESS")
 QUEUED_POST_STATUSES = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED")
 MIN_HOUR_SAMPLE_SIZE = 5
 MAX_CORE_DAILY_TARGET = 3
+MAX_AUTO_PRODUCT_SYNC_AGE = timedelta(hours=48)
+
+
+def _row_get(row, key: str, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        if key in row.keys():
+            return row[key]
+    except AttributeError:
+        pass
+    except (IndexError, KeyError):
+        pass
+    return default
+
+
+def _parse_iso_datetime(value: str):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _valid_http_url(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _channel_niches(channel) -> list:
+    try:
+        return json.loads(_row_get(channel, "niches", "[]") or "[]")
+    except (TypeError, ValueError):
+        return []
+
+
+def preflight_auto_target(conn, target, post, channel, now_utc=None) -> tuple[bool, str]:
+    """Validate an auto-scheduled target immediately before publishing.
+
+    Reasons are stable sanitized codes; callers can persist them without leaking
+    affiliate URLs, tokens, or raw provider payloads.
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+    if _row_get(target, "status") == "SUCCESS" or _row_get(target, "external_post_id"):
+        return False, "target_already_published"
+
+    product_id = _row_get(post, "product_id")
+    if not product_id:
+        return False, "product_missing"
+
+    product = conn.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
+    if not product:
+        return False, "product_missing"
+
+    if int(_row_get(product, "is_available", 0) or 0) != 1:
+        return False, "product_unavailable"
+
+    has_inventory = _row_get(product, "has_inventory")
+    if has_inventory is not None and int(has_inventory or 0) != 1:
+        return False, "product_inventory_empty"
+
+    last_synced = _parse_iso_datetime(_row_get(product, "last_synced_at") or _row_get(product, "last_seen_at"))
+    if not last_synced or now_utc - last_synced.astimezone(timezone.utc) > MAX_AUTO_PRODUCT_SYNC_AGE:
+        return False, "product_sync_stale"
+
+    if not _valid_http_url(_row_get(post, "affiliate_link")):
+        return False, "affiliate_link_invalid"
+
+    affiliate_link_status = _row_get(product, "affiliate_link_status")
+    if affiliate_link_status and str(affiliate_link_status).upper() in {"ERROR", "FAILED", "INVALID", "STALE"}:
+        return False, "affiliate_link_invalid"
+
+    niches = [code for code in _channel_niches(channel) if code in niche.NICHES]
+    if niches:
+        if niche.match_reasons(product, niches) or not _matched_niches(product, niches):
+            return False, "product_no_longer_matches_channel"
+
+    return True, "ok"
 
 
 def _parse_timezone(name: str) -> ZoneInfo:

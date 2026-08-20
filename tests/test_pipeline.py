@@ -2370,6 +2370,168 @@ def test_retry_publish_target():
     conn.close()
 
 
+def _insert_publish_preflight_fixture(conn, suffix: str, *, auto_scheduled: int, product_available: int):
+    campaign = conn.execute("SELECT id FROM campaign WHERE code='test'").fetchone()
+    channel = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
+    conn.execute("UPDATE channel SET daily_post_cap=999, enabled=1, status='ACTIVE' WHERE id=?", (channel["id"],))
+    ts = now()
+    product_id = f"preflight-product-{suffix}"
+    post_id = f"preflight-post-{suffix}"
+    target_id = f"preflight-target-{suffix}"
+    conn.execute(
+        """
+        INSERT INTO product (
+            id, source, merchant, external_product_id, name, description,
+            current_price, original_price, commission_value, commission_rate,
+            category_code, rating, review_count, sold_count, image_url_original,
+            image_path_local, product_url, is_available, last_seen_at,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            product_id,
+            "mock",
+            "Fixture Shop",
+            product_id,
+            "Serum dưỡng ẩm fixture",
+            "",
+            100000,
+            150000,
+            20000,
+            0.1,
+            "my-pham",
+            4.8,
+            100,
+            200,
+            "https://img.test/preflight.jpg",
+            None,
+            f"https://example.test/{product_id}",
+            product_available,
+            ts,
+            ts,
+            ts,
+        ),
+    )
+    caption = f"Ưu đãi hôm nay\n\nhttps://go.isclix.com/x?sub1={post_id}\n\n{content.DISCLOSURE_DEFAULT}"
+    conn.execute(
+        """
+        INSERT INTO post (
+            id, product_id, channel_id, campaign_id, variant_code, caption_body,
+            disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+            reviewed_by, reviewed_at, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            post_id,
+            product_id,
+            channel["id"],
+            campaign["id"],
+            "A",
+            caption,
+            content.DISCLOSURE_DEFAULT,
+            caption,
+            f"https://go.isclix.com/x?sub1={post_id}",
+            "SCHEDULED",
+            ts,
+            "test",
+            ts,
+            ts,
+            ts,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO publish_target (
+            id, post_id, channel_id, status, scheduled_at, auto_scheduled,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (target_id, post_id, channel["id"], "SCHEDULED", ts, auto_scheduled, ts, ts),
+    )
+    jobs.enqueue(
+        conn,
+        "PUBLISH_POST",
+        {"publish_target_id": target_id, "post_id": post_id, "channel_id": channel["id"]},
+        run_after=ts,
+        idempotency_key=f"pub:{target_id}",
+    )
+    return {"product_id": product_id, "post_id": post_id, "target_id": target_id, "channel_id": channel["id"]}
+
+
+def test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job():
+    print("\npublish_post: stale auto target CANCELLED before publisher call, post returns to review")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-unavailable", auto_scheduled=1, product_available=0)
+    publisher = MockThreads(seed=211)
+
+    before_jobs = conn.execute(
+        "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST' AND payload LIKE ?",
+        (f"%{fixture['post_id']}%",),
+    ).fetchone()[0]
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+    audit_row = conn.execute(
+        """
+        SELECT action, actor, detail
+        FROM audit_log
+        WHERE entity='publish_target' AND entity_id=?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (fixture["target_id"],),
+    ).fetchone()
+    after_jobs = conn.execute(
+        "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST' AND payload LIKE ?",
+        (f"%{fixture['post_id']}%",),
+    ).fetchone()[0]
+
+    check("publisher không được gọi cho auto target stale", publisher.published == [], publisher.published)
+    check("target bị CANCELLED an toàn", target["status"] == "CANCELLED", dict(target))
+    check("post quay về PENDING_REVIEW", post["status"] == "PENDING_REVIEW", dict(post))
+    check("reason đã sanitize thành mã ngắn", target["last_error"] == "product_unavailable", target["last_error"])
+    check("post reject_reason lưu cùng mã ngắn", post["reject_reason"] == "product_unavailable", post["reject_reason"])
+    check("audit auto_stale_cancelled", audit_row is not None and audit_row["action"] == "auto_stale_cancelled",
+          dict(audit_row) if audit_row else None)
+    check("audit do auto_scheduler ghi", audit_row is not None and audit_row["actor"] == "auto_scheduler",
+          dict(audit_row) if audit_row else None)
+    check("audit không chứa link hoặc token thô",
+          audit_row is not None and "https://" not in audit_row["detail"] and "secret" not in audit_row["detail"].lower(),
+          audit_row["detail"] if audit_row else None)
+    check("publish handler không enqueue replacement job", before_jobs == 1 and after_jobs == 1,
+          (before_jobs, after_jobs))
+    conn.close()
+
+
+def test_publish_post_keeps_manual_target_behavior_without_freshness_preflight():
+    print("\npublish_post: manual target không chạy freshness preflight")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "manual-unavailable", auto_scheduled=0, product_available=0)
+    publisher = MockThreads(seed=212)
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, external_post_id FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, thread_id FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+
+    check("manual target vẫn gọi publisher dù product stale", len(publisher.published) == 1, publisher.published)
+    check("manual target giữ hành vi publish thành công", target["status"] == "SUCCESS" and target["external_post_id"],
+          dict(target))
+    check("post manual chuyển PUBLISHED như trước", post["status"] == "PUBLISHED" and post["thread_id"], dict(post))
+    conn.close()
+
+
 def test_publish_post_legacy_payload_compat():
     print("\nJob PUBLISH_POST payload cũ (trước khi có publish_target_id)")
     conn = connect()
@@ -4545,6 +4707,8 @@ if __name__ == "__main__":
     test_publish_target_failure_semantics()
     test_publish_post_authorror_marks_channel()
     test_retry_publish_target()
+    test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job()
+    test_publish_post_keeps_manual_target_behavior_without_freshness_preflight()
     test_publish_post_legacy_payload_compat()
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()

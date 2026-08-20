@@ -1206,6 +1206,17 @@ def _cancel_target_stale_post(conn, target_id: str, post_status: str) -> None:
                   now(), target_id))
 
 
+def _cancel_auto_stale_target(conn, target_id: str, post_id: str, reason: str) -> None:
+    conn.execute("""UPDATE publish_target SET status='CANCELLED', last_error=?, updated_at=?
+                    WHERE id=?""",
+                 (reason[:500], now(), target_id))
+    conn.execute("""UPDATE post SET status='PENDING_REVIEW', scheduled_at=NULL,
+                    reject_reason=?, updated_at=? WHERE id=?""",
+                 (reason[:500], now(), post_id))
+    audit(conn, "publish_target", target_id, "auto_stale_cancelled",
+          actor="auto_scheduler", detail={"reason": reason})
+
+
 def _find_or_create_legacy_target(conn, post_id: str, channel_id: str) -> str:
     """Tương thích ngược: job PUBLISH_POST được enqueue bởi bản trước khi có
     publish_target (payload chỉ {post_id, channel_id}) có thể còn nằm trong
@@ -1275,6 +1286,12 @@ def publish_post(conn, payload, ctx):
     if post["status"] in ("PENDING_REVIEW", "REJECTED", "DRAFT"):
         _cancel_target_stale_post(conn, target["id"], post["status"])
         return
+
+    if target["auto_scheduled"]:
+        ok, reason = auto_scheduler.preflight_auto_target(conn, target, post, channel)
+        if not ok:
+            _cancel_auto_stale_target(conn, target["id"], post["id"], reason)
+            return
 
     if channel["status"] != "ACTIVE":
         from ..adapters.base import AuthError
