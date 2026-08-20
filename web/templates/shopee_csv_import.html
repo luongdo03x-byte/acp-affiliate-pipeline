@@ -1,0 +1,103 @@
+{% extends 'base.html' %}
+{% block title %}Shopee CSV Import — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="eyebrow">Shopee Affiliate</p>
+    <h1>Shopee Affiliate CSV Import</h1>
+    <p class="note">Import file từ <strong>Hoa hồng Sản phẩm → Lấy link hàng loạt</strong>. ACP giữ nguyên Link ưu đãi do Shopee tạo và chỉ đưa sản phẩm vào Product Pool.</p>
+  </div>
+</div>
+
+{% if err %}
+<div class="alert alert--danger" role="alert">{{ err }}</div>
+{% endif %}
+
+{% if import_summary %}
+<section class="card panel">
+  <div class="panel-header"><h2>Import hoàn tất</h2><span class="status-badge">Product Pool</span></div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><span>Mới</span><strong>{{ import_summary.new }}</strong></div>
+    <div class="kpi-card"><span>Cập nhật</span><strong>{{ import_summary.updated }}</strong></div>
+    <div class="kpi-card"><span>Không đổi</span><strong>{{ import_summary.unchanged }}</strong></div>
+    <div class="kpi-card"><span>Trùng upload</span><strong>{{ import_summary.duplicate }}</strong></div>
+    <div class="kpi-card"><span>Lỗi dòng</span><strong>{{ import_summary.error }}</strong></div>
+  </div>
+  <p class="note">Importer không tạo Post, job, lịch đăng hoặc publish.</p>
+  <div class="form-actions"><a class="btn btn--primary" href="/sanpham/shopee-import">Import batch khác</a></div>
+</section>
+{% else %}
+<section class="card panel">
+  <div class="panel-header"><h2>Chọn CSV</h2><span class="status-badge">1–{{ max_files }} file</span></div>
+  <form method="post" action="/sanpham/shopee-import/preview" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="field">
+      <label for="shopee-csv-files">File CSV Shopee Affiliate</label>
+      <input id="shopee-csv-files" type="file" name="files" accept=".csv,text/csv" multiple required>
+      <p class="note">Tối đa {{ max_files }} file, {{ max_file_mib }} MiB/file, {{ max_rows|num }} dòng mỗi preview. File gốc không được lưu lại.</p>
+    </div>
+    <div class="form-actions"><button class="btn btn--primary" type="submit">Preview</button></div>
+  </form>
+</section>
+{% endif %}
+
+{% if summary %}
+<section class="card panel" style="margin-top:18px">
+  <div class="panel-header"><h2>Preview</h2><span class="status-badge">Read-only</span></div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><span>Files</span><strong>{{ summary.files }}</strong></div>
+    <div class="kpi-card"><span>Tổng dòng</span><strong>{{ summary.rows }}</strong></div>
+    <div class="kpi-card"><span>NEW</span><strong>{{ summary.new }}</strong></div>
+    <div class="kpi-card"><span>UPDATED</span><strong>{{ summary.updated }}</strong></div>
+    <div class="kpi-card"><span>UNCHANGED</span><strong>{{ summary.unchanged }}</strong></div>
+    <div class="kpi-card"><span>DUPLICATE</span><strong>{{ summary.duplicate }}</strong></div>
+    <div class="kpi-card"><span>ERROR</span><strong>{{ summary.error }}</strong></div>
+  </div>
+
+  <div class="table-wrap" style="margin-top:16px">
+    <table>
+      <thead>
+        <tr>
+          <th>Trạng thái</th><th>Sản phẩm</th><th>Giá</th><th>Đã bán</th><th>Shop</th>
+          <th>HH %</th><th>Hoa hồng</th><th>Link</th><th>Nguồn</th><th>Lỗi</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for result in rows %}
+        <tr>
+          <td><span class="status-badge">{{ result.status }}</span></td>
+          {% if result.row %}
+            <td><strong>{{ result.row.name }}</strong><div class="note">#{{ result.row.item_id }}</div></td>
+            <td>{{ result.row.current_price|vnd }}</td>
+            <td>{{ result.row.sold_count|num if result.row.sold_count is not none else '—' }}</td>
+            <td>{{ result.row.shop_name or '—' }}</td>
+            <td>{{ ('%.2f'|format(result.row.commission_rate_percent)).rstrip('0').rstrip('.') ~ '%' if result.row.commission_rate_percent is not none else '—' }}</td>
+            <td>{{ result.row.commission_amount|vnd if result.row.commission_amount is not none else '—' }}</td>
+            <td>
+              <a href="{{ result.row.product_url }}" target="_blank" rel="noopener noreferrer">Sản phẩm</a>
+              <div><input aria-label="Affiliate link" value="{{ result.row.affiliate_url }}" readonly onclick="this.select()" style="max-width:220px"></div>
+            </td>
+            <td>{{ result.row.source_filename }}:{{ result.row.source_row_number }}</td>
+          {% else %}
+            <td colspan="7" class="note">Dòng không hợp lệ</td>
+            <td>—</td>
+          {% endif %}
+          <td>{{ result.error or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if preview_token and summary.valid_unique > 0 %}
+  <form method="post" action="/sanpham/shopee-import/confirm" class="form-actions" style="margin-top:18px">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="preview_token" value="{{ preview_token }}">
+    <a class="btn btn--ghost" href="/sanpham/shopee-import">Hủy</a>
+    <button class="btn btn--primary" type="submit">Import vào Product Pool</button>
+  </form>
+  {% endif %}
+  <p class="note">Preview không ghi Product, price history, Post hoặc job. Chỉ nút Import ở trên mới xác nhận dữ liệu Product.</p>
+</section>
+{% endif %}
+{% endblock %}
