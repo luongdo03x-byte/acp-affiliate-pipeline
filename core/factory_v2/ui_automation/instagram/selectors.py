@@ -73,7 +73,8 @@ ADD_PROFILE_PHOTO = Selector(
 
 FINAL_SIGNUP_SUBMIT = Selector(
     semantic="final_signup_submit",
-    texts=("Create account", "Sign up", "Đăng ký", "Tạo tài khoản"),
+    content_descs=("I agree",),
+    texts=("Create account", "Sign up", "I agree", "Đăng ký", "Tạo tài khoản"),
     require_clickable=True,
 )
 
