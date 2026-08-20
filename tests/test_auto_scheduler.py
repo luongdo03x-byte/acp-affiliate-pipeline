@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import importlib.util
+from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if "acp" not in sys.modules:
@@ -309,6 +310,283 @@ class ChannelAutomationWebTests(unittest.TestCase):
             conn.close()
 
         self.assertEqual(actions, ["set_niches"])
+
+
+class AutoSchedulerRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_db_path = db.DB_PATH
+        self.tempdir = tempfile.TemporaryDirectory()
+        db.DB_PATH = os.path.join(self.tempdir.name, "auto-scheduler.db")
+        db.init_db()
+        self.conn = db.connect()
+        self.conn.execute(
+            "INSERT INTO campaign (id, code, name, created_at) VALUES (?,?,?,?)",
+            ("camp-1", "camp", "Campaign", db.now()),
+        )
+
+    def tearDown(self):
+        self.conn.close()
+        db.DB_PATH = self.previous_db_path
+        self.tempdir.cleanup()
+
+    def _insert_channel(
+        self,
+        channel_id,
+        code,
+        *,
+        niches,
+        auto_schedule_enabled=1,
+        enabled=1,
+        status="ACTIVE",
+        daily_post_target=2,
+        daily_post_cap=3,
+        posting_timezone="Asia/Bangkok",
+        posting_slots=None,
+    ):
+        if posting_slots is None:
+            posting_slots = ["09:30", "12:30", "20:30"]
+        self.conn.execute(
+            """
+            INSERT INTO channel (
+                id, code, platform, handle, status, enabled, auto_schedule_enabled,
+                daily_post_target, daily_post_cap, posting_timezone, posting_slots,
+                min_gap_minutes, niches, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                channel_id,
+                code,
+                "threads",
+                f"@{code}",
+                status,
+                enabled,
+                auto_schedule_enabled,
+                daily_post_target,
+                daily_post_cap,
+                posting_timezone,
+                json.dumps(posting_slots),
+                90,
+                json.dumps(niches, ensure_ascii=False),
+                db.now(),
+            ),
+        )
+
+    def _insert_product(
+        self,
+        product_id,
+        *,
+        name,
+        category_code="my-pham",
+        merchant="Shop",
+        commission_value=20000,
+        is_available=1,
+    ):
+        ts = db.now()
+        self.conn.execute(
+            """
+            INSERT INTO product (
+                id, source, merchant, external_product_id, name, description,
+                current_price, original_price, commission_value, commission_rate,
+                category_code, rating, review_count, sold_count, image_url_original,
+                image_path_local, product_url, is_available, last_seen_at,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                product_id,
+                "mock",
+                merchant,
+                product_id,
+                name,
+                "",
+                100000,
+                150000,
+                commission_value,
+                0.1,
+                category_code,
+                4.8,
+                120,
+                500,
+                "https://img.test/product.jpg",
+                None,
+                f"https://example.test/{product_id}",
+                is_available,
+                ts,
+                ts,
+                ts,
+            ),
+        )
+        return self.conn.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
+
+    def _insert_post(self, post_id, product_id, channel_id, *, status="PENDING_REVIEW", created_at=None):
+        ts = created_at or db.now()
+        self.conn.execute(
+            """
+            INSERT INTO post (
+                id, product_id, channel_id, campaign_id, caption_template_id,
+                variant_code, caption_body, disclosure_text, caption_final,
+                affiliate_link, status, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                post_id,
+                product_id,
+                channel_id,
+                "camp-1",
+                None,
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff",
+                status,
+                ts,
+                ts,
+            ),
+        )
+
+    def _insert_publish_target(
+        self,
+        target_id,
+        post_id,
+        channel_id,
+        *,
+        status,
+        scheduled_at,
+        updated_at=None,
+        external_post_id=None,
+    ):
+        ts = updated_at or scheduled_at
+        self.conn.execute(
+            """
+            INSERT INTO publish_target (
+                id, post_id, channel_id, status, scheduled_at, external_post_id,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (target_id, post_id, channel_id, status, scheduled_at, external_post_id, ts, ts),
+        )
+
+    def _insert_post_metrics(self, post_id, *, clicks):
+        self.conn.execute(
+            "INSERT INTO post_metrics (post_id, clicks, updated_at) VALUES (?,?,?)",
+            (post_id, clicks, db.now()),
+        )
+
+    def test_candidate_channels_requires_exact_niche_match_and_no_empty_niche_fallback(self):
+        from acp.core.auto_scheduler import candidate_channels
+
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        self._insert_channel("channel-general", "general", niches=[])
+        product = self._insert_product("product-1", name="Serum dưỡng ẩm phục hồi", category_code="my-pham")
+
+        candidates = candidate_channels(self.conn, product)
+
+        self.assertEqual([row["id"] for row in candidates], ["channel-beauty"])
+        self.assertEqual(candidates[0]["matched_niches"], ["my-pham"])
+
+    def test_candidate_channels_excludes_inactive_disabled_auto_off_and_full_quota_channels(self):
+        from acp.core.auto_scheduler import candidate_channels
+
+        self._insert_channel("winner", "winner", niches=["my-pham"])
+        self._insert_channel("inactive", "inactive", niches=["my-pham"], status="PAUSED")
+        self._insert_channel("disabled", "disabled", niches=["my-pham"], enabled=0)
+        self._insert_channel("manual", "manual", niches=["my-pham"], auto_schedule_enabled=0)
+        self._insert_channel("full", "full", niches=["my-pham"], daily_post_cap=1)
+        product = self._insert_product("product-2", name="Kem chống nắng dịu da", category_code="my-pham")
+        self._insert_post("post-full", "product-2", "full", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-full",
+            "post-full",
+            "full",
+            status="SCHEDULED",
+            scheduled_at="2026-08-20T09:30:00+07:00",
+        )
+
+        candidates = candidate_channels(self.conn, product)
+
+        self.assertEqual([row["id"] for row in candidates], ["winner"])
+
+    def test_route_product_skips_products_already_active_on_a_channel(self):
+        from acp.core.auto_scheduler import route_product
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-3", name="Son dưỡng ẩm", category_code="my-pham")
+        self._insert_post("existing-post", "product-3", "channel-beauty", status="PENDING_REVIEW")
+
+        routed = route_product(self.conn, product, now_utc)
+
+        self.assertEqual(routed, {"reason": "product_already_routed"})
+
+    def test_route_product_prefers_more_specific_match_then_code_tie_break(self):
+        from acp.core.auto_scheduler import route_product
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-broad", "broad", niches=["my-pham"])
+        self._insert_channel("channel-specific", "specific", niches=["my-pham", "gia-dung"])
+        product = self._insert_product("product-4", name="Set serum dưỡng ẩm", category_code="my-pham")
+
+        first = route_product(self.conn, product, now_utc)
+        self.conn.execute("DELETE FROM channel WHERE id='channel-specific'")
+        self._insert_channel("channel-alpha", "alpha", niches=["my-pham"])
+        self._insert_channel("channel-zeta", "zeta", niches=["my-pham"])
+
+        second = route_product(self.conn, product, now_utc)
+
+        self.assertEqual(first["channel_id"], "channel-specific")
+        self.assertEqual(second["channel_code"], "alpha")
+
+    def test_rank_slots_uses_same_account_hour_history_and_falls_back_to_configured_order(self):
+        from acp.core.auto_scheduler import rank_slots
+
+        local_date = datetime(2026, 8, 20).date()
+        slots = ["09:30", "12:30", "20:30"]
+        self._insert_channel("channel-history", "history", niches=["my-pham"])
+        self._insert_channel("channel-fallback", "fallback", niches=["my-pham"])
+        self._insert_channel("other-account", "other", niches=["my-pham"])
+        product = self._insert_product("metric-product", name="Sữa rửa mặt dịu nhẹ", category_code="my-pham")
+
+        for index, clicks in enumerate((120, 110, 100, 90, 80), start=1):
+            post_id = f"hist-post-{index}"
+            target_id = f"hist-target-{index}"
+            published_at = datetime(2026, 8, 19, 13, 30, tzinfo=timezone.utc) + timedelta(days=index)
+            self._insert_post(post_id, product["id"], "channel-history", status="PUBLISHED", created_at=published_at.isoformat(timespec="seconds"))
+            self._insert_publish_target(
+                target_id,
+                post_id,
+                "channel-history",
+                status="SUCCESS",
+                scheduled_at=published_at.isoformat(timespec="seconds"),
+                updated_at=published_at.isoformat(timespec="seconds"),
+                external_post_id=f"threads-{index}",
+            )
+            self._insert_post_metrics(post_id, clicks=clicks)
+
+        for index, clicks in enumerate((10, 10, 10, 10, 10), start=1):
+            post_id = f"other-post-{index}"
+            target_id = f"other-target-{index}"
+            published_at = datetime(2026, 8, 19, 2, 30, tzinfo=timezone.utc) + timedelta(days=index)
+            self._insert_post(post_id, product["id"], "other-account", status="PUBLISHED", created_at=published_at.isoformat(timespec="seconds"))
+            self._insert_publish_target(
+                target_id,
+                post_id,
+                "other-account",
+                status="SUCCESS",
+                scheduled_at=published_at.isoformat(timespec="seconds"),
+                updated_at=published_at.isoformat(timespec="seconds"),
+                external_post_id=f"other-{index}",
+            )
+            self._insert_post_metrics(post_id, clicks=clicks)
+
+        ranked = rank_slots(self.conn, "channel-history", local_date, slots)
+        fallback = rank_slots(self.conn, "channel-fallback", local_date, slots)
+
+        self.assertEqual([row["slot"] for row in ranked], ["20:30", "09:30", "12:30"])
+        self.assertEqual(ranked[0]["sample_size"], 5)
+        self.assertGreater(ranked[0]["hour_score"], ranked[1]["hour_score"])
+        self.assertEqual([row["slot"] for row in fallback], slots)
+        self.assertEqual([row["sample_size"] for row in fallback], [0, 0, 0])
 
 
 if __name__ == "__main__":
