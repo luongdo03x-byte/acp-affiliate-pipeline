@@ -277,7 +277,9 @@ def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> 
     return combined[:limit]
 
 
-def _category_count_for_channel_local_day(conn, channel, category_code: str, now_utc: datetime) -> int:
+def _category_count_for_channel_local_day(
+    conn, channel, category_code: str, now_utc: datetime, *, exclude_post_id: str = None
+) -> int:
     tz_name = channel["posting_timezone"]
     local_day = now_utc.astimezone(auto_scheduler._parse_timezone(tz_name)).date().isoformat()
     count = 0
@@ -287,10 +289,11 @@ def _category_count_for_channel_local_day(conn, channel, category_code: str, now
         FROM post p
         JOIN product pr ON pr.id = p.product_id
         WHERE p.channel_id = ?
+          AND (? IS NULL OR p.id <> ?)
           AND pr.category_code = ?
           AND p.status IN ('PUBLISHED','SCHEDULED','APPROVED','PENDING_REVIEW')
         """,
-        (channel["id"], category_code),
+        (channel["id"], exclude_post_id, exclude_post_id, category_code),
     ).fetchall()
     for row in rows:
         iso_value = row["published_at"] or row["scheduled_at"] or row["created_at"]
@@ -300,7 +303,13 @@ def _category_count_for_channel_local_day(conn, channel, category_code: str, now
 
 
 def current_auto_product_eligibility(
-    conn, product, channel, now_utc: datetime, *, require_auto_schedule: bool = True
+    conn,
+    product,
+    channel,
+    now_utc: datetime,
+    *,
+    require_auto_schedule: bool = True,
+    exclude_post_id: str = None,
 ) -> tuple[bool, str]:
     """Recheck mutable Auto eligibility under the caller's current DB snapshot."""
     if not product:
@@ -324,7 +333,9 @@ def current_auto_product_eligibility(
         "max_per_category_per_day",
         scoring.DEFAULT_FILTERS["max_per_category_per_day"],
     ) or 0)
-    if _category_count_for_channel_local_day(conn, channel, product["category_code"], now_utc) >= max_per_category:
+    if _category_count_for_channel_local_day(
+        conn, channel, product["category_code"], now_utc, exclude_post_id=exclude_post_id
+    ) >= max_per_category:
         return False, "category_day_cap_full"
 
     if product["provider"] == CATALOG_PROVIDER:
@@ -337,7 +348,9 @@ def current_auto_product_eligibility(
         if rejected:
             return False, "product_quality_filter"
 
-    if auto_scheduler._queued_or_recently_published_product_exists(conn, product["id"], now_utc):
+    if auto_scheduler._queued_or_recently_published_product_exists(
+        conn, product["id"], now_utc, exclude_post_id=exclude_post_id
+    ):
         return False, "product_already_routed"
     return True, "ok"
 
@@ -1474,8 +1487,16 @@ def publish_post(conn, payload, ctx):
         _cancel_target_stale_post(conn, target["id"], post["status"])
         return
 
+    now_utc = datetime.now(timezone.utc)
     if target["auto_scheduled"]:
-        ok, reason = auto_scheduler.preflight_auto_target(conn, target, post, channel)
+        ok, reason = auto_scheduler.preflight_auto_target(
+            conn,
+            target,
+            post,
+            channel,
+            now_utc=now_utc,
+            eligibility_checker=current_auto_product_eligibility,
+        )
         if not ok:
             _cancel_auto_stale_target(conn, target["id"], post["id"], reason)
             return
@@ -1503,7 +1524,7 @@ def publish_post(conn, payload, ctx):
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đã bị tắt (disabled)")
         raise ContentViolationError(f"Kênh {channel['code']} đã bị tắt (disabled)")
 
-    if _published_today(conn, channel["id"]) >= channel["daily_post_cap"]:
+    if _published_today(conn, channel["id"], now_utc=now_utc, posting_timezone=channel["posting_timezone"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError
         raise RateLimitError(f"Kênh {channel['code']} đã đạt trần {channel['daily_post_cap']} bài trong ngày")
 
@@ -1554,12 +1575,35 @@ def publish_post(conn, payload, ctx):
             idempotency_key=f"ins:{target['id']}")
 
 
-def _published_today(conn, channel_id: str) -> int:
-    """Đếm theo publish_target -- cùng lý do đã ghi ở _next_slot."""
-    today = datetime.now(timezone.utc).date().isoformat()
-    return conn.execute(
-        "SELECT COUNT(*) FROM publish_target WHERE channel_id=? AND status='SUCCESS' AND substr(updated_at,1,10)=?",
-        (channel_id, today)).fetchone()[0]
+def _published_today(conn, channel_id: str, *, now_utc=None, posting_timezone: str = None) -> int:
+    """Đếm theo publish_target và ngày local của kênh."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    if not posting_timezone:
+        row = conn.execute("SELECT posting_timezone FROM channel WHERE id=?", (channel_id,)).fetchone()
+        posting_timezone = row["posting_timezone"] if row else "Asia/Bangkok"
+    tzinfo = auto_scheduler._parse_timezone(posting_timezone)
+    local_today = now_utc.astimezone(tzinfo).date()
+    count = 0
+    for row in conn.execute(
+        """
+        SELECT updated_at, scheduled_at
+        FROM publish_target
+        WHERE channel_id=? AND status='SUCCESS'
+        """,
+        (channel_id,),
+    ).fetchall():
+        iso_value = row["updated_at"] or row["scheduled_at"]
+        try:
+            published_at = datetime.fromisoformat(iso_value)
+        except (TypeError, ValueError):
+            continue
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        if published_at.astimezone(tzinfo).date() == local_today:
+            count += 1
+    return count
 
 
 @handler("FETCH_INSIGHTS")

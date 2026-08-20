@@ -9,7 +9,7 @@ import sys
 import tempfile
 import contextlib
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -2272,6 +2272,43 @@ def test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target():
         conn.close()
 
 
+def test_published_today_counts_channel_local_date_at_midnight_boundary():
+    print("\n_published_today tính theo ngày local của posting_timezone, không theo UTC")
+    conn = connect()
+    channel_id = ulid()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, posting_timezone, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (channel_id, "tz_quota_test", "threads", "@tz_quota", "ACTIVE", 1,
+                  12, 90, "Asia/Bangkok", now()))
+    try:
+        post_id = ulid()
+        conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                        caption_body, disclosure_text, caption_final, created_at, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (post_id, product["id"], channel_id, campaign["id"], "A",
+                      "thân bài", "nhãn tiếp thị", "thân bài",
+                      "2026-08-19T17:30:00+00:00", "2026-08-19T17:30:00+00:00"))
+        target_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        created_at, updated_at) VALUES (?,?,?,'SUCCESS',?,?)""",
+                     (target_id, post_id, channel_id,
+                      "2026-08-19T17:30:00+00:00", "2026-08-19T17:30:00+00:00"))
+
+        counted = pipeline._published_today(
+            conn,
+            channel_id,
+            now_utc=datetime(2026, 8, 19, 18, 0, tzinfo=timezone.utc),
+            posting_timezone="Asia/Bangkok",
+        )
+        check("target 00:30 ngày 20 Bangkok được tính vào quota ngày 20 local", counted == 1, counted)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (channel_id,))
+        conn.close()
+
+
 def test_publish_target_failure_semantics():
     print("\npublish_target theo dõi lỗi")
     conn = connect()
@@ -2373,7 +2410,10 @@ def test_retry_publish_target():
 def _insert_publish_preflight_fixture(conn, suffix: str, *, auto_scheduled: int, product_available: int):
     campaign = conn.execute("SELECT id FROM campaign WHERE code='test'").fetchone()
     channel = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
-    conn.execute("UPDATE channel SET daily_post_cap=999, enabled=1, status='ACTIVE' WHERE id=?", (channel["id"],))
+    conn.execute(
+        "UPDATE channel SET daily_post_cap=999, enabled=1, status='ACTIVE', auto_schedule_enabled=1 WHERE id=?",
+        (channel["id"],),
+    )
     ts = now()
     product_id = f"preflight-product-{suffix}"
     post_id = f"preflight-post-{suffix}"
@@ -2384,9 +2424,9 @@ def _insert_publish_preflight_fixture(conn, suffix: str, *, auto_scheduled: int,
             id, source, merchant, external_product_id, name, description,
             current_price, original_price, commission_value, commission_rate,
             category_code, rating, review_count, sold_count, image_url_original,
-            image_path_local, product_url, is_available, last_seen_at,
+            image_path_local, product_url, is_available, has_inventory, last_seen_at,
             created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             product_id,
@@ -2407,6 +2447,7 @@ def _insert_publish_preflight_fixture(conn, suffix: str, *, auto_scheduled: int,
             None,
             f"https://example.test/{product_id}",
             product_available,
+            1,
             ts,
             ts,
             ts,
@@ -2506,6 +2547,54 @@ def test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement
           audit_row["detail"] if audit_row else None)
     check("publish handler không enqueue replacement job", before_jobs == 1 and after_jobs == 1,
           (before_jobs, after_jobs))
+    conn.close()
+
+
+def test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold():
+    print("\npublish_post: auto target bị huỷ nếu product tụt quality sau khi đã schedule")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-low-rating", auto_scheduled=1, product_available=1)
+    conn.execute("UPDATE product SET rating=3.0 WHERE id=?", (fixture["product_id"],))
+    publisher = MockThreads(seed=213)
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+    check("publisher không được gọi khi quality không còn đạt", publisher.published == [], publisher.published)
+    check("auto target low-rating bị CANCELLED", target["status"] == "CANCELLED", dict(target))
+    check("reason quality được sanitize", target["last_error"] == "product_no_longer_matches_channel", target["last_error"])
+    check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "product_no_longer_matches_channel",
+          dict(post))
+    conn.close()
+
+
+def test_publish_post_cancels_auto_target_when_product_category_becomes_blocked():
+    print("\npublish_post: auto target bị huỷ nếu category bị block sau khi đã schedule")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-blocked-category", auto_scheduled=1, product_available=1)
+    conn.execute("UPDATE product SET category_code='duoc-pham' WHERE id=?", (fixture["product_id"],))
+    publisher = MockThreads(seed=214)
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+    check("publisher không được gọi khi category đã bị block", publisher.published == [], publisher.published)
+    check("auto target blocked-category bị CANCELLED", target["status"] == "CANCELLED", dict(target))
+    check("reason blocked-category được sanitize", target["last_error"] == "blocked_category", target["last_error"])
+    check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "blocked_category",
+          dict(post))
     conn.close()
 
 
@@ -4704,10 +4793,13 @@ if __name__ == "__main__":
     test_auto_schedule_cli_prints_only_aggregate_counts()
     test_daily_cap()
     test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target()
+    test_published_today_counts_channel_local_date_at_midnight_boundary()
     test_publish_target_failure_semantics()
     test_publish_post_authorror_marks_channel()
     test_retry_publish_target()
     test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job()
+    test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold()
+    test_publish_post_cancels_auto_target_when_product_category_becomes_blocked()
     test_publish_post_keeps_manual_target_behavior_without_freshness_preflight()
     test_publish_post_legacy_payload_compat()
     test_publish_post_malformed_payload_raises()

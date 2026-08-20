@@ -97,9 +97,7 @@ Results:
 
 ## Notes / concerns
 
-- `python3 -m unittest tests.test_auto_scheduler` under system Python still fails in existing web validation/web UI tests because `flask` is not installed in this worktree environment; the changed non-web scheduler class passes.
-- Full `test_pipeline` through a temporary `acp` package symlink reached and passed the changed publish sections, then stopped later on existing `google.genai` dependency absence under system Python.
-- `./manage.sh test` was not used for this worktree because `manage.sh` resolves the active release symlink (`$ACP_BASE/acp`) and there is no worktree-local deployment layout/venv here; running it would not verify these uncommitted worktree changes.
+- Current follow-up ran `./manage.sh test` from this worktree with the mock adapter and it returned `TEST_OK`.
 
 ## Review follow-up
 
@@ -162,3 +160,87 @@ Results:
 - Focused publish/idempotency/rate-limit/auth/content-violation/Auto-stale/manual compatibility script: `PASS 44 FAIL 0`.
 - `py_compile`: passed.
 - `git diff --check`: passed.
+
+## Whole-branch review follow-up
+
+Review findings fixed after Task 3 follow-up commit `e866ea7`:
+
+- `publish_post()` now calls `preflight_auto_target()` with the shared `current_auto_product_eligibility()` checker before publisher lookup/call for automated targets only.
+- `preflight_auto_target()` keeps the freshness/link/idempotency checks, then delegates mutable hard-filter/product quality decisions to the shared checker instead of duplicating the routing rules.
+- The shared checker can exclude the target's own post from cooldown and category/day saturation checks, so a scheduled target does not reject itself while still catching competing active/recent posts.
+- `_published_today()` now counts `publish_target.SUCCESS` rows by the channel `posting_timezone` local date; the publish handler passes a single `now_utc` and the channel timezone into the quota check.
+
+### Whole-branch follow-up red
+
+Command:
+
+```bash
+python3 - <<'PY'
+import importlib.util, os, sys
+repo = os.getcwd()
+spec = importlib.util.spec_from_file_location('acp', os.path.join(repo, '__init__.py'), submodule_search_locations=[repo])
+module = importlib.util.module_from_spec(spec)
+sys.modules['acp'] = module
+spec.loader.exec_module(module)
+from acp.tests import test_pipeline as t
+conn = t.setup(); conn.close()
+for name in [
+    'test_published_today_counts_channel_local_date_at_midnight_boundary',
+    'test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold',
+    'test_publish_post_cancels_auto_target_when_product_category_becomes_blocked',
+]:
+    getattr(t, name)()
+print('PASS', len(t.PASS), 'FAIL', len(t.FAIL))
+if t.FAIL:
+    raise SystemExit(1)
+PY
+```
+
+Expected failures observed before the fix:
+
+- `_published_today()` did not accept `now_utc` / `posting_timezone`, proving the quota path was still UTC-date based.
+- After wiring the API, stale automated targets cancelled before publisher, but the fixture initially exposed `channel_auto_disabled`; after enabling Auto on the fixture, the low-rating and blocked-category regressions exercised the intended hard-filter branches.
+
+### Whole-branch follow-up green
+
+Commands:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoSchedulerRoutingTests
+python3 - <<'PY'
+import importlib.util, os, sys
+repo = os.getcwd()
+spec = importlib.util.spec_from_file_location('acp', os.path.join(repo, '__init__.py'), submodule_search_locations=[repo])
+module = importlib.util.module_from_spec(spec)
+sys.modules['acp'] = module
+spec.loader.exec_module(module)
+from acp.tests import test_pipeline as t
+conn = t.setup(); conn.close()
+for name in [
+    'test_idempotency_and_double_post',
+    'test_publish_target_failure_semantics',
+    'test_publish_post_authorror_marks_channel',
+    'test_publish_target_cancelled_on_stale_post_status',
+    'test_retry_publish_target',
+    'test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job',
+    'test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold',
+    'test_publish_post_cancels_auto_target_when_product_category_becomes_blocked',
+    'test_publish_post_keeps_manual_target_behavior_without_freshness_preflight',
+    'test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target',
+    'test_published_today_counts_channel_local_date_at_midnight_boundary',
+]:
+    getattr(t, name)()
+print('PASS', len(t.PASS), 'FAIL', len(t.FAIL))
+if t.FAIL:
+    raise SystemExit(1)
+PY
+python3 -m py_compile core/auto_scheduler.py core/pipeline.py tests/test_auto_scheduler.py tests/test_pipeline.py
+./manage.sh test
+```
+
+Results:
+
+- `AutoSchedulerRoutingTests`: 19 tests passed.
+- Focused publish/idempotency/rate-limit/auth/content-violation/Auto-stale/manual/quota script: `PASS 57 FAIL 0`.
+- `py_compile`: passed.
+- `./manage.sh test`: passed with `TEST_OK`.

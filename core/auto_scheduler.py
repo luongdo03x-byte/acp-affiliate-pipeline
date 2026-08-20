@@ -56,7 +56,7 @@ def _channel_niches(channel) -> list:
         return []
 
 
-def preflight_auto_target(conn, target, post, channel, now_utc=None) -> tuple[bool, str]:
+def preflight_auto_target(conn, target, post, channel, now_utc=None, eligibility_checker=None) -> tuple[bool, str]:
     """Validate an auto-scheduled target immediately before publishing.
 
     Reasons are stable sanitized codes; callers can persist them without leaking
@@ -98,6 +98,11 @@ def preflight_auto_target(conn, target, post, channel, now_utc=None) -> tuple[bo
     if niches:
         if niche.match_reasons(product, niches) or not _matched_niches(product, niches):
             return False, "product_no_longer_matches_channel"
+
+    if eligibility_checker is not None:
+        eligible, reason = eligibility_checker(conn, product, channel, now_utc, exclude_post_id=_row_get(post, "id"))
+        if not eligible:
+            return False, reason
 
     return True, "ok"
 
@@ -151,16 +156,19 @@ def _slot_datetime(local_date, slot_text: str, tz_name: str) -> datetime:
     return datetime(local_date.year, local_date.month, local_date.day, hour, minute, tzinfo=tzinfo)
 
 
-def _queued_or_recently_published_product_exists(conn, product_id: str, now_utc: datetime) -> bool:
+def _queued_or_recently_published_product_exists(
+    conn, product_id: str, now_utc: datetime, *, exclude_post_id: str = None
+) -> bool:
     queued_row = conn.execute(
         f"""
         SELECT 1
         FROM post
         WHERE product_id = ?
+          AND (? IS NULL OR id <> ?)
           AND status IN ({",".join("?" for _ in QUEUED_POST_STATUSES)})
         LIMIT 1
         """,
-        (product_id, *QUEUED_POST_STATUSES),
+        (product_id, exclude_post_id, exclude_post_id, *QUEUED_POST_STATUSES),
     ).fetchone()
     if queued_row:
         return True
@@ -173,12 +181,13 @@ def _queued_or_recently_published_product_exists(conn, product_id: str, now_utc:
         SELECT 1
         FROM post
         WHERE product_id = ?
+          AND (? IS NULL OR id <> ?)
           AND status = 'PUBLISHED'
           AND published_at IS NOT NULL
           AND published_at >= ?
         LIMIT 1
         """,
-        (product_id, cutoff),
+        (product_id, exclude_post_id, exclude_post_id, cutoff),
     ).fetchone()
     return bool(row)
 
