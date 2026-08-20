@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from urllib.parse import urlsplit
 
+_BROWSER_PACKAGE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+
 
 @dataclass(frozen=True)
 class CompletedCommand:
@@ -35,6 +37,13 @@ def _resolve_android_binary(relative_path: str, fallback: str) -> str:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return shutil.which(fallback) or fallback
+
+
+def _validate_browser_package(value: str) -> str:
+    package = str(value or "").strip()
+    if not _BROWSER_PACKAGE_RE.fullmatch(package):
+        raise ValueError("invalid browser package")
+    return package
 
 
 class AvdManager:
@@ -101,7 +110,20 @@ class AvdManager:
     def stop(self, serial: str) -> None:
         self._checked([self.adb, "-s", serial, "emu", "kill"], timeout=20)
 
-    def open_url(self, serial: str, url: str) -> None:
+    def reset_browser_session(self, serial: str, browser_package: str) -> None:
+        package = _validate_browser_package(browser_package)
+        self._checked(
+            [self.adb, "-s", serial, "shell", "pm", "clear", package],
+            timeout=20,
+        )
+
+    def open_url(
+        self,
+        serial: str,
+        url: str,
+        *,
+        browser_package: str | None = None,
+    ) -> None:
         value = str(url or "").strip()
         if not value or any(ord(character) < 32 for character in value):
             raise ValueError("invalid URL")
@@ -113,10 +135,13 @@ class AvdManager:
             raise ValueError("only https URLs are supported")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("URL credentials are not supported")
-        self._checked([
+        argv = [
             self.adb, "-s", serial, "shell", "am", "start",
             "-a", "android.intent.action.VIEW", "-d", value,
-        ], timeout=20)
+        ]
+        if browser_package is not None:
+            argv.extend(["-p", _validate_browser_package(browser_package)])
+        self._checked(argv, timeout=20)
 
     def open_package(self, serial: str, package: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.]+", package):
