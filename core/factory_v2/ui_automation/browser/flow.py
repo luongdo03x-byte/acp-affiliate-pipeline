@@ -6,11 +6,22 @@ from .screens import BROWSER_LOGIN, OAUTH_CONSENT, SECURITY_CHALLENGE
 
 
 class BrowserLoginFlow:
-    def __init__(self, driver):
+    def __init__(self, driver, *, load_timeout: float = 8.0, post_login_timeout: float = 10.0):
         self.driver = driver
+        self.load_timeout = max(0.0, float(load_timeout))
+        self.post_login_timeout = max(0.0, float(post_login_timeout))
+
+    def _wait_for_browser_state(self, timeout: float):
+        wait_for = getattr(self.driver, "wait_for", None)
+        if wait_for is None:
+            return self.driver.detect_screen()
+        return wait_for(
+            (BROWSER_LOGIN, OAUTH_CONSENT, SECURITY_CHALLENGE),
+            timeout,
+        )
 
     def run(self, username: str, password: str) -> FlowResult:
-        screen = self.driver.detect_screen()
+        screen = self._wait_for_browser_state(self.load_timeout)
         if screen.kind == OAUTH_CONSENT:
             return FlowResult(
                 "waiting_human",
@@ -49,7 +60,7 @@ class BrowserLoginFlow:
                 "LOGIN_SUBMIT_UNVERIFIED",
             )
 
-        after = self.driver.detect_screen()
+        after = self._wait_for_browser_state(self.post_login_timeout)
         if after.kind == OAUTH_CONSENT:
             return FlowResult(
                 "running",
