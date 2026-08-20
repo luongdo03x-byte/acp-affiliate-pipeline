@@ -6,6 +6,7 @@ import unittest
 from core import crypto
 from core.account_factory import (
     AccountMismatchError,
+    ThreadsOAuthClient,
     complete_oauth_session,
     create_oauth_session,
     ensure_schema,
@@ -30,6 +31,49 @@ class FakeThreadsOAuth:
     def fetch_profile(self, token):
         assert token == "long-secret"
         return {"id": self.user_id, "username": self.username}
+
+
+class FakeResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return dict(self.payload)
+
+
+class RecordingHttp:
+    def __init__(self):
+        self.post_calls = []
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return FakeResponse({"access_token": "short-secret", "user_id": "uid-alice"})
+
+
+class ThreadsOAuthClientHttpTests(unittest.TestCase):
+    def test_exchange_code_sends_form_body_not_query_params(self):
+        http = RecordingHttp()
+        client = ThreadsOAuthClient(app_id="123", app_secret="secret", http=http)
+        redirect_uri = "https://acp.example/oauth/account-factory/threads/callback"
+
+        result = client.exchange_code("code-1", redirect_uri)
+
+        self.assertEqual("short-secret", result["access_token"])
+        self.assertEqual(1, len(http.post_calls))
+        _, kwargs = http.post_calls[0]
+        self.assertNotIn("params", kwargs)
+        self.assertEqual(
+            {
+                "client_id": "123",
+                "client_secret": "secret",
+                "code": "code-1",
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            kwargs.get("data"),
+        )
 
 
 class AccountFactoryCoreTests(unittest.TestCase):
