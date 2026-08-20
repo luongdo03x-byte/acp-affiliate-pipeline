@@ -47,6 +47,33 @@ class RunnerGateway:
             raise KeyError(job["worker_id"])
         return worker.get("runner_type") or RunnerType.REMOTE_AVD.value
 
+    def send_transient_login_secret(
+        self,
+        job: dict,
+        *,
+        username: str,
+        password: str,
+    ) -> dict:
+        if self._runner_type(job) != RunnerType.REMOTE_AVD.value:
+            raise ValueError("transient login secret is REMOTE_AVD only")
+        username = str(username or "").strip()
+        password = str(password or "")
+        if not username or not password:
+            raise ValueError("login credential is incomplete")
+        return self.worker_processes.request(
+            job["worker_id"],
+            WorkerCommand(
+                command_id=ulid(),
+                action="TRANSIENT_BROWSER_LOGIN",
+                account_id=job["account_id"],
+                payload={
+                    "job_id": job["id"],
+                    "username": username,
+                    "password": password,
+                },
+            ),
+        )
+
     def send(self, job: dict, action: str, payload: dict | None = None) -> dict:
         action = str(action).upper()
         payload = {"job_id": job["id"], **(payload or {})}
