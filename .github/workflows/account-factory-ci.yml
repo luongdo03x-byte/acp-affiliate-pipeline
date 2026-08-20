@@ -41,6 +41,7 @@ jobs:
             tests.test_factory_v2_identity \
             tests.test_factory_v2_service \
             tests.test_factory_v2_avatar_pool \
+            tests.test_factory_v2_avatar_upload \
             tests.test_factory_v2_resource_policy \
             tests.test_factory_v2_avd \
             tests.test_factory_v2_scheduler \
@@ -74,6 +75,7 @@ jobs:
             tests.test_factory_v2_instagram_flow \
             tests.test_factory_v2_instagram_regressions \
             tests.test_factory_v2_threads_flow \
+            tests.test_factory_v2_threads_activation_regressions \
             tests.test_factory_v2_avd_worker_agent -v
 
   android:
