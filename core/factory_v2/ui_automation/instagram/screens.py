@@ -34,6 +34,7 @@ from .selectors import (
 
 PACKAGE = "com.instagram.android"
 _PERMISSION_PACKAGE = "com.android.permissioncontroller"
+_GOOGLE_PERMISSION_PACKAGE = "com.google.android.permissioncontroller"
 _MEDIA_PICKER_PACKAGE = "com.google.android.providers.media.module"
 
 
@@ -180,6 +181,15 @@ def build_instagram_detector() -> ScreenDetector:
         ScreenSignature(
             "ANDROID_MEDIA_PERMISSION",
             _PERMISSION_PACKAGE,
+            (MEDIA_PERMISSION_MESSAGE, ALLOW_LIMITED_PHOTOS),
+            2,
+            0.99,
+            False,
+            49,
+        ),
+        ScreenSignature(
+            "ANDROID_MEDIA_PERMISSION",
+            _GOOGLE_PERMISSION_PACKAGE,
             (MEDIA_PERMISSION_MESSAGE, ALLOW_LIMITED_PHOTOS),
             2,
             0.99,
