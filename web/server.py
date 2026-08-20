@@ -10,6 +10,7 @@ trên web vẫn chạy giả lập dù ACP_ADAPTER=live. Giờ dùng chung facto
 """
 import hashlib
 import hmac
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -28,9 +29,11 @@ from ..adapters.shopee_affiliate import (
 )
 from ..core import attribution, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
+from ..core import content_checker, content_engine, content_facts, content_hook, content_platform, content_scoring, content_variant
 from ..core.db import connect, now
 from ..core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
 from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
+from .threads_oauth import register_threads_channel_oauth_routes
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
 
@@ -118,6 +121,21 @@ def create_app():
     # lại. content._llm_fn là biến module-level, set một lần ở đây là đủ cho
     # mọi route.
     content.set_llm(factory.get_caption_llm())
+    register_threads_channel_oauth_routes(app, admin_password=admin_password)
+
+    # Gắn LLM thật cho Content Engine v2 (G1) -- cùng lý do đặt ở
+    # create_app() như dòng content.set_llm() ở trên: luồng nhập Shopee
+    # affiliate thủ công không gọi build_context(), đặt ở đây đảm bảo
+    # mọi route đều thấy. ACP_CONTENT_ENGINE_LLM=gemini bật, mặc định
+    # tắt (None) -- toàn bộ E1-E6 giữ nguyên hành vi rule-based/template
+    # khi không bật, không đổi baseline test hiện có.
+    content_engine_llm = factory.get_content_engine_llm()
+    content_facts.set_extractor(content_engine_llm)
+    content_hook.set_hook_generator(content_engine_llm)
+    content_hook.set_hook_judge(content_engine_llm)
+    content_variant.set_body_generator(content_engine_llm)
+    content_checker.set_variant_judge(content_engine_llm)
+    content_scoring.set_hybrid_judge(content_engine_llm)
 
     # ------------------------------------------------------------ xác thực
 
@@ -657,7 +675,6 @@ def create_app():
             applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
             row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
             saved = row["handle"] if row else cid
-
         rows = []
         for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
@@ -777,6 +794,15 @@ def create_app():
             channel_overrides = overrides_by_post.get(r["id"], {})
             for sel in r["selected_channels"]:
                 sel["prior_override"] = channel_overrides.get(sel["id"], "")
+        try:
+            _attach_content_variants(conn, rows)
+        except Exception:
+            # Bảng content_generation_run/content_variant_row có thể chưa tồn
+            # tại (CSDL cũ chưa migrate qua E6). /duyet là trang vận hành chính
+            # -- phần hiển thị Content Engine v2 hỏng thì bỏ trống khối variant,
+            # tuyệt đối không được làm cả trang 500.
+            for r in rows:
+                r["variants"] = []
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p LEFT JOIN product pr ON pr.id = p.product_id
@@ -785,6 +811,41 @@ def create_app():
         conn.close()
         return render_template("review.html", page="duyet", posts=rows, recent=recent,
                                platform_labels=PLATFORM_LABELS)
+
+    def _attach_content_variants(conn, rows):
+        """Gắn rows[i]["variants"] từ content_generation_run/content_variant_row
+        (Content Engine v2, E6). Tách hàm riêng để caller bọc try/except gọn --
+        lỗi ở đây không được làm hỏng cả trang /duyet.
+        """
+        run_by_post = {r["post_id"]: dict(r) for r in conn.execute(
+            "SELECT * FROM content_generation_run WHERE post_id IN ({}) AND status='READY'".format(
+                ",".join("?" * len(rows))), [r["id"] for r in rows]).fetchall()} if rows else {}
+        for r in rows:
+            run = run_by_post.get(r["id"])
+            r["variants"] = []
+            if not run:
+                continue
+            variant_rows = conn.execute(
+                "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label", (run["id"],)).fetchall()
+            platforms = sorted({sel["platform"] for sel in r["selected_channels"]} & {"threads", "facebook", "instagram"})
+            for vr in variant_rows:
+                # persist_run() ghi NULL cả 3 cột điểm cho đúng những variant bị
+                # select_best_variant() (E4) loại vì KHÔNG đạt fact safety -- đó
+                # là dấu hiệu tin cậy duy nhất phân biệt variant bị loại với
+                # variant hợp lệ. Không render thành card chọn được, để operator
+                # không thể chọn/duyệt nhầm nội dung đã bị chặn.
+                if vr["rule_score"] is None and vr["hybrid_score"] is None and vr["final_score"] is None:
+                    continue
+                variant_obj = content_variant.ContentVariant(
+                    angle=vr["angle"], hook=vr["hook"], main_message=vr["main_message"],
+                    body=json.loads(vr["body_json"]), cta=vr["cta"], structure=vr["structure"])
+                r["variants"].append({
+                    "id": vr["id"], "label": vr["label"], "angle": vr["angle"], "hook": vr["hook"],
+                    "is_best": bool(vr["is_best"]), "final_score": vr["final_score"],
+                    "caption_by_platform": content_platform.adapt_for_platforms(
+                        variant_obj, platforms, r["affiliate_link"]) if platforms else {},
+                    "violations": [v["message"] for v in content_checker.check_variant_rules(variant_obj)],
+                })
 
     @app.route("/duyet/<post_id>/<action>", methods=["POST"])
     def review_action(post_id, action):
@@ -830,6 +891,27 @@ def create_app():
                                             scheduled_at=scheduled_at)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
+        elif action in ("doi-hook", "lam-lai", "doi-angle"):
+            variant_id = request.form.get("variant_id")
+            try:
+                if action == "doi-hook":
+                    res = content_engine.regenerate_hook(conn, post_id, variant_id)
+                elif action == "lam-lai":
+                    res = content_engine.regenerate_variant(conn, post_id, variant_id)
+                else:
+                    res = content_engine.switch_angle(conn, post_id, variant_id)
+            except Exception as exc:
+                res = {"ok": False, "error": "Không tạo được nội dung mới, thử lại sau"}
+                # audit() cũng ghi DB nên có thể tự ném (lỗi gốc là khoá DB /
+                # connection đã đóng chẳng hạn) -- nuốt luôn, đây chỉ là
+                # telemetry best-effort. res đã gán ở trên nên operator vẫn
+                # nhận redirect có lỗi tử tế, không rơi về 500 -- đúng thứ
+                # mà except block này sinh ra để tránh.
+                try:
+                    pipeline.audit(conn, "content_variant_row", variant_id or post_id, f"{action}_failed",
+                                   actor="system", detail={"error": str(exc)})
+                except Exception:
+                    pass
         else:
             conn.close()
             abort(404)

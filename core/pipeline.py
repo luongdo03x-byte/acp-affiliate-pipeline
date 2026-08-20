@@ -16,7 +16,7 @@ import sqlite3
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
-from . import attribution, content, imaging, niche, playbook, scoring, storage, valuepost
+from . import attribution, content, content_engine, imaging, niche, playbook, scoring, storage, system_settings, valuepost
 from .db import audit, now, ulid
 from .jobs import enqueue, handler
 from .products import (PROVIDER as CATALOG_PROVIDER, CatalogImageError,
@@ -433,8 +433,36 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                                  handle=channel["handle"] if len(channels) == 1 else None)
     image_url = ctx.get("storage", storage.get_storage()).put(image_path)
 
-    caption = content.generate(product, template["code"], link, discount_pct=discount,
-                                hook_code=variant_code, rng=rng)
+    v2_computed = None
+    try:
+        v2_enabled = system_settings.is_content_engine_v2_enabled(conn)
+    except Exception:
+        # Bảng system_setting có thể chưa tồn tại (CSDL cũ chưa migrate qua
+        # E6) -- ngay cả việc ĐỌC cờ cũng không được làm crash việc tạo bài,
+        # coi như cờ tắt và chạy đúng luồng v1 như trước E6.
+        v2_enabled = False
+    if v2_enabled:
+        try:
+            platforms = sorted({ch["platform"] for ch in channels} & {"threads", "facebook", "instagram"})
+            v2_computed = content_engine.compute_variants(conn, product, channel["id"], platforms, link)
+        except Exception as exc:
+            # Không để lỗi Content Engine v2 làm hỏng việc tạo bài -- fallback
+            # êm về v1, ghi audit để vận hành viên biết mà kiểm tra.
+            audit(conn, "post", post_id, "content_engine_v2_failed", actor="system",
+                  detail={"error": str(exc)})
+            v2_computed = None
+
+    # Mọi nhánh fallback về v1 đều truyền hook_code=variant_code/rng đã chốt ở
+    # trên (dòng playbook.pick_hook()) -- caption phải khớp đúng variant_code
+    # lưu vào cột post.variant_code, không tự bốc hook_code khác lần thứ hai.
+    if v2_computed and v2_computed["status"] == "READY":
+        caption = (v2_computed["captions"].get(channel["platform"])
+                   or v2_computed["captions"].get("threads")
+                   or content.generate(product, template["code"], link, discount_pct=discount,
+                                        hook_code=variant_code, rng=rng))
+    else:
+        caption = content.generate(product, template["code"], link, discount_pct=discount,
+                                    hook_code=variant_code, rng=rng)
     problems = content.validate(caption, niches=_union_niches(conn, channel_ids))
     status = "PENDING_REVIEW" if not problems else "DRAFT"
 
@@ -447,6 +475,25 @@ def _create_post_from_raw_product(conn, ctx, source, raw, campaign_code: str,
                   image_url, link, json.dumps(stored_attribution, ensure_ascii=False, sort_keys=True), None,
                   status, "; ".join(problems) if problems else None, now(), now()))
     _save_channel_selection(conn, post_id, channel_ids)
+    if v2_computed and v2_computed["status"] == "READY":
+        if "facebook" in v2_computed["captions"]:
+            conn.execute("UPDATE post SET caption_facebook=? WHERE id=?",
+                         (v2_computed["captions"]["facebook"], post_id))
+        if "instagram" in v2_computed["captions"]:
+            conn.execute("UPDATE post SET caption_instagram=? WHERE id=?",
+                         (v2_computed["captions"]["instagram"], post_id))
+    if v2_computed:
+        try:
+            persisted = content_engine.persist_run(conn, post_id, v2_computed)
+            audit(conn, "content_generation_run", persisted["run_id"], "generated", actor="operator",
+                  detail={"post_id": post_id, "status": v2_computed["status"],
+                          "best_label": persisted.get("best_label")})
+        except Exception as exc:
+            # post/caption/channel selection đã commit (autocommit) -- không để
+            # lỗi ghi content_generation_run làm hỏng kết quả tạo bài, chỉ ghi
+            # audit để vận hành viên biết mà kiểm tra.
+            audit(conn, "post", post_id, "content_engine_v2_persist_failed", actor="system",
+                  detail={"error": str(exc)})
     if media_asset_ids:
         for i, aid in enumerate(media_asset_ids, start=1):
             conn.execute("INSERT INTO post_media (post_id, media_asset_id, position) VALUES (?,?,?)",
