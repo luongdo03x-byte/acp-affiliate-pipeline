@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ACP Shopee Helper",
-  "version": "1.0.0",
-  "description": "Đọc tên/giá/ảnh sản phẩm Shopee đã hiển thị trong tab của bạn và gửi về ACP đang chạy trên máy bạn (localhost). Không đọc cookie, không tự động hoá thao tác trên Shopee, không gửi dữ liệu ra ngoài máy bạn.",
+  "version": "1.1.0",
+  "description": "Đọc metadata sản phẩm từ tab Shopee bạn chủ động chọn, gửi URL tab để ACP xác minh đúng sản phẩm, rồi gửi dữ liệu về ACP localhost. Không đọc cookie hay tự động hoá Shopee.",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": [
     "https://shopee.vn/*",
