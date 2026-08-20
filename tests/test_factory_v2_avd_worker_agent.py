@@ -40,6 +40,18 @@ class FakeFlow:
         return self.result
 
 
+class FakeBrowserLoginFlow:
+    def __init__(self, result=None):
+        self.result = result or FlowResult(
+            "waiting_human", "OAUTH_CONSENT", "HUMAN_CONSENT_REQUIRED"
+        )
+        self.calls = []
+
+    def run(self, username, password):
+        self.calls.append((username, password))
+        return self.result
+
+
 class FakeAvd:
     adb = "adb"
     runner = SimpleNamespace(
@@ -49,9 +61,13 @@ class FakeAvd:
     def __init__(self):
         self.urls = []
         self.packages = []
+        self.browser_resets = []
 
-    def open_url(self, serial, url):
-        self.urls.append((serial, url))
+    def reset_browser_session(self, serial, browser_package):
+        self.browser_resets.append((serial, browser_package))
+
+    def open_url(self, serial, url, *, browser_package=None):
+        self.urls.append((serial, url, browser_package))
 
     def open_package(self, serial, package):
         self.packages.append((serial, package))
@@ -81,7 +97,14 @@ class AvdWorkerAgentTests(unittest.TestCase):
             "arbitrary": "must-not-pass",
         }
 
-    def make_agent(self, instagram_result=None, threads_result=None, *, adb_client=None):
+    def make_agent(
+        self,
+        instagram_result=None,
+        threads_result=None,
+        *,
+        adb_client=None,
+        browser_login_flow=None,
+    ):
         instagram = FakeFlow(
             instagram_result
             or FlowResult(
@@ -98,6 +121,8 @@ class AvdWorkerAgentTests(unittest.TestCase):
         }
         if adb_client is not None:
             kwargs["adb_client"] = adb_client
+        if browser_login_flow is not None:
+            kwargs["browser_login_flow"] = browser_login_flow
         agent = WorkerAgent(
             "worker-1",
             "acp-worker-01",
@@ -105,6 +130,33 @@ class AvdWorkerAgentTests(unittest.TestCase):
             **kwargs,
         )
         return agent, instagram, threads
+
+    def test_default_worker_constructs_browser_login_flow(self):
+        agent, _, _ = self.make_agent()
+        self.assertIsNotNone(agent.browser_login_flow)
+
+    def test_transient_browser_login_requires_same_oauth_browser_account(self):
+        flow = FakeBrowserLoginFlow()
+        agent, _, _ = self.make_agent(browser_login_flow=flow)
+        agent.oauth_browser_account_id = "acc-a"
+        with self.assertRaisesRegex(ValueError, "browser account"):
+            agent.execute(WorkerCommand(
+                "secret-1", "TRANSIENT_BROWSER_LOGIN", "acc-b",
+                {"username": "userb", "password": "example-secret"},
+            ))
+        self.assertEqual([], flow.calls)
+
+    def test_transient_browser_login_result_never_echoes_secret(self):
+        flow = FakeBrowserLoginFlow()
+        agent, _, _ = self.make_agent(browser_login_flow=flow)
+        agent.oauth_browser_account_id = "acc-a"
+        response = agent.execute(WorkerCommand(
+            "secret-2", "TRANSIENT_BROWSER_LOGIN", "acc-a",
+            {"username": "usera", "password": "example-secret"},
+        ))
+        self.assertEqual([("usera", "example-secret")], flow.calls)
+        self.assertNotIn("example-secret", repr(response))
+        self.assertNotIn("usera", repr(response.get("result", {})))
 
     def test_waiting_human_result_contains_no_sensitive_keys(self):
         agent, instagram, _ = self.make_agent()
