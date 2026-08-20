@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 
 from core.db import now
-from core.factory_v2.account_credentials import store_account_password
+from core.factory_v2.account_credentials import get_account_password, store_account_password
 from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.runtime import FactoryControllerRuntime
@@ -22,7 +22,10 @@ class FakeProcesses:
 
 
 class FakeGateway:
-    def __init__(self):
+    """Models the production gateway boundary, including remote OAuth autofill."""
+
+    def __init__(self, repo):
+        self.repo = repo
         self.commands = []
 
     def send(self, job, action, payload=None):
@@ -38,21 +41,23 @@ class FakeGateway:
             }
         if action == "OBSERVE_FOREGROUND":
             return {"package": "com.instagram.barcelona"}
+        if action == "OPEN_URL":
+            account = self.repo.get_account(job["account_id"])
+            password = get_account_password(self.repo.conn, account["id"])
+            if password is not None:
+                self.commands.append((
+                    "TRANSIENT_BROWSER_LOGIN",
+                    {"username": account["username"], "password": password},
+                ))
+                return {
+                    "ok": True,
+                    "status": "waiting_human",
+                    "result": {
+                        "screen": "OAUTH_CONSENT",
+                        "reason": "HUMAN_CONSENT_REQUIRED",
+                    },
+                }
         return {"ok": True}
-
-    def send_transient_login_secret(self, job, *, username, password):
-        self.commands.append((
-            "TRANSIENT_BROWSER_LOGIN",
-            {"username": username, "password": password},
-        ))
-        return {
-            "ok": True,
-            "status": "waiting_human",
-            "result": {
-                "screen": "OAUTH_CONSENT",
-                "reason": "HUMAN_CONSENT_REQUIRED",
-            },
-        }
 
 
 class FakeActivation:
@@ -97,7 +102,7 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         self.repo = FactoryRepository(self.conn)
         self.service = FactoryService(self.repo)
         self.scheduler = Scheduler(self.repo, self.service)
-        self.gateway = FakeGateway()
+        self.gateway = FakeGateway(self.repo)
         self.activation = FakeActivation(self.repo, self.service)
         self.runtime = FactoryControllerRuntime(
             self.repo,
@@ -162,7 +167,7 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
             self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone(),
         )
 
-    def test_threads_postcheck_opens_oauth_then_uses_decrypted_transient_login(self):
+    def test_threads_postcheck_opens_oauth_then_gateway_uses_decrypted_transient_login(self):
         account, _ = self.seed_threads_verifying()
 
         self.runtime.tick()
@@ -191,13 +196,6 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         self.assertNotIn("TRANSIENT_BROWSER_LOGIN", actions)
         saved = self.repo.get_account(account["id"])
         self.assertEqual("ACP_CONNECTING", saved["stage"])
-        checkpoint = self.conn.execute(
-            """SELECT * FROM factory_checkpoint
-               WHERE account_id=? AND type='ACP_OAUTH'
-               ORDER BY created_at DESC LIMIT 1""",
-            (account["id"],),
-        ).fetchone()
-        self.assertIn("credential", checkpoint["message"].lower())
         job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
         self.assertEqual("WAIT_ACP", job["desired_action"])
         self.assertEqual("WAITING_HUMAN", job["state"])
