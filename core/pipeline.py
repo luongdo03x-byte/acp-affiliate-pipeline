@@ -127,6 +127,7 @@ def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> li
     if not nl:
         return []
     _, filters = scoring.active_config(conn)
+    filters = dict(filters, niches=nl)
     cooldown_days = filters.get("cooldown_days", scoring.DEFAULT_FILTERS["cooldown_days"])
     cutoff = (now_utc - timedelta(days=cooldown_days)).isoformat(timespec="seconds")
     local_today = now_utc.astimezone(auto_scheduler._parse_timezone(channel["posting_timezone"])).date().isoformat()
@@ -170,12 +171,9 @@ def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> li
         (CATALOG_PROVIDER, cutoff, max(0, int(limit))),
     ).fetchall()
     candidates = []
-    blocked_categories = set(filters.get("blocked_categories") or [])
     max_per_category = filters.get("max_per_category_per_day", scoring.DEFAULT_FILTERS["max_per_category_per_day"])
     for row in rows:
-        if row["category_code"] in blocked_categories:
-            continue
-        if niche.match_reasons(row, nl):
+        if scoring._reasons(row, filters):
             continue
         if cat_today.get(row["category_code"], 0) >= max_per_category:
             continue
@@ -339,6 +337,9 @@ def current_auto_product_eligibility(
         return False, "category_day_cap_full"
 
     if product["provider"] == CATALOG_PROVIDER:
+        rejected = scoring._reasons(product, filters)
+        if rejected:
+            return False, "product_quality_filter"
         if not (product["has_inventory"] and product["detail_link"] and product["external_product_id"]):
             return False, "catalog_product_ineligible"
         if product["affiliate_link_status"] == "UNAVAILABLE":

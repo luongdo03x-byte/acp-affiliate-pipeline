@@ -16,7 +16,8 @@
 - `daily_post_target=3` uses the optional third slot while respecting `daily_post_cap`; malformed persisted/caller values above 3 are clamped in core routing/fill logic.
 - Existing live targets occupy their slots; fill does not create a second target for the same channel/slot.
 - Slot occupancy is rechecked inside the fill transaction immediately before automated approval, so a concurrent reservation of the same channel/slot is skipped instead of creating a duplicate live target or leaking Auto ON content into review-only state.
-- Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates retain channel niche, blocked category, cooldown, active-post, category-day, inventory, link, and availability hard filters.
+- Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates now reuse the active scorer hard filters with channel niches, so rating, review count, commission, blocked category, cooldown, active-post, category-day, inventory, link, and availability safeguards all still apply.
+- `candidate_channels()` evaluates whether the channel has an eligible slot in the rolling horizon, so quota is checked against the selected slot's local day instead of only the current local day.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
 - Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches product/channel rows and rechecks current Auto eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
 - The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency.
@@ -78,6 +79,22 @@ Expected failures observed before the fix:
 
 - after artifact preparation, concurrent mutations to `affiliate_link_status`, blocked category config, channel niche config, or category/day occupancy still allowed a scheduled Auto post/target/job to be persisted.
 
+Final review regression red run:
+
+```bash
+python3 -m unittest \
+  tests.test_auto_scheduler.AutoSchedulerRoutingTests.test_route_product_keeps_channel_when_today_full_but_future_slot_open \
+  tests.test_auto_scheduler.AutoScheduleFillTests.test_auto_catalog_candidates_and_preflight_apply_active_quality_filters \
+  -v
+python3 -m unittest tests.test_auto_scheduler.AutoSchedulerRoutingTests tests.test_auto_scheduler.AutoScheduleFillTests -v
+```
+
+Expected failures observed before the fix:
+
+- synced catalog rows with `rating=0`, `review_count=0`, and `commission_value=0` were still returned by the Auto catalog candidate path, and preflight did not reject the same hard-quality failure.
+- a channel full on the current local day was excluded even when it had a valid future slot inside the 48-hour horizon.
+- after switching candidates to slot-horizon quota, two older current-day quota tests exposed stale expectations and were updated to assert all-slot-day fullness and selected-slot local-day routing.
+
 ### Green
 
 Commands:
@@ -98,7 +115,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 29 tests passed.
+- focused routing/fill tests: 31 tests passed.
 - focused CLI contract: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.

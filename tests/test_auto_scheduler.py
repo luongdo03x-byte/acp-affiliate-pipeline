@@ -682,17 +682,31 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
             status="SCHEDULED",
             scheduled_at="2026-08-20T09:30:00+07:00",
         )
+        product_other_day = self._insert_product(
+            "product-2-full-other-day",
+            name="Serum full ngày mai",
+            category_code="my-pham",
+        )
+        self._insert_post("post-full-other-day", product_other_day["id"], "full", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-full-other-day",
+            "post-full-other-day",
+            "full",
+            status="SCHEDULED",
+            scheduled_at="2026-08-21T09:30:00+07:00",
+        )
 
         candidates = candidate_channels(self.conn, product, now_utc)
 
         self.assertEqual([row["id"] for row in candidates], ["winner"])
 
-    def test_candidate_channels_uses_now_utc_for_local_day_quota_checks(self):
-        from acp.core.auto_scheduler import candidate_channels
+    def test_route_product_uses_slot_local_day_for_quota_checks(self):
+        from acp.core.auto_scheduler import route_product
 
         self._insert_channel("winner", "winner", niches=["my-pham"], posting_timezone="Asia/Bangkok", daily_post_cap=1)
         product = self._insert_product("product-2b", name="Kem dưỡng phục hồi", category_code="my-pham")
-        self._insert_post("post-quota", "product-2b", "winner", status="SCHEDULED")
+        existing = self._insert_product("product-2b-existing", name="Kem đã xếp lịch", category_code="my-pham")
+        self._insert_post("post-quota", existing["id"], "winner", status="SCHEDULED")
         self._insert_publish_target(
             "target-quota",
             "post-quota",
@@ -701,14 +715,43 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
             scheduled_at="2026-08-21T09:30:00+07:00",
         )
 
-        before_local_midnight = datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc)
         after_local_midnight = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
 
-        before = candidate_channels(self.conn, product, before_local_midnight)
-        after = candidate_channels(self.conn, product, after_local_midnight)
+        routed = route_product(self.conn, product, after_local_midnight)
 
-        self.assertEqual([row["id"] for row in before], ["winner"])
-        self.assertEqual(after, [])
+        self.assertEqual(routed["channel_id"], "winner")
+        self.assertEqual(routed["slot"], "2026-08-22T09:30:00+07:00")
+
+    def test_route_product_keeps_channel_when_today_full_but_future_slot_open(self):
+        from acp.core.auto_scheduler import candidate_channels, route_product
+
+        self._insert_channel(
+            "rolling",
+            "rolling",
+            niches=["my-pham"],
+            posting_timezone="Asia/Bangkok",
+            daily_post_target=1,
+            daily_post_cap=1,
+            posting_slots=["09:30"],
+        )
+        existing = self._insert_product("already-scheduled", name="Serum đã lên lịch", category_code="my-pham")
+        product = self._insert_product("candidate-product", name="Kem dưỡng phục hồi", category_code="my-pham")
+        self._insert_post("today-post", existing["id"], "rolling", status="SCHEDULED")
+        self._insert_publish_target(
+            "today-target",
+            "today-post",
+            "rolling",
+            status="SCHEDULED",
+            scheduled_at="2026-08-20T09:30:00+07:00",
+        )
+        now_after_today_slot = datetime(2026, 8, 20, 3, 0, tzinfo=timezone.utc)
+
+        candidates = candidate_channels(self.conn, product, now_after_today_slot)
+        routed = route_product(self.conn, product, now_after_today_slot)
+
+        self.assertEqual([row["id"] for row in candidates], ["rolling"])
+        self.assertEqual(routed["channel_id"], "rolling")
+        self.assertEqual(routed["slot"], "2026-08-21T09:30:00+07:00")
 
     def test_route_product_skips_products_already_active_on_a_channel(self):
         from acp.core.auto_scheduler import route_product
@@ -1154,7 +1197,16 @@ class AutoScheduleFillTests(unittest.TestCase):
                 ),
             )
 
-    def _insert_catalog_product(self, product_id="catalog-product-1", *, category_code="my-pham", name=None):
+    def _insert_catalog_product(
+        self,
+        product_id="catalog-product-1",
+        *,
+        category_code="my-pham",
+        name=None,
+        rating=4.8,
+        review_count=120,
+        commission_value=50000,
+    ):
         ts = db.now()
         self.conn.execute(
             """
@@ -1177,11 +1229,11 @@ class AutoScheduleFillTests(unittest.TestCase):
                 "Duong am da mat",
                 100000,
                 150000,
-                50000,
+                commission_value,
                 0.1,
                 category_code,
-                4.8,
-                120,
+                rating,
+                review_count,
                 1000,
                 "https://img.test/catalog.jpg",
                 os.path.join(self.tempdir.name, "catalog-source.jpg"),
@@ -1194,7 +1246,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                 "TikTok Shop",
                 f"https://shop.example.test/{product_id}",
                 "https://img.test/catalog-main.jpg",
-                50000,
+                commission_value,
                 12.5,
                 1000,
                 1,
@@ -1394,6 +1446,78 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(target["scheduled_at"], "2026-08-20T09:30:00+07:00")
         self.assertEqual(target["auto_scheduled"], 1)
         self.assertIsNotNone(job)
+
+    def test_auto_catalog_candidates_and_preflight_apply_active_quality_filters(self):
+        from acp.core import auto_scheduler, pipeline
+
+        self._insert_channel()
+        bad_product = self._insert_catalog_product(
+            rating=0,
+            review_count=0,
+            commission_value=0,
+        )
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-1'").fetchone()
+
+        candidates = pipeline._candidate_products_for_channel(self.conn, channel, limit=10, now_utc=now_utc)
+
+        self.assertEqual(candidates, [])
+
+        self.conn.execute(
+            """
+            INSERT INTO post (
+                id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "bad-quality-post",
+                bad_product["id"],
+                "channel-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://go.example.test/bad-quality",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO publish_target (
+                id, post_id, channel_id, status, scheduled_at, auto_scheduled, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                "bad-quality-target",
+                "bad-quality-post",
+                "channel-1",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                1,
+                db.now(),
+                db.now(),
+            ),
+        )
+        post = self.conn.execute("SELECT * FROM post WHERE id='bad-quality-post'").fetchone()
+        target = self.conn.execute("SELECT * FROM publish_target WHERE id='bad-quality-target'").fetchone()
+
+        self.assertEqual(
+            auto_scheduler.preflight_auto_target(
+                self.conn,
+                target,
+                post,
+                channel,
+                now_utc,
+                eligibility_checker=pipeline.current_auto_product_eligibility,
+            ),
+            (False, "product_quality_filter"),
+        )
 
     def test_fill_auto_schedule_keeps_external_artifact_calls_outside_write_transaction(self):
         from acp.adapters.accesstrade_client import LinkResult

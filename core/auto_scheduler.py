@@ -305,12 +305,7 @@ def candidate_channels(conn, product, now_utc: datetime) -> list:
         matched_niches = _matched_niches(product, niches)
         if not matched_niches:
             continue
-        if _quota_count_for_local_date(
-            conn,
-            row["id"],
-            row["posting_timezone"],
-            now_utc.astimezone(_parse_timezone(row["posting_timezone"])).date(),
-        ) >= _core_daily_cap(row):
+        if not available_slots(conn, row, now_utc):
             continue
         payload = dict(row)
         payload["matched_niches"] = matched_niches
