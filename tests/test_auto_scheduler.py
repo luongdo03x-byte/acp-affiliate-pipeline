@@ -418,15 +418,25 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
         )
         return self.conn.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
 
-    def _insert_post(self, post_id, product_id, channel_id, *, status="PENDING_REVIEW", created_at=None):
+    def _insert_post(
+        self,
+        post_id,
+        product_id,
+        channel_id,
+        *,
+        status="PENDING_REVIEW",
+        created_at=None,
+        published_at=None,
+        scheduled_at=None,
+    ):
         ts = created_at or db.now()
         self.conn.execute(
             """
             INSERT INTO post (
                 id, product_id, channel_id, campaign_id, caption_template_id,
                 variant_code, caption_body, disclosure_text, caption_final,
-                affiliate_link, status, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                affiliate_link, status, scheduled_at, published_at, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 post_id,
@@ -440,6 +450,8 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
                 "caption",
                 "https://example.test/aff",
                 status,
+                scheduled_at,
+                published_at,
                 ts,
                 ts,
             ),
@@ -476,11 +488,12 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
     def test_candidate_channels_requires_exact_niche_match_and_no_empty_niche_fallback(self):
         from acp.core.auto_scheduler import candidate_channels
 
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
         self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
         self._insert_channel("channel-general", "general", niches=[])
         product = self._insert_product("product-1", name="Serum dưỡng ẩm phục hồi", category_code="my-pham")
 
-        candidates = candidate_channels(self.conn, product)
+        candidates = candidate_channels(self.conn, product, now_utc)
 
         self.assertEqual([row["id"] for row in candidates], ["channel-beauty"])
         self.assertEqual(candidates[0]["matched_niches"], ["my-pham"])
@@ -488,6 +501,7 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
     def test_candidate_channels_excludes_inactive_disabled_auto_off_and_full_quota_channels(self):
         from acp.core.auto_scheduler import candidate_channels
 
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
         self._insert_channel("winner", "winner", niches=["my-pham"])
         self._insert_channel("inactive", "inactive", niches=["my-pham"], status="PAUSED")
         self._insert_channel("disabled", "disabled", niches=["my-pham"], enabled=0)
@@ -503,9 +517,32 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
             scheduled_at="2026-08-20T09:30:00+07:00",
         )
 
-        candidates = candidate_channels(self.conn, product)
+        candidates = candidate_channels(self.conn, product, now_utc)
 
         self.assertEqual([row["id"] for row in candidates], ["winner"])
+
+    def test_candidate_channels_uses_now_utc_for_local_day_quota_checks(self):
+        from acp.core.auto_scheduler import candidate_channels
+
+        self._insert_channel("winner", "winner", niches=["my-pham"], posting_timezone="Asia/Bangkok", daily_post_cap=1)
+        product = self._insert_product("product-2b", name="Kem dưỡng phục hồi", category_code="my-pham")
+        self._insert_post("post-quota", "product-2b", "winner", status="SCHEDULED")
+        self._insert_publish_target(
+            "target-quota",
+            "post-quota",
+            "winner",
+            status="SCHEDULED",
+            scheduled_at="2026-08-21T09:30:00+07:00",
+        )
+
+        before_local_midnight = datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc)
+        after_local_midnight = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
+
+        before = candidate_channels(self.conn, product, before_local_midnight)
+        after = candidate_channels(self.conn, product, after_local_midnight)
+
+        self.assertEqual([row["id"] for row in before], ["winner"])
+        self.assertEqual(after, [])
 
     def test_route_product_skips_products_already_active_on_a_channel(self):
         from acp.core.auto_scheduler import route_product
@@ -519,13 +556,41 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
 
         self.assertEqual(routed, {"reason": "product_already_routed"})
 
+    def test_route_product_blocks_recent_published_product_but_allows_after_cooldown(self):
+        from acp.core.auto_scheduler import route_product
+
+        self._insert_channel("channel-beauty", "beauty", niches=["my-pham"])
+        product = self._insert_product("product-3b", name="Serum cấp ẩm", category_code="my-pham")
+
+        recent_now = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        old_now = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
+
+        self._insert_post(
+            "published-post",
+            "product-3b",
+            "channel-beauty",
+            status="PUBLISHED",
+            created_at="2026-08-01T08:00:00+00:00",
+            published_at="2026-08-01T08:00:00+00:00",
+        )
+
+        recent = route_product(self.conn, product, recent_now)
+        after_cooldown = route_product(self.conn, product, old_now)
+
+        self.assertEqual(recent, {"reason": "product_already_routed"})
+        self.assertEqual(after_cooldown["channel_id"], "channel-beauty")
+
     def test_route_product_prefers_more_specific_match_then_code_tie_break(self):
         from acp.core.auto_scheduler import route_product
 
         now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
         self._insert_channel("channel-broad", "broad", niches=["my-pham"])
         self._insert_channel("channel-specific", "specific", niches=["my-pham", "gia-dung"])
-        product = self._insert_product("product-4", name="Set serum dưỡng ẩm", category_code="my-pham")
+        product = self._insert_product(
+            "product-4",
+            name="Set serum dưỡng ẩm kèm hộp đựng mỹ phẩm",
+            category_code="my-pham gia-dung",
+        )
 
         first = route_product(self.conn, product, now_utc)
         self.conn.execute("DELETE FROM channel WHERE id='channel-specific'")
@@ -536,6 +601,18 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
 
         self.assertEqual(first["channel_id"], "channel-specific")
         self.assertEqual(second["channel_code"], "alpha")
+
+    def test_route_product_reports_only_actually_matched_niches(self):
+        from acp.core.auto_scheduler import route_product
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self._insert_channel("channel-mixed", "mixed", niches=["my-pham", "gia-dung"])
+        product = self._insert_product("product-4b", name="Serum phục hồi da", category_code="my-pham")
+
+        routed = route_product(self.conn, product, now_utc)
+
+        self.assertEqual(routed["matched_niches"], ["my-pham"])
+        self.assertEqual(routed["match_count"], 1)
 
     def test_rank_slots_uses_same_account_hour_history_and_falls_back_to_configured_order(self):
         from acp.core.auto_scheduler import rank_slots

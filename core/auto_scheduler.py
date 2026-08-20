@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from . import niche, scoring
 
 LIVE_TARGET_STATUSES = ("SCHEDULED", "PENDING", "RUNNING", "SUCCESS")
-ACTIVE_POST_STATUSES = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED", "PUBLISHED")
+QUEUED_POST_STATUSES = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED")
 MIN_HOUR_SAMPLE_SIZE = 5
 
 
@@ -42,16 +42,34 @@ def _slot_datetime(local_date, slot_text: str, tz_name: str) -> datetime:
     return datetime(local_date.year, local_date.month, local_date.day, hour, minute, tzinfo=tzinfo)
 
 
-def _active_product_post_exists(conn, product_id: str) -> bool:
-    row = conn.execute(
+def _queued_or_recently_published_product_exists(conn, product_id: str, now_utc: datetime) -> bool:
+    queued_row = conn.execute(
         f"""
         SELECT 1
         FROM post
         WHERE product_id = ?
-          AND status IN ({",".join("?" for _ in ACTIVE_POST_STATUSES)})
+          AND status IN ({",".join("?" for _ in QUEUED_POST_STATUSES)})
         LIMIT 1
         """,
-        (product_id, *ACTIVE_POST_STATUSES),
+        (product_id, *QUEUED_POST_STATUSES),
+    ).fetchone()
+    if queued_row:
+        return True
+
+    _, filters = scoring.active_config(conn)
+    cooldown_days = filters.get("cooldown_days", scoring.DEFAULT_FILTERS["cooldown_days"])
+    cutoff = (now_utc - timedelta(days=cooldown_days)).isoformat(timespec="seconds")
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM post
+        WHERE product_id = ?
+          AND status = 'PUBLISHED'
+          AND published_at IS NOT NULL
+          AND published_at >= ?
+        LIMIT 1
+        """,
+        (product_id, cutoff),
     ).fetchone()
     return bool(row)
 
@@ -123,7 +141,11 @@ def _channel_hour_metrics(conn, channel_id: str, tz_name: str) -> dict:
     return metrics
 
 
-def candidate_channels(conn, product) -> list:
+def _matched_niches(product, configured_niches: list[str]) -> list[str]:
+    return [code for code in configured_niches if code in niche.NICHES and not niche.match_reasons(product, [code])]
+
+
+def candidate_channels(conn, product, now_utc: datetime) -> list:
     rows = conn.execute(
         """
         SELECT *
@@ -147,16 +169,19 @@ def candidate_channels(conn, product) -> list:
         reasons = niche.match_reasons(product, niches)
         if reasons:
             continue
+        matched_niches = _matched_niches(product, niches)
+        if not matched_niches:
+            continue
         if _quota_count_for_local_date(
             conn,
             row["id"],
             row["posting_timezone"],
-            datetime.now(timezone.utc).astimezone(_parse_timezone(row["posting_timezone"])).date(),
+            now_utc.astimezone(_parse_timezone(row["posting_timezone"])).date(),
         ) >= (row["daily_post_cap"] or 0):
             continue
         payload = dict(row)
-        payload["matched_niches"] = [code for code in niches if code in niche.NICHES]
-        payload["match_count"] = len(payload["matched_niches"])
+        payload["matched_niches"] = matched_niches
+        payload["match_count"] = len(matched_niches)
         candidates.append(payload)
     return candidates
 
@@ -211,11 +236,11 @@ def _best_slot_for_channel(conn, channel, now_utc: datetime):
 
 
 def route_product(conn, product, now_utc) -> dict | None:
-    if _active_product_post_exists(conn, product["id"]):
+    if _queued_or_recently_published_product_exists(conn, product["id"], now_utc):
         return {"reason": "product_already_routed"}
 
     ranked = []
-    for channel in candidate_channels(conn, product):
+    for channel in candidate_channels(conn, product, now_utc):
         best_slot = _best_slot_for_channel(conn, channel, now_utc)
         if not best_slot:
             continue
