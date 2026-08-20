@@ -21,6 +21,25 @@ from acp.core import db
 
 
 class ChannelAutomationMigrationTests(unittest.TestCase):
+    def test_factory_v2_channel_schema_defaults_new_threads_channels_to_cap_three(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.row_factory = sqlite3.Row
+            from acp.core.factory_v2.channel_schema import ensure_factory_channel_schema
+
+            ensure_factory_channel_schema(conn)
+            conn.execute("""
+                INSERT INTO channel (id, code, platform, handle, status, created_at)
+                VALUES (?,?,?,?,?,?)
+            """, ("factory-channel-1", "factory_ch_1", "threads", "@factory", "ACTIVE", db.now()))
+            row = conn.execute(
+                "SELECT daily_post_cap FROM channel WHERE id='factory-channel-1'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row["daily_post_cap"], 3)
+
     def test_legacy_channel_migration_adds_auto_scheduler_columns(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "legacy-channel.db")
@@ -264,6 +283,32 @@ class ChannelAutomationWebTests(unittest.TestCase):
         self.assertEqual(audit_row["actor"], "operator")
         self.assertIn('"auto_schedule_enabled": 1', audit_row["detail"])
         self.assertIn('"posting_slots": ["09:30", "20:30"]', audit_row["detail"])
+
+    def test_threads_channel_niche_only_save_does_not_emit_updated_automation_audit(self):
+        response = self.client.post("/kenh", data={
+            "_csrf": self.csrf,
+            "channel_id": "threads-1",
+            "niches": ["my-pham", "gia-dung"],
+            "auto_schedule_enabled": "",
+            "daily_post_target": "2",
+            "daily_post_cap": "3",
+            "posting_timezone": "Asia/Bangkok",
+            "posting_slots": ["09:30", "12:30", "20:30"],
+        })
+        self.assertEqual(response.status_code, 200)
+
+        conn = db.connect()
+        try:
+            actions = [row["action"] for row in conn.execute("""
+                SELECT action
+                FROM audit_log
+                WHERE entity='channel' AND entity_id='threads-1'
+                ORDER BY id
+            """).fetchall()]
+        finally:
+            conn.close()
+
+        self.assertEqual(actions, ["set_niches"])
 
 
 if __name__ == "__main__":

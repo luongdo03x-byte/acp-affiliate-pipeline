@@ -755,6 +755,21 @@ def create_app():
                     row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
                     saved = row["handle"] if row else cid
                     if values:
+                        try:
+                            current_slots = json.loads(channel["posting_slots"] or "[]")
+                        except (TypeError, ValueError):
+                            current_slots = []
+                        new_slots = json.loads(values["posting_slots"])
+                        automation_changed = any([
+                            channel["auto_schedule_enabled"] != values["auto_schedule_enabled"],
+                            channel["daily_post_target"] != values["daily_post_target"],
+                            channel["daily_post_cap"] != values["daily_post_cap"],
+                            channel["posting_timezone"] != values["posting_timezone"],
+                            current_slots != new_slots,
+                        ])
+                        if not automation_changed:
+                            values = None
+                    if values:
                         audit_detail = dict(values)
                         audit_detail["posting_slots"] = json.loads(values["posting_slots"])
                         conn.execute("""

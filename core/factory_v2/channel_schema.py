@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS channel (
     status              TEXT NOT NULL DEFAULT 'ACTIVE',
     token_encrypted     BLOB,
     token_expires_at    TEXT,
-    daily_post_cap      INTEGER NOT NULL DEFAULT 12,
+    daily_post_cap      INTEGER NOT NULL DEFAULT 3,
     min_gap_minutes     INTEGER NOT NULL DEFAULT 90,
     niches              TEXT NOT NULL DEFAULT '[]',
     created_at          TEXT NOT NULL

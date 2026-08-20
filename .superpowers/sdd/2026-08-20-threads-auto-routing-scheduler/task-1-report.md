@@ -1,6 +1,6 @@
 # Task 1 Report
 
-Status: DONE_WITH_CONCERNS
+Status: DONE
 
 Scope completed:
 - Added additive `channel` automation columns and fresh-schema defaults in `core/db.py`.
@@ -21,5 +21,28 @@ Verification commands:
 - `git diff --check` -> PASS
 - `git status --short` -> reviewed before commit
 
-Concern:
-- Within the allowed task scope, fresh-schema defaults are now `daily_post_cap=3`, but existing out-of-scope channel creation paths still contain explicit `daily_post_cap=12` inserts. Legacy rows are intentionally preserved on upgrade, and follow-up work will be needed if every new Threads onboarding path must also default to 3 immediately.
+Follow-up fixes after review:
+- Updated all new Threads channel creation paths touched by Task 1 to default `daily_post_cap=3` without rewriting legacy rows:
+  - `core/account_factory.py` OAuth channel insert now uses `3`
+  - `core/factory_v2/channel_schema.py` minimal factory schema now defaults to `3`
+- Made `updated_automation` audit conditional on real automation-field changes; niche-only `/kenh` saves now keep only the existing `set_niches` audit.
+- Added regressions in:
+  - `tests/test_account_factory.py`
+  - `tests/test_auto_scheduler.py`
+
+Follow-up red -> green evidence:
+- Red: `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_account_factory tests.test_auto_scheduler -v`
+  - Failed because `core/account_factory.py` still inserted `daily_post_cap=12`
+  - Failed because `core/factory_v2/channel_schema.py` still defaulted `daily_post_cap=12`
+  - Failed because niche-only `/kenh` saves still emitted `updated_automation`
+- Green: `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_account_factory tests.test_auto_scheduler -v`
+  - Result: `Ran 15 tests ... OK`
+
+Updated verification commands:
+- `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_auto_scheduler -v` -> PASS
+- `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_account_factory tests.test_auto_scheduler -v` -> PASS
+- `git diff --check` -> PASS
+- `git status --short` -> reviewed before follow-up commit
+
+Concerns:
+- None within Task 1 scope.

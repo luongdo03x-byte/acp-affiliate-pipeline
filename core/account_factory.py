@@ -261,7 +261,7 @@ def complete_oauth_session(conn, *, state: str, code: str, redirect_uri: str, pr
                 """INSERT INTO channel
                    (id,code,platform,handle,external_user_id,status,token_encrypted,
                     token_expires_at,daily_post_cap,min_gap_minutes,niches,created_at)
-                   VALUES (?,?,'threads',?,?,'ACTIVE',?,?,12,90,'[]',?)""",
+                   VALUES (?,?,'threads',?,?,'ACTIVE',?,?,3,90,'[]',?)""",
                 (channel_id, channel_code, handle, user_id, encrypted, token_expires_at, _iso(_now_dt())),
             )
         conn.execute(
