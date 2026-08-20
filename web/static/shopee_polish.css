@@ -1,0 +1,99 @@
+.shopee-preview {
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, .58);
+}
+
+.shopee-preview__heading,
+.shopee-preview__links,
+.shopee-review-links {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.shopee-preview__heading { justify-content: space-between; }
+
+.shopee-preview__grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 18px;
+  margin: 16px 0;
+  align-items: start;
+}
+
+.shopee-preview__image {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, .2);
+}
+
+.shopee-preview__info { display: grid; gap: 8px; }
+.shopee-preview__price { font-size: 1.25rem; font-weight: 700; }
+
+.shopee-preview__caption,
+.threads-caption-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  line-height: 1.55;
+  background: rgba(2, 6, 23, .5);
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-radius: 12px;
+  padding: 14px;
+  color: inherit;
+}
+
+.shopee-preview__caption { min-height: 120px; }
+.shopee-preview__disclosure { margin: 12px 0; font-size: .9rem; opacity: .82; }
+.shopee-preview__links, .shopee-review-links { margin-top: 12px; }
+.shopee-link { overflow-wrap: anywhere; }
+
+.review-card--polished {
+  align-items: start;
+  gap: 22px;
+}
+
+.review-card--polished .review-card__image {
+  width: min(280px, 34vw);
+  max-height: 360px;
+  object-fit: cover;
+  border-radius: 14px;
+}
+
+.review-card--polished textarea[name="caption"] {
+  min-height: 150px;
+}
+
+.review-card--polished .review-actions__buttons .btn--primary {
+  min-width: 150px;
+  font-weight: 700;
+}
+
+.shopee-preview button:focus-visible,
+.shopee-preview a:focus-visible,
+.review-card--polished button:focus-visible,
+.review-card--polished a:focus-visible,
+.review-card--polished textarea:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+@media (max-width: 720px) {
+  .shopee-preview { padding: 14px; }
+  .shopee-preview__grid { grid-template-columns: 1fr; }
+  .shopee-preview__image { max-width: 240px; }
+  .review-card--polished { grid-template-columns: 1fr; }
+  .review-card--polished .review-card__image {
+    width: 100%;
+    max-width: 420px;
+    max-height: none;
+  }
+  .shopee-preview__links > *,
+  .shopee-review-links > * { max-width: 100%; }
+}

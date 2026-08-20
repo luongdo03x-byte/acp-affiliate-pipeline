@@ -1405,7 +1405,10 @@ def test_shopee_helper_pairing():
 
     polled = helper_pairing.poll(issued["token"])
     check("poll() sau khi nộp -> ready kèm đúng metadata",
-          polled == {"status": "ready", "metadata": {"name": "Váy test", "current_price": 199000}}, polled)
+          polled == {"status": "ready", "metadata": {
+              "name": "Váy test", "current_price": 199000,
+              "original_price": None, "image_url": None, "shop": None,
+          }}, polled)
     check("poll() token lạ -> None", helper_pairing.poll("khong-ton-tai") is None)
 
     # TTL: token hết hạn thì poll() không còn thấy.
@@ -1442,19 +1445,22 @@ def test_shopee_helper_pairing():
     # Endpoint extension gọi -- KHÔNG cần đăng nhập, chỉ cần loopback + token đúng.
     bad_origin = c.post(
         "/api/helper/shopee-product",
-        json={"token": token, "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
+        json={"token": token, "product_url": "https://shopee.vn/product/5/6",
+              "observed_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
         environ_overrides={"REMOTE_ADDR": "203.0.113.9"})
     check("request không phải từ loopback bị chặn (403)", bad_origin.status_code == 403, bad_origin.status_code)
 
     bad_token = c.post(
         "/api/helper/shopee-product",
-        json={"token": "sai-token", "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
+        json={"token": "sai-token", "product_url": "https://shopee.vn/product/5/6",
+              "observed_url": "https://shopee.vn/product/5/6", "metadata": {"name": "z"}},
         environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
     check("token sai bị chặn (410)", bad_token.status_code == 410, bad_token.status_code)
 
     ok = c.post(
         "/api/helper/shopee-product",
         json={"token": token, "product_url": "https://shopee.vn/product/5/6",
+              "observed_url": "https://shopee.vn/product/5/6",
               "metadata": {"name": "Đầm hoa", "current_price": 259000, "image_url": "https://img.example/a.jpg",
                            "shop": "Shop A", "cookie": "khong-duoc-nhan-truong-la"}},
         environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
@@ -1472,7 +1478,8 @@ def test_shopee_helper_pairing():
 
     reused = c.post(
         "/api/helper/shopee-product",
-        json={"token": token, "product_url": "https://shopee.vn/product/5/6", "metadata": {"name": "lan hai"}},
+        json={"token": token, "product_url": "https://shopee.vn/product/5/6",
+              "observed_url": "https://shopee.vn/product/5/6", "metadata": {"name": "lan hai"}},
         environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
     check("nộp lại token đã dùng bị chặn (410)", reused.status_code == 410, reused.status_code)
 
