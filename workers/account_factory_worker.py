@@ -12,8 +12,13 @@ import json
 import re
 import sys
 from datetime import date, datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
+from core.factory_v2.avatar_pool import (
+    configured_avatar_root,
+    resolve_avatar_source,
+    validate_avatar_reference,
+)
 from core.factory_v2.avd import AvdManager
 from core.factory_v2.ui_automation.adb import AdbClient
 from core.factory_v2.ui_automation.driver import SafeUiDriver
@@ -80,16 +85,22 @@ def _safe_birth_date(value) -> str | None:
     return born.isoformat()
 
 
+def _avatar_root() -> Path:
+    return configured_avatar_root(_REPO_ROOT)
+
+
 def _safe_avatar_file(value) -> str | None:
     text = _clean_profile_text(value, "avatar_file", max_length=300)
     if text is None:
         return None
-    if "\\" in text:
-        raise ValueError("invalid profile field: avatar_file")
-    path = PurePosixPath(text)
-    if path.is_absolute() or ".." in path.parts or text.startswith("./"):
-        raise ValueError("invalid profile field: avatar_file")
-    return path.as_posix()
+    try:
+        return validate_avatar_reference(
+            text,
+            repo_root=_REPO_ROOT,
+            avatar_root=_avatar_root(),
+        )
+    except ValueError as exc:
+        raise ValueError("invalid profile field: avatar_file") from exc
 
 
 def _safe_profile(payload: dict) -> dict[str, str]:
@@ -214,10 +225,12 @@ class WorkerAgent:
         avatar_file = profile.get("avatar_file")
         if not avatar_file:
             return
-        root = _REPO_ROOT.resolve()
-        source = (root / avatar_file).resolve()
         try:
-            source.relative_to(root)
+            source = resolve_avatar_source(
+                avatar_file,
+                repo_root=_REPO_ROOT,
+                avatar_root=_avatar_root(),
+            )
         except ValueError as exc:
             raise ValueError("invalid profile field: avatar_file") from exc
         if not source.is_file():
