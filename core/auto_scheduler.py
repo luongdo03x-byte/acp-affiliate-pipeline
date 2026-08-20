@@ -9,7 +9,7 @@ LIVE_TARGET_STATUSES = ("SCHEDULED", "PENDING", "RUNNING", "SUCCESS")
 QUEUED_POST_STATUSES = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED")
 MIN_HOUR_SAMPLE_SIZE = 5
 MAX_CORE_DAILY_TARGET = 3
-MAX_AUTO_PRODUCT_SYNC_AGE = timedelta(hours=48)
+MAX_AUTO_PRODUCT_SYNC_AGE = timedelta(minutes=120)
 
 
 def _row_get(row, key: str, default=None):
@@ -80,8 +80,7 @@ def preflight_auto_target(conn, target, post, channel, now_utc=None) -> tuple[bo
     if int(_row_get(product, "is_available", 0) or 0) != 1:
         return False, "product_unavailable"
 
-    has_inventory = _row_get(product, "has_inventory")
-    if has_inventory is not None and int(has_inventory or 0) != 1:
+    if int(_row_get(product, "has_inventory") or 0) != 1:
         return False, "product_inventory_empty"
 
     last_synced = _parse_iso_datetime(_row_get(product, "last_synced_at") or _row_get(product, "last_seen_at"))
