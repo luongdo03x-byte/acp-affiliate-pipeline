@@ -1,6 +1,7 @@
 import sqlite3
 import unittest
 
+from core.factory_v2.account_credentials import store_account_password
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.runner_gateway import RunnerGateway
 from core.factory_v2.scheduler import Scheduler
@@ -12,10 +13,21 @@ class FakeWorkerProcesses:
     def __init__(self):
         self.last_worker_id = None
         self.last_command = None
+        self.commands = []
 
     def request(self, worker_id, command):
         self.last_worker_id = worker_id
         self.last_command = command
+        self.commands.append((worker_id, command))
+        if command.action == "TRANSIENT_BROWSER_LOGIN":
+            return {
+                "ok": True,
+                "status": "waiting_human",
+                "result": {
+                    "screen": "OAUTH_CONSENT",
+                    "reason": "HUMAN_CONSENT_REQUIRED",
+                },
+            }
         return {"ok": True, "package": "com.instagram.android"}
 
 
@@ -72,6 +84,42 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("AUTOMATE_INSTAGRAM", self.processes.last_command.action)
         self.assertEqual("sample_user", self.processes.last_command.payload["profile"]["username"])
+
+    def test_remote_oauth_open_auto_hands_off_stored_credential_transiently(self):
+        job = self._leased_job("avd-oauth", "REMOTE_AVD")
+        account = self.repo.get_account(job["account_id"])
+        store_account_password(self.conn, account["id"], "example-secret")
+
+        response = self.gateway.send(
+            job,
+            "OPEN_URL",
+            {"url": "https://threads.example/authorize?state=x"},
+        )
+
+        actions = [command.action for _, command in self.processes.commands]
+        self.assertEqual(["OPEN_URL", "TRANSIENT_BROWSER_LOGIN"], actions)
+        secret_command = self.processes.commands[-1][1]
+        self.assertEqual(account["username"], secret_command.payload["username"])
+        self.assertEqual("example-secret", secret_command.payload["password"])
+        self.assertEqual("waiting_human", response["status"])
+        self.assertNotIn("example-secret", repr(response))
+        self.assertEqual(
+            0,
+            self.conn.execute("SELECT COUNT(*) FROM factory_runner_command").fetchone()[0],
+        )
+
+    def test_remote_oauth_open_without_credential_stays_manual(self):
+        job = self._leased_job("avd-oauth-manual", "REMOTE_AVD")
+
+        response = self.gateway.send(
+            job,
+            "OPEN_URL",
+            {"url": "https://threads.example/authorize?state=x"},
+        )
+
+        actions = [command.action for _, command in self.processes.commands]
+        self.assertEqual(["OPEN_URL"], actions)
+        self.assertTrue(response["ok"])
 
     def test_local_gateway_queues_command_without_adb(self):
         job = self._leased_job("phone-1", "LOCAL_DEVICE")
