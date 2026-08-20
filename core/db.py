@@ -478,6 +478,8 @@ def init_db() -> None:
         applied = migrate(conn)
         if applied:
             print(f"  ↑ nâng cấp schema: {', '.join(applied)}")
+        from .factory_v2.schema import ensure_schema as ensure_factory_v2_schema
+        ensure_factory_v2_schema(conn)
 
 
 def audit(conn, entity: str, entity_id: str, action: str, actor: str = "system", detail=None) -> None:

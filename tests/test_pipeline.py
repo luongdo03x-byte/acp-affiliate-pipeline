@@ -22,6 +22,10 @@ from acp.adapters.mock import MockAccessTrade, MockFacebookPublisher, MockInstag
 from acp.core import attribution, content, content_facts, crypto, imaging, jobs, media_library, pipeline, scoring, system_settings  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
+# The release checkout's var/media may be a symlink to production runtime data.
+# Keep every generated image from this test process under its temporary fixture.
+pipeline.MEDIA_DIR = os.path.join(_tmp, "media")
+
 PASS, FAIL = [], []
 
 
