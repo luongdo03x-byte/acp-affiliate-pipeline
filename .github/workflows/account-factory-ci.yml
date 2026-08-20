@@ -1,0 +1,107 @@
+name: Account Factory CI
+
+on:
+  push:
+    branches: ["feat/account-factory-android", "feat/threads-oauth-kenh"]
+  pull_request:
+    paths:
+      - "core/account_factory.py"
+      - "core/factory_v2/**"
+      - "web/account_factory.py"
+      - "web/factory_app.py"
+      - "web/factory_v2.py"
+      - "web/threads_oauth.py"
+      - "web/threads_onboarding.py"
+      - "web/server.py"
+      - "web/templates/channels.html"
+      - "web/templates/threads_onboarding.html"
+      - "workers/account_factory_worker.py"
+      - "account_factory_server.py"
+      - "tests/test_account_factory.py"
+      - "tests/test_threads_channel_oauth.py"
+      - "tests/test_threads_onboarding_web.py"
+      - "tests/test_factory_v2_*.py"
+      - "android/account-factory/**"
+      - ".github/workflows/account-factory-ci.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Account Factory backend tests
+        env:
+          ACP_ADAPTER: mock
+          ACP_SOURCE: mock
+          ACP_ENV: development
+          ACP_FACTORY_API_KEY: test-key
+          ACP_PUBLIC_BASE_URL: https://factory.example.com
+        run: |
+          python -m unittest \
+            tests.test_account_factory \
+            tests.test_threads_channel_oauth \
+            tests.test_threads_onboarding_web \
+            tests.test_factory_v2_threads_onboarding \
+            tests.test_factory_v2_schema \
+            tests.test_factory_v2_state_machine \
+            tests.test_factory_v2_identity \
+            tests.test_factory_v2_service \
+            tests.test_factory_v2_resource_policy \
+            tests.test_factory_v2_avd \
+            tests.test_factory_v2_scheduler \
+            tests.test_factory_v2_scheduler_recovery \
+            tests.test_factory_v2_supervisor \
+            tests.test_factory_v2_supervisor_local \
+            tests.test_factory_v2_worker_process \
+            tests.test_factory_v2_runtime \
+            tests.test_factory_v2_runtime_remote \
+            tests.test_factory_v2_runtime_atomicity \
+            tests.test_factory_v2_runtime_resume \
+            tests.test_factory_v2_runtime_activation \
+            tests.test_factory_v2_restart_recovery \
+            tests.test_factory_v2_checkpoint_retry \
+            tests.test_factory_v2_runner_schema \
+            tests.test_factory_v2_runner_service \
+            tests.test_factory_v2_dual_scheduler \
+            tests.test_factory_v2_runner_gateway \
+            tests.test_factory_v2_runner_api \
+            tests.test_factory_v2_runner_commands_api \
+            tests.test_factory_v2_create_account \
+            tests.test_factory_v2_factory_app \
+            tests.test_factory_v2_api \
+            tests.test_factory_v2_oauth_bridge \
+            tests.test_factory_v2_oauth_expiry \
+            tests.test_factory_v2_activation \
+            tests.test_factory_v2_launcher \
+            tests.test_factory_v2_ui_hierarchy \
+            tests.test_factory_v2_ui_detector \
+            tests.test_factory_v2_ui_driver \
+            tests.test_factory_v2_instagram_flow \
+            tests.test_factory_v2_threads_flow \
+            tests.test_factory_v2_avd_worker_agent -v
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Android unit tests and debug APK
+        run: gradle -p android/account-factory testDebugUnitTest assembleDebug --no-daemon --max-workers=2 --console=plain
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: acp-account-factory-debug
+          path: android/account-factory/app/build/outputs/apk/debug/app-debug.apk

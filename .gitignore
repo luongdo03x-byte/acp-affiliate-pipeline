@@ -22,6 +22,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Android / Gradle local artifacts
+/android/account-factory/.gradle/
+/android/account-factory/build/
+/android/account-factory/app/build/
+/android/account-factory/local.properties
+
 # Local
 *.log
 *.pid

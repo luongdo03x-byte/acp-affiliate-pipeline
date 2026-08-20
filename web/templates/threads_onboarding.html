@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Thêm Threads hàng loạt — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Guided onboarding</div>
+    <h1>Thêm Threads hàng loạt</h1>
+    <p class="lede">ACP tự giữ thứ tự account và tự xử lý OAuth. Bạn chỉ làm các bước Meta bắt buộc.</p>
+  </div>
+  <div class="channel-meta">
+    <a class="btn btn--ghost" href="/kenh">← Quay lại Kênh</a>
+    <a class="btn btn--ghost" href="{{ meta_testers_url }}" target="_blank" rel="noopener">Mở Meta Tester</a>
+  </div>
+</div>
+
+{% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
+{% if summary %}<div class="alert alert--success"><strong>Đã cập nhật.</strong><span>{{ summary }}</span></div>{% endif %}
+
+<div class="channel-meta">
+  <span class="tag">Cần invite {{ counts.get('NEEDS_TESTER_INVITE', 0) }}</span>
+  <span class="tag">Chờ accept {{ counts.get('NEEDS_TESTER_ACCEPT', 0) }}</span>
+  <span class="tag">Sẵn sàng OAuth {{ counts.get('READY_FOR_OAUTH', 0) }}</span>
+  <span class="tag">OAuth đang chạy {{ counts.get('OAUTH_IN_PROGRESS', 0) }}</span>
+  <span class="tag ok">ACTIVE {{ counts.get('ACTIVE', 0) }}</span>
+</div>
+
+{% if next_account %}
+<div class="section-heading section-heading--spaced"><div><h2>Account tiếp theo</h2><p class="note">Xử lý account này xong, ACP tự đưa account kế tiếp lên đầu.</p></div></div>
+<section class="card channel-card">
+  <div class="channel-card__head">
+    <div>
+      <div class="channel-card__title">@{{ next_account.username }}</div>
+      <span class="mono-sub">{{ next_account.onboarding_status }}</span>
+    </div>
+    <div class="channel-meta">
+      <button class="btn btn--small" type="button" onclick="navigator.clipboard.writeText('{{ next_account.username }}')">Copy username</button>
+      {% if next_account.onboarding_status == 'NEEDS_TESTER_INVITE' %}
+        <a class="btn btn--ghost" href="{{ meta_testers_url }}" target="_blank" rel="noopener">Mở Meta Tester</a>
+        <form method="post" action="/kenh/threads/onboarding/{{ next_account.id }}/tester-invited">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button class="btn btn--ghost" type="submit">Đã gửi invite</button>
+        </form>
+        <form method="post" action="/kenh/threads/onboarding/{{ next_account.id }}/continue">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button class="btn btn--primary" type="submit">Đã accept → Kết nối ngay</button>
+        </form>
+      {% elif next_account.onboarding_status == 'NEEDS_TESTER_ACCEPT' %}
+        <form method="post" action="/kenh/threads/onboarding/{{ next_account.id }}/continue">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button class="btn btn--primary" type="submit">Đã accept → Kết nối ngay</button>
+        </form>
+      {% elif next_account.onboarding_status == 'READY_FOR_OAUTH' %}
+        <form method="post" action="/kenh/threads/onboarding/{{ next_account.id }}/continue">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button class="btn btn--primary" type="submit">Kết nối OAuth</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  {% if next_account.onboarding_status == 'NEEDS_TESTER_INVITE' %}
+    <p class="note">Thêm <strong>@{{ next_account.username }}</strong> vào Threads testers trong Meta. Nếu bạn đã invite và account đã accept luôn, bỏ qua nút “Đã gửi invite” và bấm thẳng “Đã accept → Kết nối ngay”.</p>
+  {% elif next_account.onboarding_status == 'NEEDS_TESTER_ACCEPT' %}
+    <p class="note">Đăng nhập đúng account <strong>@{{ next_account.username }}</strong>, accept lời mời tester, rồi bấm nút bên trên. ACP sẽ mở OAuth ngay.</p>
+  {% elif next_account.onboarding_status == 'READY_FOR_OAUTH' %}
+    <p class="note">Tester đã được xác nhận. ACP sẽ mở Threads OAuth; sau Allow, token và channel được xử lý tự động.</p>
+  {% endif %}
+</section>
+{% elif accounts %}
+<div class="alert alert--success"><strong>Không còn account cần thao tác.</strong><span>Các account còn lại đang ACTIVE, DISABLED hoặc đang chờ OAuth hoàn tất.</span></div>
+{% else %}
+<div class="empty-state">Chưa có account Factory V2 nào đã tạo Threads để onboarding.</div>
+{% endif %}
+
+{% if accounts %}
+<div class="section-heading section-heading--spaced"><div><h2>Hàng đợi</h2><p class="note">Không cần tự nhớ account nào đang ở bước nào.</p></div></div>
+<div class="channel-list">
+{% for account in accounts %}
+<section class="card channel-card">
+  <div class="channel-card__head">
+    <div>
+      <div class="channel-card__title">@{{ account.username }}</div>
+      <span class="mono-sub">{{ account.batch_id }} · #{{ account.sequence }}</span>
+    </div>
+    <div class="channel-meta">
+      <span class="tag {{ 'ok' if account.onboarding_status == 'ACTIVE' else '' }}">{{ account.onboarding_status }}</span>
+      {% if account.tester_invited_at %}<span class="tag ok">Invite ✓</span>{% endif %}
+      {% if account.tester_accepted_at %}<span class="tag ok">Accept ✓</span>{% endif %}
+    </div>
+  </div>
+</section>
+{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

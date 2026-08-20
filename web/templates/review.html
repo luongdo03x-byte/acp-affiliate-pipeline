@@ -34,6 +34,42 @@
       <span class="tag">{{ p.channel_handle }}</span>
     </div>
     {% if p.status == 'DRAFT' and p.reject_reason %}<div class="alert alert--error"><strong>Không đạt kiểm tra tự động.</strong><span>{{ p.reject_reason }}</span></div>{% endif %}
+    {% if p.variants %}
+    <section class="content-variants">
+      <h4>CONTENT VARIANTS</h4>
+      {% for v in p.variants %}
+      <div class="variant-card {{ 'variant-card--best' if v.is_best }}">
+        <strong>{{ '★ Bản tốt nhất' if v.is_best else 'Variant ' + v.label }}</strong>
+        <div class="dim">Angle: {{ v.angle }} · Score: {{ (v.final_score * 100) | round | int if v.final_score is not none else '—' }}</div>
+        <div>Hook: {{ v.hook }}</div>
+        <button type="button" class="btn btn--small"
+          onclick="acpUseVariant('{{ p.id }}', {{ v.caption_by_platform | tojson | forceescape }})">
+          Chọn variant này
+        </button>
+        <form method="post" action="/duyet/{{ p.id }}/doi-hook" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Đổi hook</button>
+        </form>
+        <form method="post" action="/duyet/{{ p.id }}/lam-lai" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Làm lại</button>
+        </form>
+        <form method="post" action="/duyet/{{ p.id }}/doi-angle" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="variant_id" value="{{ v.id }}">
+          <button class="btn btn--small btn--ghost" type="submit">Đổi angle</button>
+        </form>
+        {% if v.violations %}
+        <details><summary>Xem phân tích ({{ v.violations|length }} lưu ý)</summary>
+          <ul>{% for msg in v.violations %}<li>{{ msg }}</li>{% endfor %}</ul>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <div class="field"><label for="caption-{{ p.id }}">Caption (gốc)</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
@@ -74,4 +110,23 @@
 {% for r in recent %}<tr><td>{{ r.product_name or "Bài không bán hàng" }}</td><td><span class="tag {{ 'ok' if r.status=='PUBLISHED' else ('bad' if r.status=='REJECTED' else 'warn') }}">{{ r.status }}</span></td><td class="dim mono">{{ (r.published_at or r.scheduled_at or '')[:16]|replace('T',' ') }}</td></tr>{% endfor %}
 </tbody></table></div></div>
 {% endif %}
+
+<script>
+// Chọn variant khác -- đổi giá trị textarea tại chỗ, KHÔNG round-trip
+// server (Content Engine v2, E6). Operator vẫn sửa tiếp được sau khi bấm,
+// rồi Duyệt như luồng đã có -- không đụng approve_post().
+function acpUseVariant(postId, captionByPlatform) {
+  var mapping = {
+    "threads": "caption-" + postId,
+    "facebook": "caption-fb-" + postId,
+    "instagram": "caption-ig-" + postId,
+  };
+  for (var platform in mapping) {
+    if (captionByPlatform[platform] !== undefined) {
+      var el = document.getElementById(mapping[platform]);
+      if (el) el.value = captionByPlatform[platform];
+    }
+  }
+}
+</script>
 {% endblock %}

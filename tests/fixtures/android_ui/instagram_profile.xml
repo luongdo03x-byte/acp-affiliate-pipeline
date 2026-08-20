@@ -1,0 +1,6 @@
+<hierarchy>
+<node text="sample_user" resource-id="com.instagram.android:id/username" class="android.widget.EditText" clickable="true" enabled="true" bounds="[10,10][300,80]" />
+<node text="Sample User" resource-id="com.instagram.android:id/full_name" class="android.widget.EditText" clickable="true" enabled="true" bounds="[10,90][300,160]" />
+<node text="Sample bio" resource-id="com.instagram.android:id/bio" class="android.widget.EditText" clickable="true" enabled="true" bounds="[10,170][300,240]" />
+<node text="Next" class="android.widget.Button" clickable="true" enabled="true" bounds="[10,250][300,320]" />
+</hierarchy>
