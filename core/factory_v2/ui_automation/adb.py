@@ -1,9 +1,12 @@
 """Serial-scoped ADB primitives for one AVD worker."""
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,7 +98,19 @@ class AdbClient:
         end += len("</hierarchy>")
         return output[start:end]
 
+    def _hierarchy_lock_path(self) -> Path:
+        token = hashlib.sha256(self.serial.encode("utf-8")).hexdigest()[:16]
+        return Path(tempfile.gettempdir()) / f"acp-uiautomator-{token}.lock"
+
     def dump_hierarchy(self) -> str:
+        with self._hierarchy_lock_path().open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._dump_hierarchy_unlocked()
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _dump_hierarchy_unlocked(self) -> str:
         try:
             result = self._run(["exec-out", "uiautomator", "dump", "/dev/tty"], timeout=25)
             xml = self._hierarchy_xml_from_output(result.stdout)
