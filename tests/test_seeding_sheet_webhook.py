@@ -25,6 +25,13 @@ class SeedingSheetWebhookContracts(unittest.TestCase):
         self.assertIn("props.setProperty(reportKey", source)
         self.assertIn("LockService.getScriptLock", source)
 
+    def test_apps_script_escapes_formula_like_cells_before_set_values(self):
+        source = (ROOT / "integrations" / "google_sheets_seeding_webhook.gs").read_text(encoding="utf-8")
+        self.assertIn("safeSheetCell", source)
+        self.assertIn("/^[=+\\-@]/", source)
+        self.assertIn("return \"'\" + text", source)
+        self.assertIn("return safeSheetCell(cell)", source)
+
     def test_sheet_integration_does_not_contain_facebook_credentials(self):
         source = (ROOT / "docs" / "SEEDING_SHEET_SETUP.md").read_text(encoding="utf-8").lower()
         if (ROOT / "integrations" / "google_sheets_seeding_webhook.gs").exists():
