@@ -66,6 +66,11 @@ trong một ngày. Mặc định chỉ dùng hai slot đầu khi target=2.
 lên lịch hay không; worker toàn hệ thống vẫn phải được operator bật riêng mới
 có thể publish.
 
+Thêm `publish_target.auto_scheduled INTEGER NOT NULL DEFAULT 0`. Đây là marker
+duy nhất cho preflight freshness: chỉ target được Auto tạo có giá trị `1`, nên
+bài do operator tự duyệt giữ nguyên hành vi hiện tại. Migration phải additive
+và idempotent.
+
 Mỗi lần sửa cấu hình Auto, quota hoặc slot phải ghi `audit_log` theo channel
 và không ảnh hưởng các target đã `SUCCESS`.
 
@@ -112,8 +117,9 @@ Với từng account/ngày:
   `PENDING` hoặc `SUCCESS` còn hiệu lực;
 - slot được xếp theo score `account_hour_score`: median EPC/click-rate khả dụng
   của bài Threads thành công trên chính account và cùng giờ địa phương; không
-  đủ mẫu thì giữ đúng thứ tự `posting_slots`, không suy diễn dữ liệu từ account
-  khác.
+  đủ năm mẫu thì giữ đúng thứ tự `posting_slots`, không suy diễn dữ liệu từ
+  account khác. Metric chỉ lấy post có `post.channel_id` là account đó; auto
+  route luôn tạo một target/post nên không gán sai insight của manual fan-out.
 
 Lịch tự lấp tối đa 48 giờ, không phải bảy ngày. Mỗi lần chạy sẽ bổ sung slot
 trống; product mới tốt hơn có thể nhận slot chưa lấp nhưng không được tự hủy
@@ -147,7 +153,7 @@ Khi `PUBLISH_POST` chạy cho target Auto, gọi kiểm tra thuần trước khi
 publisher:
 
 1. product còn `is_available`, còn `has_inventory`, có affiliate URL hợp lệ;
-2. product đã được catalog sync trong thời gian freshness cho phép;
+2. product đã được catalog sync không quá 120 phút trước lúc publish;
 3. giá/giá gốc vẫn hợp lệ và product tiếp tục qua hard filters/niche của channel;
 4. post chưa có `thread_id` và target chưa `SUCCESS`.
 
