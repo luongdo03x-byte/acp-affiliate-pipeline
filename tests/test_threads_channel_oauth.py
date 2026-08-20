@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from flask import Flask
 
-from core.account_factory import ensure_schema
+from core.account_factory import create_oauth_session, ensure_schema
 
 
 class FakeThreadsOAuth:
@@ -72,7 +72,7 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _build_app(self):
+    def _build_app(self, *, admin_password=""):
         from web.threads_oauth import register_threads_channel_oauth_routes
 
         app = Flask(__name__)
@@ -83,7 +83,7 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         def channels():
             return "channels"
 
-        register_threads_channel_oauth_routes(app, admin_password="")
+        register_threads_channel_oauth_routes(app, admin_password=admin_password)
         return app
 
     def test_start_and_callback_auto_discover_and_activate_threads_account(self):
@@ -145,6 +145,27 @@ class ThreadsChannelOAuthTests(unittest.TestCase):
         count = conn.execute("SELECT COUNT(*) FROM channel").fetchone()[0]
         conn.close()
         self.assertEqual(0, count)
+
+    def test_callback_completes_one_time_state_without_dashboard_session(self):
+        app = self._build_app(admin_password="dashboard-password")
+        conn = self._connect()
+        oauth_session = create_oauth_session(conn)
+        conn.close()
+
+        with patch("web.threads_oauth.connect", side_effect=self._connect):
+            response = app.test_client().get(
+                f"/oauth/threads/connect/callback?state={oauth_session['state']}&code=browser-code",
+                base_url="https://acp.example",
+            )
+
+        self.assertEqual(302, response.status_code)
+        self.assertIn("/kenh?summary=", response.headers["Location"])
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT * FROM channel WHERE external_user_id='uid-browser'"
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
 
 
 if __name__ == "__main__":

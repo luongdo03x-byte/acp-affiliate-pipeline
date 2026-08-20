@@ -1,7 +1,7 @@
 # Account Factory Dual-Runner + Auto ACP Activation Design
 
-**Date:** 2026-08-17  
-**Status:** Approved design baseline  
+**Date:** 2026-08-17
+**Status:** Approved design baseline
 **Branch:** `feat/account-factory-android`
 
 ## 1. Goal

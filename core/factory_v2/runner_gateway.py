@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from urllib.parse import urlsplit
 
-from core.db import now, ulid
+from ..db import now, ulid
 
 from .models import RunnerType
 from .worker_protocol import WorkerCommand

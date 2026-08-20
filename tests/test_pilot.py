@@ -27,6 +27,12 @@ from acp.core import crypto, jobs, niche, pipeline, scoring  # noqa: E402
 from acp.core import content, content_checker, content_facts, content_hook, content_scoring, content_variant, playbook, valuepost  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
+# The release checkout's var/media may be a symlink to production runtime data.
+# Keep every generated image from this test process under its temporary fixture.
+pipeline.MEDIA_DIR = os.path.join(_tmp, "media")
+from acp.web import server as web_server  # noqa: E402
+web_server.MEDIA_DIR = os.path.join(_tmp, "web-media")
+
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 PASS, FAIL = [], []
 

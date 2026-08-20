@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from core.account_factory import ThreadsOAuthClient
+from ..account_factory import ThreadsOAuthClient
 
 _CALLBACK_PATH = "/oauth/account-factory/threads/callback"
 

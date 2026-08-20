@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from core.db import now, transaction, ulid
+from ..db import now, transaction, ulid
 
 from .identity import generate_profiles
 from .models import AccountStage, BatchStatus, RunnerType, WorkerState

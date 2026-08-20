@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import threading
 
-from core.db import now, transaction, ulid
+from ..db import now, transaction, ulid
 
 from .models import AccountStage, RunnerType
 from .runner_gateway import RunnerGateway

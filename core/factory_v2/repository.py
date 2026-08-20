@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import sqlite3
 from typing import Any, Iterable, Mapping
 
-from core.db import transaction
+from ..db import transaction
 
 _ACTIVE_JOB_STATES = ("LEASED", "RUNNING", "WAITING_HUMAN", "RECOVERING")
 _RUNNER_COMMAND_REDELIVERY_SECONDS = 30

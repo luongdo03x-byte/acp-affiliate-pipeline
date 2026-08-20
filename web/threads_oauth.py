@@ -68,9 +68,6 @@ def register_threads_channel_oauth_routes(app, *, admin_password: str):
 
     @app.get("/oauth/threads/connect/callback")
     def threads_channel_oauth_callback():
-        if admin_password and not session.get("uid"):
-            return redirect(url_for("login", next="/oauth/threads/start"))
-
         provider_error = request.args.get("error_description") or request.args.get("error")
         if provider_error:
             return redirect(url_for("channels", err="Bạn đã hủy hoặc từ chối cấp quyền Threads"))

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from core.account_factory import create_oauth_session, ensure_schema as ensure_oauth_schema, get_session
-from core.db import now, transaction
+from ..account_factory import create_oauth_session, ensure_schema as ensure_oauth_schema, get_session
+from ..db import now, transaction
 
 from .models import AccountStage
 from .repository import FactoryRepository

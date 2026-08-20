@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from core.account_factory import ThreadsOAuthClient, get_session
+from ..account_factory import ThreadsOAuthClient, get_session
 
 from .channel_schema import ensure_factory_channel_schema
 from .models import AccountStage

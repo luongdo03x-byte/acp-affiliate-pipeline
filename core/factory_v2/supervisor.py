@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 
-from core.db import now
+from ..db import now
 
 from .models import AccountStage, RunnerType
 from .resource_policy import CapacityState, classify_capacity, next_worker_target

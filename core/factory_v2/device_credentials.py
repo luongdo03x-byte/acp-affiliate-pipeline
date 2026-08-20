@@ -9,7 +9,7 @@ import hashlib
 import hmac
 import secrets
 
-from core.db import now, ulid
+from ..db import now, ulid
 
 
 _SCHEMA = """

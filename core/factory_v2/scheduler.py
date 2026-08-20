@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import secrets
 
-from core.db import transaction, ulid
+from ..db import transaction, ulid
 
 from .models import AccountStage, RunnerType
 
