@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS factory_account (
     UNIQUE(batch_id, username)
 );
 
+CREATE TABLE IF NOT EXISTS factory_account_credential (
+    account_id TEXT PRIMARY KEY REFERENCES factory_account(id) ON DELETE CASCADE,
+    password_encrypted BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS factory_job (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES factory_account(id) ON DELETE CASCADE,
