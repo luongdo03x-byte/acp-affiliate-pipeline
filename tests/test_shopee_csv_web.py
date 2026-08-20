@@ -2,6 +2,7 @@ import io
 import os
 import re
 import tempfile
+import time
 import unittest
 
 
@@ -160,7 +161,9 @@ class ShopeeCsvWebTests(unittest.TestCase):
         self.assertEqual(self._count("product"), 1)
 
     def test_expired_preview_token_is_rejected(self):
-        issued = self.batches.issue_preview([], {"rows": 0}, now_ts=100.0)
+        issued = self.batches.issue_preview(
+            [], {"rows": 0}, now_ts=time.monotonic() - 901
+        )
         response = self.client.post(
             "/sanpham/shopee-import/confirm",
             data={"_csrf": self.csrf, "preview_token": issued["token"]},
