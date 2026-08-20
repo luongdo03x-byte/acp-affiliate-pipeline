@@ -22,7 +22,7 @@
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
 - Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches product/channel rows and rechecks current Auto eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
 - After artifact preparation, the transaction uses the freshly re-fetched channel Auto state for eligibility, slot-collision checks, and approval. If Auto is disabled concurrently, the prepared post remains review-only and no publish target/job is created.
-- The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency.
+- The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency. Scorer hard filters are normalized to the `/kenh` channel niches before `_reasons()` so global scoring-config niches do not override channel checkbox routing.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
 - Auto OFF channels create review-only posts up to their review target and do not create publish targets or publish jobs.
 - Re-running fill is idempotent for already queued/scheduled products and does not reuse products already in active post states.
@@ -131,6 +131,16 @@ Expected failures observed before the fix:
 - `run.py auto-schedule` did not pass a prepared context/product client into `fill_auto_schedule`.
 - the sibling-target pipeline test could select polluted `PENDING_REVIEW` fixtures instead of the post it generated.
 
+Final routing source-of-truth regression red run:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoScheduleFillTests.test_auto_preflight_uses_channel_niches_not_global_scoring_niches -v
+```
+
+Expected failure observed before the fix:
+
+- with global scoring niches set to `gia-dung` and channel niches set to `my-pham`, a matching `my-pham` Auto product was rejected as `product_quality_filter`.
+
 ### Green
 
 Commands:
@@ -151,7 +161,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 34 tests passed.
+- focused routing/fill tests: 35 tests passed.
 - focused CLI contract: passed.
 - product automation CLI group: 14 tests passed.
 - targeted sibling-target pipeline regression: passed.

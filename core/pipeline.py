@@ -323,6 +323,7 @@ def current_auto_product_eligibility(
     niches = channel_niches(conn, channel["id"])
     if not niches or niche.match_reasons(product, niches):
         return False, "product_no_longer_matches_channel"
+    filters = dict(filters, niches=niches)
 
     max_per_category = int(filters.get(
         "max_per_category_per_day",

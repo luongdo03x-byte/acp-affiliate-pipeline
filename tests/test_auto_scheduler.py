@@ -1535,6 +1535,32 @@ class AutoScheduleFillTests(unittest.TestCase):
             (False, "product_quality_filter"),
         )
 
+    def test_auto_preflight_uses_channel_niches_not_global_scoring_niches(self):
+        from acp.core import pipeline, scoring
+
+        scoring.save_config(
+            self.conn,
+            scoring.DEFAULT_WEIGHTS,
+            dict(scoring.DEFAULT_FILTERS, niches=["gia-dung"]),
+            "global niche must not override channel checkbox",
+        )
+        self._insert_channel()
+        self._insert_products(1)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        product = self.conn.execute("SELECT * FROM product WHERE id='product-0'").fetchone()
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='channel-1'").fetchone()
+
+        self.assertEqual(
+            pipeline.current_auto_product_eligibility(
+                self.conn,
+                product,
+                channel,
+                now_utc,
+                slot_at="2026-08-20T09:30:00+07:00",
+            ),
+            (True, "ok"),
+        )
+
     def test_fill_auto_schedule_keeps_external_artifact_calls_outside_write_transaction(self):
         from acp.adapters.accesstrade_client import LinkResult
         from acp.core import pipeline
