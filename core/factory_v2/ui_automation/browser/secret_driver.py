@@ -102,8 +102,12 @@ class BrowserSecretDriver:
         detected, _, password_node, _ = self._login_nodes()
         if password_node is None:
             return ActionResult("postcondition_failed", before=detected.kind)
-        # The password is never stored on self and never included in return data.
-        self._replace_text(password_node, str(value))
+        # Never let a low-level ADB exception carry password-related command
+        # context back across the worker protocol.
+        try:
+            self._replace_text(password_node, str(value))
+        except (RuntimeError, ValueError):
+            return ActionResult("postcondition_failed", before=detected.kind)
         return ActionResult("completed", before=detected.kind, after=BROWSER_LOGIN)
 
     def tap_login(self) -> ActionResult:
