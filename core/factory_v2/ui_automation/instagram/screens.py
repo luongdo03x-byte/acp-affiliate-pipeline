@@ -9,16 +9,23 @@ from .selectors import (
     ACCOUNTS_CENTER_TITLE,
     ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
+    ALLOW_LIMITED_PHOTOS,
+    AVATAR_CROP_DONE,
     BIO_INPUT,
     BIRTH_DATE_INPUT,
+    CHOOSE_FROM_LIBRARY,
     CONTINUE,
     CREATE_USERNAME_TITLE,
     DISPLAY_NAME_INPUT,
     FINAL_SIGNUP_SUBMIT,
     HOME,
+    MEDIA_PERMISSION_MESSAGE,
+    MEDIA_PICKER_CONFIRM,
+    MEDIA_PICKER_PHOTO,
     PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
+    TAKE_PHOTO,
     USERNAME_ENTRY_INPUT,
     USERNAME_INPUT,
     USERNAME_UNAVAILABLE_MARKER,
@@ -26,6 +33,8 @@ from .selectors import (
 )
 
 PACKAGE = "com.instagram.android"
+_PERMISSION_PACKAGE = "com.android.permissioncontroller"
+_MEDIA_PICKER_PACKAGE = "com.google.android.providers.media.module"
 
 
 def _text(semantic: str, *values: str) -> Selector:
@@ -167,6 +176,42 @@ def build_instagram_detector() -> ScreenDetector:
             0.99,
             False,
             34,
+        ),
+        ScreenSignature(
+            "ANDROID_MEDIA_PERMISSION",
+            _PERMISSION_PACKAGE,
+            (MEDIA_PERMISSION_MESSAGE, ALLOW_LIMITED_PHOTOS),
+            2,
+            0.99,
+            False,
+            50,
+        ),
+        ScreenSignature(
+            "ANDROID_MEDIA_PICKER",
+            _MEDIA_PICKER_PACKAGE,
+            (MEDIA_PICKER_PHOTO, MEDIA_PICKER_CONFIRM),
+            2,
+            0.99,
+            False,
+            51,
+        ),
+        ScreenSignature(
+            "IG_AVATAR_SOURCE_MENU",
+            PACKAGE,
+            (CHOOSE_FROM_LIBRARY, TAKE_PHOTO),
+            2,
+            0.99,
+            False,
+            52,
+        ),
+        ScreenSignature(
+            "IG_AVATAR_CROP",
+            PACKAGE,
+            (AVATAR_CROP_DONE,),
+            1,
+            0.99,
+            False,
+            53,
         ),
         ScreenSignature(
             "IG_ACCOUNT_SWITCHER",
