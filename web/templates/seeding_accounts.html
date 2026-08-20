@@ -93,6 +93,32 @@
   {% if report_state.report and report_state.report.last_error %}
     <div class="alert alert--error"><strong>Sheet lỗi.</strong><span>{{ report_state.report.last_error }}</span></div>
   {% endif %}
+
+  {% if report_state.unknown_slots %}
+    <div class="alert alert--error">
+      <strong>Có {{ report_state.unknown_slots|length }} comment UNKNOWN.</strong>
+      <span>ACP đã khóa các slot này để không tự đưa ra đăng lại. Hãy kiểm tra Facebook; chỉ reset nếu chắc chắn comment chưa được đăng.</span>
+    </div>
+    <div class="table-card"><div class="table-scroll"><table class="data-table">
+      <thead><tr><th>Account</th><th>Loại</th><th>Nội dung cuối</th><th>Xử lý</th></tr></thead>
+      <tbody>
+      {% for slot in report_state.unknown_slots %}
+        <tr>
+          <td><strong>{{ slot.account_label }}</strong> · slot {{ slot.account_slot }}</td>
+          <td>{{ 'CMT chính' if slot.comment_type=='MAIN' else 'Reply ' ~ slot.item_index }}</td>
+          <td>{{ slot.final_text or slot.generated_text or '—' }}</td>
+          <td>
+            <form method="post" action="/seeding/comment/{{ slot.id }}/reset-unknown">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+              <button class="btn btn--danger" type="submit">Reset để thử lại</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div></div>
+  {% endif %}
+
   <div class="button-row" style="margin-top:12px;flex-wrap:wrap">
     <a class="btn" href="/seeding/campaign/{{ selected.id }}/report.tsv">Tải TSV B/C/D</a>
     {% if sheet_configured %}
