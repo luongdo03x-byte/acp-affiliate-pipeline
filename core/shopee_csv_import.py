@@ -1,8 +1,8 @@
-"""Official Shopee Affiliate bulk-link CSV parsing and normalization.
+"""Official Shopee Affiliate bulk-link CSV parsing and Product Pool import.
 
-This module treats the CSV as text input only. Parsing performs no network
-requests and no database mutation. The already-created Shopee affiliate short
-URL is preserved exactly as supplied by the operator's CSV.
+Parsing is pure: no network calls and no database mutation. Import is an
+explicit operator-confirmed step that preserves the already-created Shopee
+short affiliate URL exactly as supplied by the CSV.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from io import StringIO
 from urllib.parse import urlsplit
 
+from .db import now, transaction, ulid
 from .shopee_products import ShopeeProductError, identity_from_url
 
 
@@ -31,6 +32,10 @@ MAX_FILES = 20
 MAX_ROWS = 20_000
 AFFILIATE_HOST = "s.shopee.vn"
 PRODUCT_HOSTS = frozenset({"shopee.vn", "www.shopee.vn"})
+PRODUCT_PROVIDER = "SHOPEE_AFFILIATE"
+PRODUCT_SOURCE = "manual_shopee"
+PRODUCT_MERCHANT = "shopee.vn"
+PRICE_SOURCE = "affiliate_csv"
 
 
 class ShopeeCsvError(ValueError):
@@ -71,7 +76,6 @@ def _decimal_display(value: str, *, label: str) -> Decimal:
     text = str(value or "").strip().lower().replace("\u00a0", "").replace(" ", "")
     if not text:
         raise ShopeeCsvError(f"Thiếu {label}.")
-    # Shopee VN uses dot for thousands and comma for decimals in these exports.
     normalized = text.replace(".", "").replace(",", ".")
     try:
         return Decimal(normalized)
@@ -145,7 +149,6 @@ def _split_safe_url(value: str, *, label: str):
         raise ShopeeCsvError(f"{label} chứa ký tự không hợp lệ.")
     try:
         parsed = urlsplit(text)
-        # Accessing port deliberately validates malformed port syntax.
         port = parsed.port
     except ValueError as exc:
         raise ShopeeCsvError(f"{label} không hợp lệ.") from exc
@@ -270,3 +273,179 @@ def dedupe_upload_rows(rows: list[ShopeeCsvRowResult]) -> list[ShopeeCsvRowResul
         status = "VALID" if last_valid_index.get(key) == index else "DUPLICATE_IN_UPLOAD"
         normalized.append(replace(result, status=status))
     return normalized
+
+
+def _find_product(conn, item_id: str):
+    return conn.execute(
+        "SELECT * FROM product WHERE source=? AND merchant=? AND external_product_id=?",
+        (PRODUCT_SOURCE, PRODUCT_MERCHANT, str(item_id)),
+    ).fetchone()
+
+
+def _csv_owned_values(row: ShopeeAffiliateCsvRow) -> dict:
+    values = {
+        "provider": PRODUCT_PROVIDER,
+        "name": row.name,
+        "current_price": row.current_price,
+        "price_min": row.current_price,
+        "price_max": row.current_price,
+        "product_url": row.product_url,
+        "detail_link": row.product_url,
+        "affiliate_url": row.affiliate_url,
+        "affiliate_short_url": row.affiliate_url,
+        "affiliate_link_status": "READY",
+        "affiliate_link_error": None,
+        "is_available": 1,
+        "currency": "VND",
+        "commission_currency": "VND",
+    }
+    if row.shop_name is not None:
+        values["shop_name"] = row.shop_name
+    if row.sold_count is not None:
+        values["sold_count"] = row.sold_count
+        values["units_sold"] = row.sold_count
+    if row.commission_rate_percent is not None:
+        values["commission_rate"] = row.commission_rate_percent
+        values["commission_rate_percent"] = row.commission_rate_percent
+    if row.commission_amount is not None:
+        values["commission_value"] = row.commission_amount
+        values["commission_amount"] = row.commission_amount
+    return values
+
+
+def classify_row_against_db(conn, row: ShopeeAffiliateCsvRow) -> str:
+    existing = _find_product(conn, row.item_id)
+    if existing is None:
+        return "NEW"
+    for column, desired in _csv_owned_values(row).items():
+        if existing[column] != desired:
+            return "UPDATED"
+    return "UNCHANGED"
+
+
+def preview_rows_against_db(conn, row_results: list[ShopeeCsvRowResult]) -> list[ShopeeCsvRowResult]:
+    previewed = []
+    for result in row_results or []:
+        if result.row is None or result.error is not None or result.status == "ERROR":
+            previewed.append(result)
+        elif result.status == "DUPLICATE_IN_UPLOAD":
+            previewed.append(result)
+        else:
+            previewed.append(replace(result, status=classify_row_against_db(conn, result.row)))
+    return previewed
+
+
+def _record_csv_price_observation(conn, product_id: str, price: int) -> bool:
+    latest = conn.execute(
+        "SELECT price FROM product_price_history WHERE product_id=? ORDER BY id DESC LIMIT 1",
+        (product_id,),
+    ).fetchone()
+    if latest is not None and latest["price"] == int(price):
+        return False
+    conn.execute(
+        "INSERT INTO product_price_history (product_id, price, observed_at, source) VALUES (?,?,?,?)",
+        (product_id, int(price), now(), PRICE_SOURCE),
+    )
+    return True
+
+
+def _insert_product(conn, row: ShopeeAffiliateCsvRow) -> str:
+    timestamp = now()
+    product_id = ulid()
+    values = {
+        "id": product_id,
+        "source": PRODUCT_SOURCE,
+        "merchant": PRODUCT_MERCHANT,
+        "external_product_id": row.item_id,
+        "name": row.name,
+        "description": "",
+        "current_price": row.current_price,
+        "original_price": None,
+        "commission_value": row.commission_amount or 0,
+        "commission_rate": row.commission_rate_percent,
+        "category_code": "khac",
+        "rating": None,
+        "review_count": 0,
+        "sold_count": row.sold_count or 0,
+        "image_url_original": None,
+        "image_path_local": None,
+        "product_url": row.product_url,
+        "is_available": 1,
+        "last_seen_at": timestamp,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "provider": PRODUCT_PROVIDER,
+        "shop_name": row.shop_name,
+        "detail_link": row.product_url,
+        "currency": "VND",
+        "price_min": row.current_price,
+        "price_max": row.current_price,
+        "commission_rate_percent": row.commission_rate_percent,
+        "commission_amount": row.commission_amount,
+        "commission_currency": "VND",
+        "units_sold": row.sold_count,
+        "has_inventory": None,
+        "first_seen_at": timestamp,
+        "last_synced_at": timestamp,
+        "affiliate_url": row.affiliate_url,
+        "affiliate_short_url": row.affiliate_url,
+        "affiliate_link_status": "READY",
+        "affiliate_link_error": None,
+        "affiliate_link_created_at": timestamp,
+    }
+    columns = list(values)
+    conn.execute(
+        f"INSERT INTO product ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        tuple(values[column] for column in columns),
+    )
+    _record_csv_price_observation(conn, product_id, row.current_price)
+    return product_id
+
+
+def _update_product(conn, existing, row: ShopeeAffiliateCsvRow) -> str:
+    timestamp = now()
+    values = _csv_owned_values(row)
+    values.update({
+        "last_seen_at": timestamp,
+        "last_synced_at": timestamp,
+        "updated_at": timestamp,
+        "affiliate_link_created_at": timestamp,
+    })
+    columns = list(values)
+    conn.execute(
+        "UPDATE product SET " + ", ".join(f"{column}=?" for column in columns) + " WHERE id=?",
+        tuple(values[column] for column in columns) + (existing["id"],),
+    )
+    _record_csv_price_observation(conn, existing["id"], row.current_price)
+    return existing["id"]
+
+
+def import_rows(conn, row_results: list[ShopeeCsvRowResult]) -> dict:
+    summary = {
+        "total": len(row_results or []),
+        "new": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "duplicate": 0,
+        "error": 0,
+    }
+    with transaction(conn):
+        for result in row_results or []:
+            if result.row is None or result.error is not None or result.status == "ERROR":
+                summary["error"] += 1
+                continue
+            if result.status == "DUPLICATE_IN_UPLOAD":
+                summary["duplicate"] += 1
+                continue
+
+            state = classify_row_against_db(conn, result.row)
+            if state == "NEW":
+                _insert_product(conn, result.row)
+                summary["new"] += 1
+            elif state == "UPDATED":
+                existing = _find_product(conn, result.row.item_id)
+                _update_product(conn, existing, result.row)
+                summary["updated"] += 1
+            else:
+                summary["unchanged"] += 1
+    return summary
