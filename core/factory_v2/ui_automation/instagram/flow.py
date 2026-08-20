@@ -7,6 +7,7 @@ from ..flow_result import FlowResult
 from .screens import PACKAGE
 from .selectors import (
     ACCOUNT_SWITCHER,
+    ACCOUNTS_CENTER_ALLOW,
     ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
     BIO_INPUT,
@@ -55,6 +56,7 @@ _AFTER_EXISTING_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
 )
 _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_SIGNUP_ENTRY",
+    "IG_ACCOUNTS_CENTER_CONSENT",
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -64,6 +66,18 @@ _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_AVATAR_SETUP",
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_USERNAME_ENTRY",
+    "IG_USERNAME_VALID",
+    "IG_USERNAME_UNAVAILABLE",
+    "IG_CONTACT_ENTRY",
+    "IG_BIRTHDAY_ENTRY",
+    "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
+_AFTER_ACCOUNTS_CENTER = _IG_PROTECTED + _IG_ERRORS + (
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -356,6 +370,23 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_SIGNUP_ENTRY")
+        if detected.kind == "IG_ACCOUNTS_CENTER_CONSENT":
+            if self.driver.find(ACCOUNTS_CENTER_ALLOW) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    ACCOUNTS_CENTER_ALLOW,
+                    expected_screens=_AFTER_ACCOUNTS_CENTER,
+                    timeout=8.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult(
+                "running",
+                detected.kind,
+                last_safe_step="IG_ACCOUNTS_CENTER_CONSENT",
+            )
         if detected.kind in {
             "IG_USERNAME_ENTRY",
             "IG_USERNAME_VALID",
