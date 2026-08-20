@@ -71,6 +71,7 @@ jobs:
             tests.test_factory_v2_ui_detector \
             tests.test_factory_v2_ui_driver \
             tests.test_factory_v2_instagram_flow \
+            tests.test_factory_v2_instagram_regressions \
             tests.test_factory_v2_threads_flow \
             tests.test_factory_v2_avd_worker_agent -v
 
