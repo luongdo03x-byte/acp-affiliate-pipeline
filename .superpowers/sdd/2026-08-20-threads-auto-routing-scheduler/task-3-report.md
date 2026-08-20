@@ -18,7 +18,8 @@
 - Slot occupancy is rechecked inside the fill transaction immediately before automated approval, so a concurrent reservation of the same channel/slot is skipped instead of creating a duplicate live target or leaking Auto ON content into review-only state.
 - Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates retain channel niche, blocked category, cooldown, active-post, category-day, inventory, link, and availability hard filters.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
-- Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches the product and rechecks product eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
+- Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches product/channel rows and rechecks current Auto eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
+- The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
 - Auto OFF channels create review-only posts up to their review target and do not create publish targets or publish jobs.
 - Re-running fill is idempotent for already queued/scheduled products and does not reuse products already in active post states.
@@ -67,6 +68,16 @@ Expected failures observed before the fix:
 - synced `ACCESSTRADE_TIKTOK` catalog products were not scheduled because Auto fill used only the legacy scorer, which intentionally excludes that provider.
 - tracking-link creation, image composition, and storage upload ran while the write transaction was held.
 
+Third follow-up review regression red run:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoScheduleFillTests.test_fill_auto_schedule_rechecks_current_catalog_eligibility_inside_transaction -v
+```
+
+Expected failures observed before the fix:
+
+- after artifact preparation, concurrent mutations to `affiliate_link_status`, blocked category config, channel niche config, or category/day occupancy still allowed a scheduled Auto post/target/job to be persisted.
+
 ### Green
 
 Commands:
@@ -87,7 +98,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 28 tests passed.
+- focused routing/fill tests: 29 tests passed.
 - focused CLI contract: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.

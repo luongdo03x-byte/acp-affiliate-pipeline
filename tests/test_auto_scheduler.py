@@ -1450,6 +1450,155 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(stats["scheduled"], 4)
         self.assertEqual(violations, [])
 
+    def test_fill_auto_schedule_rechecks_current_catalog_eligibility_inside_transaction(self):
+        from acp.adapters.accesstrade_client import LinkResult
+        from acp.adapters import factory
+        from acp.core import pipeline, scoring
+
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        class _ProductClient:
+            def create_product_link(self, detail_link, *, post_id, external_product_id):
+                return LinkResult(
+                    full_url=f"https://go.example.test/full/{post_id}",
+                    short_url=f"https://go.example.test/s/{post_id}",
+                )
+
+        class _Storage:
+            def put(self, image_path):
+                return "https://cdn.example.test/catalog.jpg"
+
+        def assert_no_persisted_rows(conn):
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM post WHERE product_id='catalog-product-1'").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0], 0)
+
+        cases = {
+            "affiliate_link_status_unavailable": lambda conn: conn.execute(
+                "UPDATE product SET affiliate_link_status='UNAVAILABLE' WHERE id='catalog-product-1'"
+            ),
+            "blocked_category_config_changed": lambda conn: scoring.save_config(
+                conn,
+                scoring.DEFAULT_WEIGHTS,
+                dict(scoring.DEFAULT_FILTERS, blocked_categories=["my-pham"], max_per_category_per_day=20),
+                "block current category during auto fill",
+            ),
+            "channel_niche_config_changed": lambda conn: conn.execute(
+                "UPDATE channel SET niches=? WHERE id='channel-1'",
+                (json.dumps(["gia-dung"], ensure_ascii=False),),
+            ),
+            "category_day_cap_now_full": lambda conn: (
+                scoring.save_config(
+                    conn,
+                    scoring.DEFAULT_WEIGHTS,
+                    dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=1),
+                    "lower category cap during auto fill",
+                ),
+                conn.execute(
+                    """
+                    INSERT INTO product (
+                        id, source, merchant, external_product_id, name, description,
+                        current_price, original_price, commission_value, commission_rate,
+                        category_code, rating, review_count, sold_count, image_url_original,
+                        image_path_local, product_url, is_available, last_seen_at,
+                        created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "category-cap-product",
+                        "mock",
+                        "Shop",
+                        "category-cap-product",
+                        "Serum da du len lich",
+                        "",
+                        100000,
+                        150000,
+                        50000,
+                        0.1,
+                        "my-pham",
+                        4.8,
+                        120,
+                        500,
+                        "https://img.test/product.jpg",
+                        None,
+                        "https://example.test/category-cap-product",
+                        1,
+                        db.now(),
+                        db.now(),
+                        db.now(),
+                    ),
+                ),
+                conn.execute(
+                    """
+                    INSERT INTO post (
+                        id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                        disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                        created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "category-cap-post",
+                        "category-cap-product",
+                        "channel-1",
+                        "camp-1",
+                        "A",
+                        "caption",
+                        "Ad",
+                        "caption",
+                        "https://example.test/aff",
+                        "PUBLISHED",
+                        "2026-08-20T08:00:00+07:00",
+                        db.now(),
+                        db.now(),
+                    ),
+                ),
+            ),
+        }
+
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                self.conn.execute("DELETE FROM job_queue")
+                self.conn.execute("DELETE FROM publish_target")
+                self.conn.execute("DELETE FROM post_channel_selection")
+                self.conn.execute("DELETE FROM audit_log")
+                self.conn.execute("DELETE FROM post")
+                self.conn.execute("DELETE FROM product")
+                self.conn.execute("DELETE FROM channel")
+                scoring.save_config(
+                    self.conn,
+                    scoring.DEFAULT_WEIGHTS,
+                    dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=20),
+                    f"reset {name}",
+                )
+                self._insert_channel()
+                self._insert_catalog_product()
+
+                original_build_context = factory.build_context
+                original_compose = pipeline.imaging.compose
+                original_prepare = pipeline._prepare_auto_sales_post_artifacts
+                mutated = {"done": False}
+
+                def prepare_then_mutate(*args, **kwargs):
+                    prepared = original_prepare(*args, **kwargs)
+                    if not mutated["done"]:
+                        mutated["done"] = True
+                        mutate(self.conn)
+                    return prepared
+
+                try:
+                    factory.build_context = lambda: {"product_client": _ProductClient(), "storage": _Storage()}
+                    pipeline.imaging.compose = lambda *args, **kwargs: os.path.join(self.tempdir.name, "catalog-composed.jpg")
+                    pipeline._prepare_auto_sales_post_artifacts = prepare_then_mutate
+
+                    stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+                finally:
+                    factory.build_context = original_build_context
+                    pipeline.imaging.compose = original_compose
+                    pipeline._prepare_auto_sales_post_artifacts = original_prepare
+
+                self.assertEqual(stats["scheduled"], 0)
+                assert_no_persisted_rows(self.conn)
+
     def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
         from acp.core import pipeline
 

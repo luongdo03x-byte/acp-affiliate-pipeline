@@ -277,12 +277,69 @@ def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> 
     return combined[:limit]
 
 
-def _auto_product_still_eligible(product) -> bool:
-    if not product or not product["is_available"]:
-        return False
+def _category_count_for_channel_local_day(conn, channel, category_code: str, now_utc: datetime) -> int:
+    tz_name = channel["posting_timezone"]
+    local_day = now_utc.astimezone(auto_scheduler._parse_timezone(tz_name)).date().isoformat()
+    count = 0
+    rows = conn.execute(
+        """
+        SELECT p.published_at, p.scheduled_at, p.created_at
+        FROM post p
+        JOIN product pr ON pr.id = p.product_id
+        WHERE p.channel_id = ?
+          AND pr.category_code = ?
+          AND p.status IN ('PUBLISHED','SCHEDULED','APPROVED','PENDING_REVIEW')
+        """,
+        (channel["id"], category_code),
+    ).fetchall()
+    for row in rows:
+        iso_value = row["published_at"] or row["scheduled_at"] or row["created_at"]
+        if auto_scheduler._local_date_key(iso_value, tz_name) == local_day:
+            count += 1
+    return count
+
+
+def current_auto_product_eligibility(
+    conn, product, channel, now_utc: datetime, *, require_auto_schedule: bool = True
+) -> tuple[bool, str]:
+    """Recheck mutable Auto eligibility under the caller's current DB snapshot."""
+    if not product:
+        return False, "product_missing"
+    if not channel or not channel["enabled"] or channel["status"] != "ACTIVE":
+        return False, "channel_ineligible"
+    if require_auto_schedule and not channel["auto_schedule_enabled"]:
+        return False, "channel_auto_disabled"
+    if not product["is_available"]:
+        return False, "product_unavailable"
+
+    _, filters = scoring.active_config(conn)
+    if product["category_code"] in set(filters.get("blocked_categories") or []):
+        return False, "blocked_category"
+
+    niches = channel_niches(conn, channel["id"])
+    if not niches or niche.match_reasons(product, niches):
+        return False, "product_no_longer_matches_channel"
+
+    max_per_category = int(filters.get(
+        "max_per_category_per_day",
+        scoring.DEFAULT_FILTERS["max_per_category_per_day"],
+    ) or 0)
+    if _category_count_for_channel_local_day(conn, channel, product["category_code"], now_utc) >= max_per_category:
+        return False, "category_day_cap_full"
+
     if product["provider"] == CATALOG_PROVIDER:
-        return bool(product["has_inventory"] and product["detail_link"] and product["external_product_id"])
-    return True
+        if not (product["has_inventory"] and product["detail_link"] and product["external_product_id"]):
+            return False, "catalog_product_ineligible"
+        if product["affiliate_link_status"] == "UNAVAILABLE":
+            return False, "affiliate_link_unavailable"
+    else:
+        rejected = scoring._reasons(product, filters)
+        if rejected:
+            return False, "product_quality_filter"
+
+    if auto_scheduler._queued_or_recently_published_product_exists(conn, product["id"], now_utc):
+        return False, "product_already_routed"
+    return True, "ok"
 
 
 def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
@@ -364,16 +421,22 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
             try:
                 with transaction(conn):
                     fresh_product = conn.execute("SELECT * FROM product WHERE id=?", (product["id"],)).fetchone()
-                    if not _auto_product_still_eligible(fresh_product) or auto_scheduler._queued_or_recently_published_product_exists(
-                        conn, fresh_product["id"], now_utc
-                    ):
+                    fresh_channel = conn.execute("SELECT * FROM channel WHERE id=?", (channel["id"],)).fetchone()
+                    eligible, _reason = current_auto_product_eligibility(
+                        conn,
+                        fresh_product,
+                        fresh_channel,
+                        now_utc,
+                        require_auto_schedule=bool(channel["auto_schedule_enabled"]),
+                    )
+                    if not eligible:
                         stats["skipped"] += 1
                         continue
                     if channel["auto_schedule_enabled"] and auto_scheduler.live_slot_occupied(conn, channel["id"], slot):
                         stats["skipped"] += 1
                         continue
                     post = _insert_prepared_auto_sales_post(
-                        conn, fresh_product, campaign, channel, template,
+                        conn, fresh_product, campaign, fresh_channel, template,
                         prepared, actor="auto_scheduler")
                     if not post["ok"]:
                         stats["skipped"] += 1
