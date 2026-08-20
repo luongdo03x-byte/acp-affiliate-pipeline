@@ -1723,6 +1723,39 @@ class AutoScheduleFillTests(unittest.TestCase):
                 self.assertEqual(stats["scheduled"], 0)
                 assert_no_persisted_rows(self.conn)
 
+    def test_fill_auto_schedule_uses_fresh_channel_auto_state_after_artifact_prep(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(1)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        original_prepare = pipeline._prepare_auto_sales_post_artifacts
+        toggled = {"done": False}
+
+        def prepare_then_disable_auto(*args, **kwargs):
+            prepared = original_prepare(*args, **kwargs)
+            if not toggled["done"]:
+                toggled["done"] = True
+                self.conn.execute("UPDATE channel SET auto_schedule_enabled=0 WHERE id='channel-1'")
+            return prepared
+
+        pipeline._prepare_auto_sales_post_artifacts = prepare_then_disable_auto
+        try:
+            stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        finally:
+            pipeline._prepare_auto_sales_post_artifacts = original_prepare
+
+        post = self.conn.execute("SELECT * FROM post WHERE product_id='product-0'").fetchone()
+        targets = self.conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+        jobs = self.conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'").fetchone()[0]
+
+        self.assertEqual(stats["scheduled"], 0)
+        self.assertEqual(stats["review"], 1)
+        self.assertEqual(post["status"], "PENDING_REVIEW")
+        self.assertIsNone(post["scheduled_at"])
+        self.assertEqual(targets, 0)
+        self.assertEqual(jobs, 0)
+
     def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
         from acp.core import pipeline
 

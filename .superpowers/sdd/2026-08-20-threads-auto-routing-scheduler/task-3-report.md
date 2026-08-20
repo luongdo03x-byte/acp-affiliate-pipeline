@@ -20,6 +20,7 @@
 - `candidate_channels()` evaluates whether the channel has an eligible slot in the rolling horizon, so quota is checked against the selected slot's local day instead of only the current local day.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
 - Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches product/channel rows and rechecks current Auto eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
+- After artifact preparation, the transaction uses the freshly re-fetched channel Auto state for eligibility, slot-collision checks, and approval. If Auto is disabled concurrently, the prepared post remains review-only and no publish target/job is created.
 - The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
 - Auto OFF channels create review-only posts up to their review target and do not create publish targets or publish jobs.
@@ -95,6 +96,16 @@ Expected failures observed before the fix:
 - a channel full on the current local day was excluded even when it had a valid future slot inside the 48-hour horizon.
 - after switching candidates to slot-horizon quota, two older current-day quota tests exposed stale expectations and were updated to assert all-slot-day fullness and selected-slot local-day routing.
 
+Residual race regression red run:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoScheduleFillTests.test_fill_auto_schedule_uses_fresh_channel_auto_state_after_artifact_prep -v
+```
+
+Expected failure observed before the fix:
+
+- when Auto was disabled after artifact preparation, the write-transaction path still used stale channel state and skipped instead of applying the fresh Auto OFF review-only decision.
+
 ### Green
 
 Commands:
@@ -115,7 +126,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 31 tests passed.
+- focused routing/fill tests: 32 tests passed.
 - focused CLI contract: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.

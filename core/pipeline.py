@@ -436,17 +436,18 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
                 with transaction(conn):
                     fresh_product = conn.execute("SELECT * FROM product WHERE id=?", (product["id"],)).fetchone()
                     fresh_channel = conn.execute("SELECT * FROM channel WHERE id=?", (channel["id"],)).fetchone()
+                    fresh_auto_enabled = bool(fresh_channel and fresh_channel["auto_schedule_enabled"])
                     eligible, _reason = current_auto_product_eligibility(
                         conn,
                         fresh_product,
                         fresh_channel,
                         now_utc,
-                        require_auto_schedule=bool(channel["auto_schedule_enabled"]),
+                        require_auto_schedule=fresh_auto_enabled,
                     )
                     if not eligible:
                         stats["skipped"] += 1
                         continue
-                    if channel["auto_schedule_enabled"] and auto_scheduler.live_slot_occupied(conn, channel["id"], slot):
+                    if fresh_auto_enabled and auto_scheduler.live_slot_occupied(conn, fresh_channel["id"], slot):
                         stats["skipped"] += 1
                         continue
                     post = _insert_prepared_auto_sales_post(
@@ -455,7 +456,7 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
                     if not post["ok"]:
                         stats["skipped"] += 1
                         continue
-                    if channel["auto_schedule_enabled"] and post["status"] == "PENDING_REVIEW":
+                    if fresh_auto_enabled and post["status"] == "PENDING_REVIEW":
                         approved = approve_post(
                             conn, post["post_id"], actor="auto_scheduler",
                             scheduled_at=slot, auto_scheduled=True)
