@@ -71,19 +71,28 @@ class ExplodingPasswordDriver(BrowserSecretDriver):
 
 
 class BrowserLoginFlowTests(unittest.TestCase):
-    def _detect_fixture(self, name):
+    def _snapshot_fixture(self, name, *, package="com.android.chrome"):
         xml = (_FIXTURES / name).read_text()
-        snapshot = UiHierarchyReader().parse(
+        return UiHierarchyReader().parse(
             xml,
-            package="com.android.chrome",
+            package=package,
             activity="ChromeActivity",
         )
-        return build_browser_detector().detect(snapshot)
+
+    def _detect_fixture(self, name):
+        return build_browser_detector().detect(self._snapshot_fixture(name))
 
     def test_detector_recognizes_login_form_even_when_password_hint_is_redacted(self):
         detected = self._detect_fixture("browser_login_form.xml")
         self.assertEqual(BROWSER_LOGIN, detected.kind)
         self.assertTrue(detected.automation_allowed)
+
+    def test_login_form_in_non_chrome_package_is_never_automatable(self):
+        detected = build_browser_detector().detect(
+            self._snapshot_fixture("browser_login_form.xml", package="com.evil.fake")
+        )
+        self.assertEqual("UNKNOWN", detected.kind)
+        self.assertFalse(detected.automation_allowed)
 
     def test_detector_prioritizes_security_challenge_over_generic_continue(self):
         detected = self._detect_fixture("browser_security_challenge.xml")
