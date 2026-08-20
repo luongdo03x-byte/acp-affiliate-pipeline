@@ -223,6 +223,7 @@
       <div id="acp-seed-work-status" style="margin-top:8px;color:#94a3b8">Bạn có thể sửa câu trước khi điền.</div>
       ${button(isReply ? 'Điền vào ô đã chọn' : 'Điền CMT chính', 'acp-seed-fill')}
       ${button('Đã đăng · xác nhận', 'acp-seed-confirm')}
+      ${button('Đã bấm Đăng nhưng chưa verify', 'acp-seed-unknown', true)}
       ${button('Dừng · làm tiếp sau', 'acp-seed-stop-work', true)}
     `);
 
@@ -255,7 +256,7 @@
       }
       const extracted = parser.extractPostContext(document, location.href);
       if (!extracted.ok || !runner.verifyManualSubmission(extracted.article, lastFilledComposer, text)) {
-        status.textContent = 'Chưa xác minh được comment đã đăng: ô composer còn nội dung hoặc comment chưa render trong đúng bài Facebook.';
+        status.textContent = 'Chưa xác minh được comment đã đăng. Nếu bạn CHẮC CHẮN đã bấm Đăng, dùng nút UNKNOWN để khóa slot và tránh đăng trùng; nếu chưa đăng thì bấm Dừng.';
         return;
       }
       try {
@@ -275,6 +276,30 @@
         lastFacebookComposer = null;
         running = false;
         run().catch(showFatal);
+      } catch (error) { showFatal(error); }
+    });
+
+    node.querySelector('#acp-seed-unknown').addEventListener('click', async () => {
+      const text = textArea.value.trim();
+      if (!text) return;
+      if (!lastFilledComposer) {
+        status.textContent = 'Chỉ dùng UNKNOWN sau khi đã Điền và bạn đã bấm Đăng trên Facebook.';
+        return;
+      }
+      try {
+        await api('/api/seeding/account/work-result', {
+          method: 'POST',
+          body: {
+            instance_id: config.extensionInstanceId,
+            slot_id: work.slot.id,
+            result: 'UNKNOWN',
+            final_text: text,
+            proof_ref: `clicked:unverified:${Date.now()}`,
+          },
+        });
+        lastFacebookComposer = null;
+        running = false;
+        setPanel('UNKNOWN', '<div>Slot đã khóa để tránh tự đăng lại. Kiểm tra thủ công trên Facebook rồi reset UNKNOWN từ ACP nếu thật sự cần làm lại.</div>', 'danger');
       } catch (error) { showFatal(error); }
     });
 
