@@ -92,11 +92,13 @@ class AvatarPool:
         return Counter({str(row[0]): int(row[1]) for row in rows})
 
     def _load_last_assigned(self) -> str | None:
+        # factory_account is SQLite-backed today. rowid preserves actual insert order,
+        # unlike the ULID suffix, which is random for accounts created in the same tick.
         row = self.connection.execute(
             """SELECT avatar_file
                FROM factory_account
                WHERE avatar_file IS NOT NULL AND avatar_file != ''
-               ORDER BY created_at DESC, id DESC
+               ORDER BY rowid DESC
                LIMIT 1"""
         ).fetchone()
         return None if row is None else str(row[0])
