@@ -1,13 +1,8 @@
-"""Gọi Gemini free tier để viết lại caption tự nhiên hơn từ bản nháp
-deterministic của core/content.py.
+"""Gọi Gemini free tier cho caption và structured Seeding generation.
 
-Bật bằng ACP_CAPTION_LLM=gemini + ACP_GEMINI_API_KEY (lấy miễn phí ở
-aistudio.google.com, không cần thẻ thanh toán) trong shared/.env.local.
-Không bật thì content.py chỉ dùng template tĩnh -- không có gì đổi.
-
-Hàm rewrite() ở đây ĐƯỢC PHÉP raise -- core/content.py::generate() là nơi
-bắt exception và rơi về bản nháp deterministic (xem docstring generate()),
-không phải hàm này, để lỗi không bị nuốt câm khi gọi trực tiếp lúc debug.
+Bật bằng ACP_CAPTION_LLM=gemini + ACP_GEMINI_API_KEY trong shared/.env.local.
+``rewrite()`` trả text tự do cho caption; ``rewrite_json()`` dùng Gemini JSON
+mode cho các caller cần JSON hợp lệ như Seeding multi-account planner.
 """
 import os
 
@@ -33,4 +28,25 @@ def rewrite(prompt: str) -> str:
     text = (response.text or "").strip()
     if not text:
         raise RuntimeError("Gemini trả về rỗng")
+    return text
+
+
+def rewrite_json(prompt: str) -> str:
+    """Return Gemini output in JSON response mode for structured callers."""
+    from google.genai import types
+
+    client = _client()
+    if client is None:
+        raise RuntimeError("ACP_GEMINI_API_KEY chưa được đặt")
+    model = os.environ.get("ACP_GEMINI_MODEL", "gemini-flash-latest")
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+        ),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini trả về JSON rỗng")
     return text
