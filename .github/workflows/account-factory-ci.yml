@@ -40,11 +40,16 @@ jobs:
             tests.test_factory_v2_state_machine \
             tests.test_factory_v2_identity \
             tests.test_factory_v2_service \
+            tests.test_factory_v2_account_credentials \
+            tests.test_factory_v2_default_account_password \
             tests.test_factory_v2_avatar_pool \
             tests.test_factory_v2_avatar_upload \
             tests.test_factory_v2_avatar_runtime_regressions \
             tests.test_factory_v2_resource_policy \
             tests.test_factory_v2_avd \
+            tests.test_factory_v2_oauth_browser_session \
+            tests.test_factory_v2_transient_login_secret \
+            tests.test_factory_v2_browser_login_flow \
             tests.test_factory_v2_scheduler \
             tests.test_factory_v2_scheduler_recovery \
             tests.test_factory_v2_supervisor \
