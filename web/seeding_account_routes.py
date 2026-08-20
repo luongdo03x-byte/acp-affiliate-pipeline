@@ -184,7 +184,7 @@ def seeding_account_prepare():
             campaign_id=str(body.get("campaign_id") or "").strip(),
             target_id=str(body.get("target_id") or "").strip(),
             post_text=context.get("post_text"),
-            llm_fn=factory.get_caption_llm(),
+            llm_fn=factory.get_seeding_llm(),
         )
         work = seeding_execution.next_account_work(conn, body.get("instance_id"))
         return jsonify(ok=True, generated=len(rows), work=work)
