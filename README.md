@@ -445,9 +445,9 @@ không bao giờ lộ nội dung lỗi thô từ provider.
 
 Worker đăng bài chạy ngoài Flask, một lượt mỗi phút. Nó chỉ xử lý job
 `PUBLISH_POST` khi công tắc toàn hệ thống đã được operator bật; cài timer không
-tự bật công tắc này. Unit worker đi kèm chạy tuần tự `product-sync` ->
-`auto-schedule` -> `worker-once`, nên worker timer không thể publish trước khi
-ACP vừa sync catalog và vừa lấp lại rolling schedule. Xem trạng thái bằng:
+tự bật công tắc này. `acp-worker.service` chỉ chạy `worker-once`, nên timer
+worker là fallback để quét publish queue an toàn, không phải lượt sync catalog
+thứ hai. Xem trạng thái bằng:
 
 ```bash
 /bin/bash -lc 'set -a; . "$HOME/Downloads/ACP/acp/.env.local"; set +a; exec "$HOME/Downloads/ACP/acp/.venv/bin/python" "$HOME/Downloads/ACP/acp/run.py" worker-status'
@@ -478,12 +478,12 @@ systemctl --user enable --now acp-auto-schedule.timer
 systemctl --user status acp-auto-schedule.timer
 ```
 
-Timer này gọi chuỗi `product-sync` -> `auto-schedule` trong cùng unit, source
-đúng `.env.local` của release active, không bật publish worker và không bật
-`ACP_ADAPTER=live`. `acp-worker.service` cũng chạy lại đúng chuỗi đó trước
-`worker-once`, nên kể cả khi chỉ bật `acp-worker.timer` thì thứ tự vẫn là `sync
-catalog -> auto-schedule -> worker-once`. Giữ `acp-auto-schedule.timer` nếu muốn
-lấp lịch đều đặn ngay cả khi worker đang tắt.
+Timer này chạy chuỗi `product-sync` -> `auto-schedule` -> `worker-once` trong
+cùng unit, source đúng `.env.local` của release active, không bật publish worker
+và không bật `ACP_ADAPTER=live`. `worker-once` ở cuối vẫn tôn trọng công tắc
+publish worker toàn hệ thống, nên khi worker đang tắt thì bước cuối chỉ no-op an
+toàn. `acp-worker.timer` giữ vai trò fallback để quét publish queue, không phải
+một vòng sync catalog thứ hai.
 Nói ngắn gọn: timer này không bật live adapter.
 
 ### Kiểm tra end-to-end bằng mock

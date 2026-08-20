@@ -2038,9 +2038,13 @@ def test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate():
     assert "sync catalog -> auto-schedule -> worker-once" in combined
     assert "không bật worker" in combined or "không bật publish worker" in combined
     assert "không bật ACP_ADAPTER=live" in combined or "không bật live adapter" in combined
-    assert worker_service.index("run.py\" product-sync") < worker_service.index("run.py\" auto-schedule")
-    assert worker_service.index("run.py\" auto-schedule") < worker_service.index("run.py\" worker-once")
-    assert worker_service.count("ExecStartPre=") >= 2
+    assert "run.py\" worker-once" in worker_service
+    assert "product-sync" not in worker_service
+    assert "auto-schedule" not in worker_service
+    assert auto_service.index("run.py\" product-sync") < auto_service.index("run.py\" auto-schedule")
+    assert auto_service.index("run.py\" auto-schedule") < auto_service.index("run.py\" worker-once")
+    assert "ExecStartPre=" in auto_service
+    assert "ExecStartPost=" in auto_service
     assert "run.py auto-schedule" in auto_service
     assert "OnUnitActiveSec=60min" in auto_timer
     for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):

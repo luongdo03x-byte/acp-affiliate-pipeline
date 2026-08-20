@@ -7,8 +7,6 @@ ConditionPathExists=%h/Downloads/ACP/acp/.env.local
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Downloads/ACP/acp
-ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" product-sync'
-ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" auto-schedule'
 ExecStart=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" worker-once'
 Restart=on-failure
 RestartSec=15s
