@@ -8,9 +8,10 @@ from core.factory_v2.ui_automation.browser.screens import (
     SECURITY_CHALLENGE,
     build_browser_detector,
 )
+from core.factory_v2.ui_automation.browser.secret_driver import BrowserSecretDriver
 from core.factory_v2.ui_automation.detector import DetectedScreen
 from core.factory_v2.ui_automation.driver import ActionResult
-from core.factory_v2.ui_automation.hierarchy import UiHierarchyReader
+from core.factory_v2.ui_automation.hierarchy import UiBounds, UiHierarchyReader, UiNode
 
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -37,6 +38,31 @@ class FakeDriver:
     def tap_login(self):
         self.actions.append("login")
         return ActionResult("completed", before=BROWSER_LOGIN)
+
+
+class ExplodingPasswordDriver(BrowserSecretDriver):
+    def __init__(self):
+        pass
+
+    def _login_nodes(self):
+        password_node = UiNode(
+            text="",
+            content_desc="",
+            resource_id="password",
+            class_name="android.widget.EditText",
+            clickable=True,
+            enabled=True,
+            bounds=UiBounds(0, 0, 10, 10),
+        )
+        return (
+            DetectedScreen(BROWSER_LOGIN, 0.99, ("login",)),
+            None,
+            password_node,
+            None,
+        )
+
+    def _replace_text(self, node, value):
+        raise RuntimeError(f"simulated adb error {value}")
 
 
 class BrowserLoginFlowTests(unittest.TestCase):
@@ -75,6 +101,11 @@ class BrowserLoginFlowTests(unittest.TestCase):
         self.assertEqual(["username", "password", "login"], driver.actions)
         self.assertNotIn("example-secret", repr(result))
         self.assertNotIn("user1", repr(result))
+
+    def test_password_adb_failure_is_sanitized(self):
+        result = ExplodingPasswordDriver().set_password("example-secret")
+        self.assertEqual("postcondition_failed", result.status)
+        self.assertNotIn("example-secret", repr(result))
 
     def test_oauth_consent_is_human_only(self):
         driver = FakeDriver([
