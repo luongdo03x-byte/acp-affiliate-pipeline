@@ -515,7 +515,7 @@ class FactoryControllerRuntime:
         if _pending(result):
             return
         observed_status = str(result.get("status") or "").lower()
-        if observed_status in {"waiting_human", "running"}:
+        if observed_status == "waiting_human":
             self._refresh_remote_waiting(job)
             return
         self._handle_remote_result(job, account, flow=flow, response=result)
