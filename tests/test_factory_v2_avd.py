@@ -64,7 +64,7 @@ class FactoryV2AvdTests(unittest.TestCase):
                 "-avd", "acp-worker-01",
                 "-port", "5554",
                 "-memory", "1536",
-                "-gpu", "swiftshader",
+                "-gpu", "host",
                 "-feature", "-Vulkan",
                 "-no-snapshot",
                 "-noaudio",
