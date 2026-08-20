@@ -13,7 +13,7 @@ class FakeDriver:
         screens,
         available=(
             "username", "display_name", "bio", "signup_contact", "birth_date",
-            "add_profile_photo", "continue", "sign_up",
+            "add_profile_photo", "avatar_skip", "continue", "sign_up",
         ),
         *,
         tap_statuses=None,
@@ -139,14 +139,14 @@ class InstagramFlowTests(unittest.TestCase):
         self.assertEqual([("tap", "add_profile_photo")], driver.mutations)
         self.assertEqual("IG_AVATAR_SETUP", result.last_safe_step)
 
-    def test_avatar_setup_without_staged_avatar_fails_closed(self):
+    def test_avatar_setup_without_staged_avatar_skips(self):
         profile = dict(self.profile)
         profile.pop("avatar_file")
         driver = FakeDriver([DetectedScreen("IG_AVATAR_SETUP", 0.96, ("avatar",), False)])
         result = InstagramFlow(driver).run(profile)
-        self.assertEqual("needs_confirmation", result.status)
-        self.assertEqual("MISSING_AVATAR", result.reason)
-        self.assertEqual([], driver.mutations)
+        self.assertEqual("running", result.status)
+        self.assertEqual([("tap", "avatar_skip")], driver.mutations)
+        self.assertEqual("IG_AVATAR_SETUP", result.last_safe_step)
 
     def test_requested_username_valid_taps_next_without_profile_update(self):
         driver = FakeDriver(
