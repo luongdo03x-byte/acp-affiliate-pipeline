@@ -80,7 +80,7 @@
             <td>{{ result.row.source_filename }}:{{ result.row.source_row_number }}</td>
           {% else %}
             <td colspan="7" class="note">Dòng không hợp lệ</td>
-            <td>—</td>
+            <td>{{ result.source_filename or '—' }}{% if result.source_row_number %}:{{ result.source_row_number }}{% endif %}</td>
           {% endif %}
           <td>{{ result.error or '—' }}</td>
         </tr>
