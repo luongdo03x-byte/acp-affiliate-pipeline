@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from core.factory_v2.avd import AvdManager
+from tests.test_factory_v2_oauth_browser_session import OAuthBrowserSessionTests
 
 
 class FakeRunner:
