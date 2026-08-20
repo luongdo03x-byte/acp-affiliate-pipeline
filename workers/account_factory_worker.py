@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Account Factory V2 AVD worker agent using local JSON-lines IPC.
 
-The worker exposes only fail-closed orchestration/UI primitives. It never
-captures or automates passwords, OTP/CAPTCHA, identity/security challenges,
-or Threads publishing.
+The worker exposes only fail-closed orchestration/UI primitives. Passwords may
+cross the process boundary only in the transient browser-login action; OTP,
+CAPTCHA, identity/security challenges, and Threads publishing remain manual.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from core.factory_v2.avatar_pool import (
 from core.factory_v2.avd import AvdManager
 from core.factory_v2.ui_automation.adb import AdbClient
 from core.factory_v2.ui_automation.driver import SafeUiDriver
+from core.factory_v2.ui_automation.flow_result import FlowResult
 from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
 from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
@@ -165,6 +166,7 @@ class WorkerAgent:
         avd: AvdManager | None = None,
         instagram_flow=None,
         threads_flow=None,
+        browser_login_flow=None,
         adb_client=None,
     ):
         self.worker_id = worker_id
@@ -197,6 +199,7 @@ class WorkerAgent:
             )
         self.instagram_flow = instagram_flow
         self.threads_flow = threads_flow
+        self.browser_login_flow = browser_login_flow
 
     def heartbeat(self) -> dict:
         heartbeat = WorkerHeartbeat(
@@ -326,6 +329,25 @@ class WorkerAgent:
                 )
                 self.last_progress_at = _now()
                 return {"ok": True}
+            if action == "TRANSIENT_BROWSER_LOGIN":
+                account_id = str(command.account_id or "").strip()
+                if not account_id or self.oauth_browser_account_id != account_id:
+                    raise ValueError("browser account binding mismatch")
+                username = str(command.payload.get("username") or "").strip()
+                password = str(command.payload.get("password") or "")
+                if not username or not password:
+                    raise ValueError("login credential is incomplete")
+                if self.browser_login_flow is None:
+                    result = FlowResult(
+                        "needs_confirmation",
+                        "UNKNOWN",
+                        "BROWSER_LOGIN_NOT_CONFIGURED",
+                    )
+                else:
+                    result = self.browser_login_flow.run(username, password)
+                username = ""
+                password = ""
+                return self._flow_response("oauth_browser", result)
             if action == "OPEN_PACKAGE":
                 self.avd.open_package(self.serial, str(command.payload["package"]))
                 self.last_progress_at = _now()
