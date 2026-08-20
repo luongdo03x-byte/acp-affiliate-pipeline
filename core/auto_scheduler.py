@@ -208,13 +208,14 @@ def rank_slots(conn, channel_id: str, local_date, slots) -> list:
     return enough + fallback
 
 
-def _best_slot_for_channel(conn, channel, now_utc: datetime):
+def available_slots(conn, channel, now_utc: datetime) -> list[dict]:
     tz_name = channel["posting_timezone"]
     slots = _parse_slots(channel["posting_slots"])
     if not slots:
-        return None
+        return []
     tzinfo = _parse_timezone(tz_name)
     local_now = now_utc.astimezone(tzinfo)
+    available = []
     for day_offset in range(2):
         local_date = (local_now + timedelta(days=day_offset)).date()
         if _quota_count_for_local_date(conn, channel["id"], tz_name, local_date) >= channel["daily_post_cap"]:
@@ -226,13 +227,18 @@ def _best_slot_for_channel(conn, channel, now_utc: datetime):
             slot_dt = _slot_datetime(local_date, slot["slot"], tz_name)
             if slot_dt <= local_now:
                 continue
-            return {
+            available.append({
                 "slot": slot_dt.isoformat(timespec="seconds"),
                 "slot_local": slot["slot"],
                 "slot_hour_score": slot["hour_score"],
                 "slot_sample_size": slot["sample_size"],
-            }
-    return None
+            })
+    return available
+
+
+def _best_slot_for_channel(conn, channel, now_utc: datetime):
+    slots = available_slots(conn, channel, now_utc)
+    return slots[0] if slots else None
 
 
 def route_product(conn, product, now_utc) -> dict | None:

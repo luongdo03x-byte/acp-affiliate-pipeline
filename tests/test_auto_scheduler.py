@@ -666,5 +666,263 @@ class AutoSchedulerRoutingTests(unittest.TestCase):
         self.assertEqual([row["sample_size"] for row in fallback], [0, 0, 0])
 
 
+class AutoScheduleFillTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_db_path = db.DB_PATH
+        self.previous_adapter = os.environ.get("ACP_ADAPTER")
+        self.previous_source = os.environ.get("ACP_SOURCE")
+        self.tempdir = tempfile.TemporaryDirectory()
+        db.DB_PATH = os.path.join(self.tempdir.name, "auto-fill.db")
+        os.environ["ACP_ADAPTER"] = "mock"
+        os.environ["ACP_SOURCE"] = "mock"
+        db.init_db()
+        self.conn = db.connect()
+        self.conn.execute(
+            "INSERT INTO campaign (id, code, name, created_at) VALUES (?,?,?,?)",
+            ("camp-1", "camp", "Campaign", db.now()),
+        )
+        self.conn.execute(
+            "INSERT INTO caption_template (id, code, name, body, is_active) VALUES (?,?,?,?,1)",
+            ("tpl-1", "price_drop", "Price Drop", "price_drop"),
+        )
+        from acp.core import pipeline, scoring
+
+        self.previous_media_dir = pipeline.MEDIA_DIR
+        pipeline.MEDIA_DIR = os.path.join(self.tempdir.name, "media")
+        test_filters = dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=20)
+        scoring.save_config(self.conn, scoring.DEFAULT_WEIGHTS, test_filters, "auto fill tests")
+
+    def tearDown(self):
+        from acp.adapters import factory
+        from acp.core import pipeline
+
+        pipeline.MEDIA_DIR = self.previous_media_dir
+        self.conn.close()
+        db.DB_PATH = self.previous_db_path
+        self.tempdir.cleanup()
+        if self.previous_adapter is None:
+            os.environ.pop("ACP_ADAPTER", None)
+        else:
+            os.environ["ACP_ADAPTER"] = self.previous_adapter
+        if self.previous_source is None:
+            os.environ.pop("ACP_SOURCE", None)
+        else:
+            os.environ["ACP_SOURCE"] = self.previous_source
+        factory.reset_cache()
+
+    def _insert_channel(
+        self,
+        channel_id="channel-1",
+        *,
+        auto_schedule_enabled=1,
+        daily_post_target=2,
+        daily_post_cap=3,
+        posting_slots=None,
+    ):
+        if posting_slots is None:
+            posting_slots = ["09:30", "12:30", "20:30"]
+        self.conn.execute(
+            """
+            INSERT INTO channel (
+                id, code, platform, handle, status, enabled, auto_schedule_enabled,
+                daily_post_target, daily_post_cap, posting_timezone, posting_slots,
+                min_gap_minutes, niches, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                channel_id,
+                channel_id,
+                "threads",
+                f"@{channel_id}",
+                "ACTIVE",
+                1,
+                auto_schedule_enabled,
+                daily_post_target,
+                daily_post_cap,
+                "Asia/Bangkok",
+                json.dumps(posting_slots),
+                90,
+                json.dumps(["my-pham"], ensure_ascii=False),
+                db.now(),
+            ),
+        )
+
+    def _insert_products(self, count):
+        ts = db.now()
+        for index in range(count):
+            self.conn.execute(
+                """
+                INSERT INTO product (
+                    id, source, merchant, external_product_id, name, description,
+                    current_price, original_price, commission_value, commission_rate,
+                    category_code, rating, review_count, sold_count, image_url_original,
+                    image_path_local, product_url, is_available, last_seen_at,
+                    created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    f"product-{index}",
+                    "mock",
+                    "Shop",
+                    f"product-{index}",
+                    f"Serum duong am {index}",
+                    "Duong am da mat",
+                    100000 + index,
+                    150000 + index,
+                    50000 - index,
+                    0.1,
+                    "my-pham",
+                    4.8,
+                    100 + index,
+                    1000 - index,
+                    "https://img.test/product.jpg",
+                    None,
+                    f"https://example.test/product-{index}",
+                    1,
+                    ts,
+                    ts,
+                    ts,
+                ),
+            )
+
+    def test_fill_auto_schedule_fills_default_two_slots_per_day_for_48_hours(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(8)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        targets = self.conn.execute(
+            "SELECT scheduled_at, auto_scheduled FROM publish_target ORDER BY scheduled_at"
+        ).fetchall()
+        jobs = self.conn.execute(
+            "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'"
+        ).fetchone()[0]
+        posts = self.conn.execute(
+            "SELECT status, reviewed_by FROM post ORDER BY scheduled_at"
+        ).fetchall()
+
+        self.assertEqual(stats["scheduled"], 4)
+        self.assertEqual([row["scheduled_at"] for row in targets], [
+            "2026-08-20T09:30:00+07:00",
+            "2026-08-20T12:30:00+07:00",
+            "2026-08-21T09:30:00+07:00",
+            "2026-08-21T12:30:00+07:00",
+        ])
+        self.assertEqual([row["auto_scheduled"] for row in targets], [1, 1, 1, 1])
+        self.assertEqual(jobs, 4)
+        self.assertTrue(all(row["status"] == "SCHEDULED" for row in posts))
+        self.assertTrue(all(row["reviewed_by"] == "auto_scheduler" for row in posts))
+
+    def test_fill_auto_schedule_third_target_respects_existing_slots_and_daily_cap(self):
+        from acp.core import pipeline
+
+        self._insert_channel(daily_post_target=3, daily_post_cap=3)
+        self._insert_products(8)
+        self.conn.execute(
+            """
+            INSERT INTO post (
+                id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "existing-post",
+                "product-0",
+                "channel-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO publish_target (
+                id, post_id, channel_id, status, scheduled_at, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                "existing-target",
+                "existing-post",
+                "channel-1",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        targets = self.conn.execute(
+            "SELECT scheduled_at FROM publish_target ORDER BY scheduled_at"
+        ).fetchall()
+        slots = [row["scheduled_at"] for row in targets]
+        per_day = {}
+        for slot in slots:
+            per_day[slot[:10]] = per_day.get(slot[:10], 0) + 1
+
+        self.assertEqual(stats["scheduled"], 5)
+        self.assertEqual(len(slots), len(set(slots)))
+        self.assertLessEqual(per_day["2026-08-20"], 3)
+        self.assertLessEqual(per_day["2026-08-21"], 3)
+        self.assertIn("2026-08-21T20:30:00+07:00", slots)
+
+    def test_fill_auto_schedule_is_idempotent_and_never_reuses_products(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(8)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        first = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        second = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        posts = self.conn.execute(
+            "SELECT product_id FROM post WHERE product_id IS NOT NULL"
+        ).fetchall()
+        targets = self.conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+
+        self.assertEqual(first["scheduled"], 4)
+        self.assertEqual(second["scheduled"], 0)
+        self.assertEqual(targets, 4)
+        self.assertEqual(
+            len({row["product_id"] for row in posts}),
+            len(posts),
+        )
+
+    def test_fill_auto_schedule_keeps_auto_off_channels_review_only(self):
+        from acp.core import pipeline
+
+        self._insert_channel(auto_schedule_enabled=0)
+        self._insert_products(4)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        posts = self.conn.execute("SELECT status FROM post ORDER BY created_at").fetchall()
+        targets = self.conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+        jobs = self.conn.execute(
+            "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST'"
+        ).fetchone()[0]
+
+        self.assertEqual(stats["scheduled"], 0)
+        self.assertEqual(stats["review"], 2)
+        self.assertTrue(all(row["status"] in ("PENDING_REVIEW", "DRAFT") for row in posts))
+        self.assertEqual(targets, 0)
+        self.assertEqual(jobs, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

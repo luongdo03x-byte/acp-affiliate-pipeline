@@ -7,6 +7,8 @@ import os
 import random
 import sys
 import tempfile
+import contextlib
+import io
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -2165,6 +2167,35 @@ def test_approve_post_custom_schedule():
     check("giờ sai định dạng bị từ chối, không lưu bậy",
           pipeline.approve_post(conn, post["id"], scheduled_at="không phải ngày giờ")["ok"] is False)
     conn.close()
+
+
+def test_auto_schedule_cli_prints_only_aggregate_counts():
+    print("\nauto-schedule CLI in aggregate, không lộ payload job")
+    from acp import run
+
+    original_fill = getattr(run.pipeline, "fill_auto_schedule", None)
+    had_fill = hasattr(run.pipeline, "fill_auto_schedule")
+
+    def fake_fill(conn, campaign_code):
+        return {"scheduled": 2, "review": 1, "skipped": 3, "cancelled": 0}
+
+    run.pipeline.fill_auto_schedule = fake_fill
+    stream = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stream):
+            rc = run.cmd_auto_schedule()
+    finally:
+        if had_fill:
+            run.pipeline.fill_auto_schedule = original_fill
+        else:
+            delattr(run.pipeline, "fill_auto_schedule")
+
+    body = stream.getvalue()
+    check("CLI trả exit code 0", rc == 0, rc)
+    check("CLI in đủ aggregate scheduled/review/skipped/cancelled",
+          "scheduled=2" in body and "review=1" in body and "skipped=3" in body and "cancelled=0" in body,
+          body)
+    check("CLI không in payload chi tiết hoặc token", "payload" not in body.lower() and "token" not in body.lower(), body)
 
 
 def test_daily_cap():
@@ -4508,6 +4539,7 @@ if __name__ == "__main__":
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_approve_post_custom_schedule()
+    test_auto_schedule_cli_prints_only_aggregate_counts()
     test_daily_cap()
     test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target()
     test_publish_target_failure_semantics()

@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS publish_target (
     channel_id        TEXT NOT NULL REFERENCES channel(id),
     status            TEXT NOT NULL DEFAULT 'PENDING',
     scheduled_at      TEXT,
+    auto_scheduled    INTEGER NOT NULL DEFAULT 0,
     external_post_id  TEXT,
     last_error        TEXT,
     attempt_count     INTEGER NOT NULL DEFAULT 0,
@@ -481,6 +482,8 @@ MIGRATIONS = [
     ("post", "caption_facebook", "ALTER TABLE post ADD COLUMN caption_facebook TEXT"),
     ("post", "caption_instagram", "ALTER TABLE post ADD COLUMN caption_instagram TEXT"),
     ("publish_target", "caption_override", "ALTER TABLE publish_target ADD COLUMN caption_override TEXT"),
+    ("publish_target", "auto_scheduled",
+     "ALTER TABLE publish_target ADD COLUMN auto_scheduled INTEGER NOT NULL DEFAULT 0"),
     ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
     ("system_setting", "updated_by", "ALTER TABLE system_setting ADD COLUMN updated_by TEXT"),
 ] + PRODUCT_MIGRATIONS

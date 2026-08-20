@@ -8,6 +8,7 @@
     python3 run.py work                 chạy hàng đợi tới khi hết việc
     python3 run.py worker-once          chạy một lượt worker theo công tắc tự đăng
     python3 run.py worker-status        xem công tắc tự đăng và số lượng job an toàn
+    python3 run.py auto-schedule        lấp lịch Threads Auto 48 giờ; chỉ in số tổng hợp
     python3 run.py niche                xem chủ đề của từng kênh
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
@@ -166,6 +167,21 @@ def cmd_worker_status():
 
     print(f"Publish worker: {'enabled' if enabled else 'disabled'}")
     print(f"Queue: {_format_queue_counts(queue)}")
+    return 0
+
+
+def cmd_auto_schedule():
+    """Fill the rolling Auto schedule once without running publish jobs."""
+    try:
+        init_db()
+        with db.session() as conn:
+            stats = pipeline.fill_auto_schedule(conn, CAMPAIGN_CODE)
+    except Exception:
+        print("Auto schedule failed. Check local service logs.")
+        return 1
+
+    print("Auto schedule: " + ", ".join(
+        f"{key}={stats.get(key, 0)}" for key in ("scheduled", "review", "skipped", "cancelled")))
     return 0
 
 
@@ -638,6 +654,7 @@ def cmd_serve():
 COMMANDS = {
     "init": cmd_init, "ingest": cmd_ingest, "plan": cmd_plan, "work": cmd_work,
     "worker-once": cmd_worker_once, "worker-status": cmd_worker_status,
+    "auto-schedule": cmd_auto_schedule,
     "review": cmd_review, "approve-all": cmd_approve_all, "report": cmd_report,
     "reconcile": cmd_reconcile, "trace": cmd_trace, "doctor": cmd_doctor,
     "product": cmd_product, "search": cmd_search, "niche": cmd_niche,
@@ -668,7 +685,7 @@ def main(argv=None):
                                 auto_prepare=auto_prepare)
     elif cmd == "approve" and len(args) > 1:
         c = connect(); print(pipeline.approve_post(c, args[1])); c.close()
-    elif cmd in ("worker-once", "worker-status"):
+    elif cmd in ("worker-once", "worker-status", "auto-schedule"):
         return COMMANDS[cmd]()
     elif cmd in COMMANDS:
         COMMANDS[cmd]()
