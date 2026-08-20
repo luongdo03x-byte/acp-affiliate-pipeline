@@ -21,8 +21,10 @@ from core.factory_v2.avatar_pool import (
 )
 from core.factory_v2.avd import AvdManager
 from core.factory_v2.ui_automation.adb import AdbClient
+from core.factory_v2.ui_automation.browser.flow import BrowserLoginFlow
+from core.factory_v2.ui_automation.browser.screens import build_browser_detector
+from core.factory_v2.ui_automation.browser.secret_driver import BrowserSecretDriver
 from core.factory_v2.ui_automation.driver import SafeUiDriver
-from core.factory_v2.ui_automation.flow_result import FlowResult
 from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
 from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
@@ -197,6 +199,13 @@ class WorkerAgent:
             threads_flow = ThreadsFlow(
                 SafeUiDriver(self.adb_client, build_threads_detector())
             )
+        if browser_login_flow is None:
+            browser_login_flow = BrowserLoginFlow(
+                BrowserSecretDriver(
+                    self.adb_client,
+                    build_browser_detector(),
+                )
+            )
         self.instagram_flow = instagram_flow
         self.threads_flow = threads_flow
         self.browser_login_flow = browser_login_flow
@@ -337,14 +346,7 @@ class WorkerAgent:
                 password = str(command.payload.get("password") or "")
                 if not username or not password:
                     raise ValueError("login credential is incomplete")
-                if self.browser_login_flow is None:
-                    result = FlowResult(
-                        "needs_confirmation",
-                        "UNKNOWN",
-                        "BROWSER_LOGIN_NOT_CONFIGURED",
-                    )
-                else:
-                    result = self.browser_login_flow.run(username, password)
+                result = self.browser_login_flow.run(username, password)
                 username = ""
                 password = ""
                 return self._flow_response("oauth_browser", result)
