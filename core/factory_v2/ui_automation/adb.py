@@ -33,6 +33,12 @@ class CommandRunner:
 class AdbClient:
     _AVATAR_DEVICE_DIR = "/sdcard/Pictures/ACP"
     _AVATAR_DEVICE_PATH = "/sdcard/Pictures/ACP/avatar.jpg"
+    _AVATAR_DEVICE_PATHS = frozenset({
+        "/sdcard/Pictures/ACP/avatar.jpg",
+        "/sdcard/Pictures/ACP/avatar.jpeg",
+        "/sdcard/Pictures/ACP/avatar.png",
+        "/sdcard/Pictures/ACP/avatar.webp",
+    })
     _HIERARCHY_DEVICE_PATH = "/sdcard/acp-window.xml"
 
     def __init__(self, serial: str, *, adb_path: str | None = None, runner=None):
@@ -166,10 +172,15 @@ class AdbClient:
         if not source_path.is_file():
             raise ValueError("ADB push source must be an existing file")
         destination = str(destination or "").strip()
-        if destination != self._AVATAR_DEVICE_PATH:
+        if destination not in self._AVATAR_DEVICE_PATHS:
             raise ValueError("unsupported ADB push destination")
         self._run(["shell", "mkdir", "-p", self._AVATAR_DEVICE_DIR])
         self._run(["push", str(source_path), destination], timeout=60)
+        self._run([
+            "shell", "am", "broadcast",
+            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+            "-d", f"file://{destination}",
+        ])
 
     def open_package(self, package: str) -> None:
         package = str(package or "").strip()
