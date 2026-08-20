@@ -923,6 +923,145 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(targets, 0)
         self.assertEqual(jobs, 0)
 
+    def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(8)
+        now_utc = datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        slots = [
+            row["scheduled_at"]
+            for row in self.conn.execute(
+                "SELECT scheduled_at FROM publish_target ORDER BY scheduled_at"
+            ).fetchall()
+        ]
+
+        self.assertEqual(stats["scheduled"], 4)
+        self.assertEqual(slots, [
+            "2026-08-21T09:30:00+07:00",
+            "2026-08-21T12:30:00+07:00",
+            "2026-08-22T09:30:00+07:00",
+            "2026-08-22T12:30:00+07:00",
+        ])
+
+    def test_fill_auto_schedule_clamps_malformed_core_target_to_three_slots(self):
+        from acp.core import pipeline
+
+        self._insert_channel(
+            daily_post_target=5,
+            daily_post_cap=5,
+            posting_slots=["09:30", "12:30", "15:30", "18:30", "20:30"],
+        )
+        self._insert_products(12)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        slots = [
+            row["scheduled_at"]
+            for row in self.conn.execute(
+                "SELECT scheduled_at FROM publish_target ORDER BY scheduled_at"
+            ).fetchall()
+        ]
+
+        self.assertEqual(stats["scheduled"], 6)
+        self.assertEqual(slots, [
+            "2026-08-20T09:30:00+07:00",
+            "2026-08-20T12:30:00+07:00",
+            "2026-08-20T15:30:00+07:00",
+            "2026-08-21T09:30:00+07:00",
+            "2026-08-21T12:30:00+07:00",
+            "2026-08-21T15:30:00+07:00",
+        ])
+
+    def test_fill_auto_schedule_rechecks_slot_inside_transaction_on_collision(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(8)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """
+            INSERT INTO post (
+                id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "collision-post",
+                "product-7",
+                "channel-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        original_create = pipeline._create_auto_sales_post
+        injected = {"done": False}
+
+        def inject_collision(*args, **kwargs):
+            if not injected["done"]:
+                injected["done"] = True
+                self.conn.execute(
+                    """
+                    INSERT INTO publish_target (
+                        id, post_id, channel_id, status, scheduled_at, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (
+                        "collision-target",
+                        "collision-post",
+                        "channel-1",
+                        "SCHEDULED",
+                        "2026-08-20T09:30:00+07:00",
+                        db.now(),
+                        db.now(),
+                    ),
+                )
+            return original_create(*args, **kwargs)
+
+        pipeline._create_auto_sales_post = inject_collision
+        try:
+            stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        finally:
+            pipeline._create_auto_sales_post = original_create
+
+        slot_counts = {
+            row["scheduled_at"]: row["n"]
+            for row in self.conn.execute(
+                """
+                SELECT scheduled_at, COUNT(*) AS n
+                FROM publish_target
+                WHERE channel_id='channel-1'
+                GROUP BY scheduled_at
+                """
+            ).fetchall()
+        }
+
+        self.assertEqual(slot_counts["2026-08-20T09:30:00+07:00"], 1)
+        self.assertEqual(stats["scheduled"], 3)
+        leaked_review_rows = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM post
+            WHERE channel_id='channel-1'
+              AND status='PENDING_REVIEW'
+              AND id != 'collision-post'
+            """
+        ).fetchone()[0]
+        self.assertEqual(leaked_review_rows, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

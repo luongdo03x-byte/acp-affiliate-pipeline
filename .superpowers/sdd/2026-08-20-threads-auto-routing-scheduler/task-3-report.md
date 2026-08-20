@@ -11,10 +11,11 @@
 
 ## Behavior implemented
 
-- Auto ON Threads channels fill empty configured slots across the next two local dates.
+- Auto ON Threads channels fill empty configured slots across the exact rolling 48-hour UTC horizon.
 - Default `daily_post_target=2` fills the first two configured slots per local day.
-- `daily_post_target=3` uses the optional third slot while respecting `daily_post_cap`.
+- `daily_post_target=3` uses the optional third slot while respecting `daily_post_cap`; malformed persisted/caller values above 3 are clamped in core routing/fill logic.
 - Existing live targets occupy their slots; fill does not create a second target for the same channel/slot.
+- Slot occupancy is rechecked inside the fill transaction immediately before automated approval, so a concurrent reservation of the same channel/slot is skipped instead of creating a duplicate live target or leaking Auto ON content into review-only state.
 - Candidate acquisition is per channel through `scoring.score_candidates(..., niches=channel_niches(...))`.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
@@ -41,6 +42,19 @@ Expected failures observed:
 - `AttributeError: module 'acp.core.pipeline' has no attribute 'fill_auto_schedule'`
 - `AttributeError: module 'acp.run' has no attribute 'cmd_auto_schedule'`
 
+Follow-up review regression red run:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoScheduleFillTests -v
+```
+
+Expected failures observed before the fix:
+
+- exact 48-hour horizon test created only current/next local-date slots instead of including eligible third-date slots.
+- transaction collision test allowed duplicate live `publish_target` rows for the same channel/slot.
+- tightened collision test also exposed a leaked Auto ON `PENDING_REVIEW` post after a skipped collided slot.
+- malformed target/cap test scheduled 5 slots per day instead of enforcing the core maximum of 3.
+
 ### Green
 
 Commands:
@@ -61,7 +75,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 12 tests passed.
+- focused routing/fill tests: 15 tests passed.
 - focused CLI contract: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.

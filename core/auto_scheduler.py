@@ -7,6 +7,7 @@ from . import niche, scoring
 LIVE_TARGET_STATUSES = ("SCHEDULED", "PENDING", "RUNNING", "SUCCESS")
 QUEUED_POST_STATUSES = ("DRAFT", "PENDING_REVIEW", "APPROVED", "SCHEDULED")
 MIN_HOUR_SAMPLE_SIZE = 5
+MAX_CORE_DAILY_TARGET = 3
 
 
 def _parse_timezone(name: str) -> ZoneInfo:
@@ -24,6 +25,22 @@ def _parse_slots(raw_slots) -> list[str]:
         if len(text) == 5 and text[2] == ":":
             parsed.append(text)
     return parsed
+
+
+def _core_daily_cap(channel) -> int:
+    try:
+        cap = int(channel["daily_post_cap"] or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    return max(0, min(cap, MAX_CORE_DAILY_TARGET))
+
+
+def _core_daily_target(channel) -> int:
+    try:
+        target = int(channel["daily_post_target"] or 0)
+    except (TypeError, ValueError):
+        target = 0
+    return max(0, min(target, _core_daily_cap(channel), MAX_CORE_DAILY_TARGET))
 
 
 def _local_date_key(iso_value: str, tz_name: str) -> str | None:
@@ -94,6 +111,21 @@ def _quota_count_for_local_date(conn, channel_id: str, tz_name: str, local_date)
         if _local_date_key(iso_value, tz_name) == local_key:
             count += 1
     return count
+
+
+def live_slot_occupied(conn, channel_id: str, scheduled_at: str) -> bool:
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM publish_target
+        WHERE channel_id = ?
+          AND scheduled_at = ?
+          AND status IN ({",".join("?" for _ in LIVE_TARGET_STATUSES)})
+        LIMIT 1
+        """,
+        (channel_id, scheduled_at, *LIVE_TARGET_STATUSES),
+    ).fetchone()
+    return bool(row)
 
 
 def _occupied_slots_for_local_date(conn, channel_id: str, tz_name: str, local_date) -> set[str]:
@@ -177,7 +209,7 @@ def candidate_channels(conn, product, now_utc: datetime) -> list:
             row["id"],
             row["posting_timezone"],
             now_utc.astimezone(_parse_timezone(row["posting_timezone"])).date(),
-        ) >= (row["daily_post_cap"] or 0):
+        ) >= _core_daily_cap(row):
             continue
         payload = dict(row)
         payload["matched_niches"] = matched_niches
@@ -215,17 +247,21 @@ def available_slots(conn, channel, now_utc: datetime) -> list[dict]:
         return []
     tzinfo = _parse_timezone(tz_name)
     local_now = now_utc.astimezone(tzinfo)
+    horizon_utc = now_utc + timedelta(hours=48)
+    local_horizon = horizon_utc.astimezone(tzinfo)
+    local_date = local_now.date()
     available = []
-    for day_offset in range(2):
-        local_date = (local_now + timedelta(days=day_offset)).date()
-        if _quota_count_for_local_date(conn, channel["id"], tz_name, local_date) >= channel["daily_post_cap"]:
+    while local_date <= local_horizon.date():
+        if _quota_count_for_local_date(conn, channel["id"], tz_name, local_date) >= _core_daily_cap(channel):
+            local_date = local_date + timedelta(days=1)
             continue
         occupied = _occupied_slots_for_local_date(conn, channel["id"], tz_name, local_date)
-        for slot in rank_slots(conn, channel["id"], local_date, slots[: channel["daily_post_target"]]):
+        for slot in rank_slots(conn, channel["id"], local_date, slots[: _core_daily_target(channel)]):
             if slot["slot"] in occupied:
                 continue
             slot_dt = _slot_datetime(local_date, slot["slot"], tz_name)
-            if slot_dt <= local_now:
+            slot_utc = slot_dt.astimezone(timezone.utc)
+            if not (now_utc <= slot_utc < horizon_utc):
                 continue
             available.append({
                 "slot": slot_dt.isoformat(timespec="seconds"),
@@ -233,6 +269,7 @@ def available_slots(conn, channel, now_utc: datetime) -> list[dict]:
                 "slot_hour_score": slot["hour_score"],
                 "slot_sample_size": slot["sample_size"],
             })
+        local_date = local_date + timedelta(days=1)
     return available
 
 

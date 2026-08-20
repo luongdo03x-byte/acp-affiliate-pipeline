@@ -194,7 +194,10 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
         if channel["auto_schedule_enabled"]:
             missing = len(auto_scheduler.available_slots(conn, channel, now_utc))
         else:
-            missing = max(0, (channel["daily_post_target"] or 0) - _active_review_count_for_channel(conn, channel["id"]))
+            missing = max(
+                0,
+                auto_scheduler._core_daily_target(channel) - _active_review_count_for_channel(conn, channel["id"]),
+            )
         if missing <= 0:
             continue
 
@@ -243,6 +246,15 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
                         stats["skipped"] += 1
                         continue
                     if channel["auto_schedule_enabled"] and post["status"] == "PENDING_REVIEW":
+                        if auto_scheduler.live_slot_occupied(conn, channel["id"], slot):
+                            reject_post(
+                                conn,
+                                post["post_id"],
+                                "auto_schedule_slot_collision",
+                                actor="auto_scheduler",
+                            )
+                            stats["skipped"] += 1
+                            continue
                         approved = approve_post(
                             conn, post["post_id"], actor="auto_scheduler",
                             scheduled_at=slot, auto_scheduled=True)
