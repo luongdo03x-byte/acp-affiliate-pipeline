@@ -21,11 +21,16 @@ class FakeDriver:
     def __init__(self, screens):
         self.screens = list(screens)
         self.actions = []
+        self.wait_calls = []
 
     def detect_screen(self):
         if len(self.screens) > 1:
             return self.screens.pop(0)
         return self.screens[0]
+
+    def wait_for(self, screens, timeout):
+        self.wait_calls.append((tuple(screens), timeout))
+        return self.detect_screen()
 
     def set_username(self, value):
         self.actions.append("username")
@@ -90,7 +95,7 @@ class BrowserLoginFlowTests(unittest.TestCase):
         self.assertEqual(OAUTH_CONSENT, detected.kind)
         self.assertTrue(detected.protected)
 
-    def test_recognized_login_form_fills_username_and_password_then_submits(self):
+    def test_recognized_login_form_waits_then_fills_and_submits(self):
         driver = FakeDriver([
             DetectedScreen(BROWSER_LOGIN, 0.99, ("login",)),
             DetectedScreen(OAUTH_CONSENT, 0.99, ("allow",), True),
@@ -99,6 +104,7 @@ class BrowserLoginFlowTests(unittest.TestCase):
         self.assertEqual("running", result.status)
         self.assertEqual("LOGIN_SUCCEEDED", result.screen)
         self.assertEqual(["username", "password", "login"], driver.actions)
+        self.assertEqual(2, len(driver.wait_calls))
         self.assertNotIn("example-secret", repr(result))
         self.assertNotIn("user1", repr(result))
 
