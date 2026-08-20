@@ -54,6 +54,8 @@ class RecordingHttp:
 
     def get(self, url, **kwargs):
         self.get_calls.append((url, kwargs))
+        if url.endswith("/me"):
+            return FakeResponse({"id": "uid-alice", "username": "alice"})
         return FakeResponse({"access_token": "long-secret", "expires_in": 3600})
 
 
@@ -94,6 +96,24 @@ class ThreadsOAuthClientHttpTests(unittest.TestCase):
                 "grant_type": "th_exchange_token",
                 "client_secret": "secret",
                 "access_token": "short-secret",
+            },
+            kwargs.get("params"),
+        )
+        self.assertNotIn("headers", kwargs)
+
+    def test_fetch_profile_sends_long_token_as_access_token_query_param(self):
+        http = RecordingHttp()
+        client = ThreadsOAuthClient(app_id="123", app_secret="secret", http=http)
+
+        result = client.fetch_profile("long-secret")
+
+        self.assertEqual("alice", result["username"])
+        self.assertEqual(1, len(http.get_calls))
+        _, kwargs = http.get_calls[0]
+        self.assertEqual(
+            {
+                "fields": "id,username",
+                "access_token": "long-secret",
             },
             kwargs.get("params"),
         )
