@@ -24,6 +24,25 @@ SIGN_UP = Selector(
     require_clickable=True,
 )
 
+# Current Android 15 Instagram exposes the Accounts Center title as a regular
+# view and the approved consent action as a separate clickable Button with only
+# content-desc. Both are required together by the screen signature.
+ACCOUNTS_CENTER_TITLE = Selector(
+    semantic="accounts_center_title",
+    text_contains_all=(
+        "create a new instagram account",
+        "accounts center",
+        "allow the following",
+    ),
+)
+
+ACCOUNTS_CENTER_ALLOW = Selector(
+    semantic="accounts_center_allow",
+    content_descs=("Allow and continue",),
+    texts=("Allow and continue",),
+    require_clickable=True,
+)
+
 SIGNUP_CONTACT_INPUT = Selector(
     semantic="signup_contact",
     resource_ids=(
