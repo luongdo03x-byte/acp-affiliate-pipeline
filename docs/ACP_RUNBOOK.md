@@ -364,6 +364,9 @@ Worker là process riêng chạy một lượt mỗi phút; Flask dashboard khô
 hàng đợi. Công tắc publish worker được lưu trong database và mặc định **tắt**.
 Vì vậy cài hoặc bật timer không làm ACP tự đăng bài. Khi công tắc tắt, các job
 `PUBLISH_POST` đến hạn vẫn giữ `READY`; các job khác vẫn có thể được xử lý.
+Unit worker đi kèm chạy tuần tự `product-sync` -> `auto-schedule` ->
+`worker-once`, nên worker timer không thể publish trước khi ACP vừa sync catalog
+và vừa lấp lại rolling schedule.
 
 Kiểm tra trạng thái trước khi cài:
 
@@ -403,11 +406,13 @@ systemctl --user enable --now acp-auto-schedule.timer
 systemctl --user status acp-auto-schedule.timer
 ```
 
-`acp-auto-schedule.service` source đúng `.env.local` của release active rồi gọi
-`run.py auto-schedule`. Timer này không bật publish worker và không bật
-`ACP_ADAPTER=live`; nó chỉ lấp lịch target Auto sau lượt sync catalog. Giữ thứ
-tự: `acp-product-sync.timer` chạy trước, rồi `acp-auto-schedule.timer`, cuối
-cùng mới đến `acp-worker.timer`.
+`acp-auto-schedule.service` source đúng `.env.local` của release active rồi chạy
+chuỗi `product-sync` -> `run.py auto-schedule`. Timer này không bật publish
+worker và không bật `ACP_ADAPTER=live`; nó chỉ sync catalog rồi lấp lịch target
+Auto. `acp-worker.service` cũng chạy lại cùng chuỗi đó trước `worker-once`, nên
+kể cả khi chỉ bật `acp-worker.timer` thì thứ tự vẫn là `sync catalog ->
+auto-schedule -> worker-once`. Giữ `acp-auto-schedule.timer` nếu muốn lấp lịch
+đều đặn ngay cả khi worker đang tắt.
 Nói ngắn gọn: timer này không bật live adapter.
 
 ### Xử lý sự cố

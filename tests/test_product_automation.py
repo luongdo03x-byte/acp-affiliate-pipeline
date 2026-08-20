@@ -2027,19 +2027,24 @@ def test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate():
     """Docs and timer examples must sequence sync -> auto-schedule -> worker without implying auto publish."""
     readme = Path(ACP_ROOT / "README.md").read_text(encoding="utf-8")
     runbook = Path(ACP_ROOT / "docs" / "ACP_RUNBOOK.md").read_text(encoding="utf-8")
+    worker_service = Path(ACP_ROOT / "ops" / "acp-worker.service").read_text(encoding="utf-8")
     auto_service = Path(ACP_ROOT / "ops" / "acp-auto-schedule.service").read_text(encoding="utf-8")
     auto_timer = Path(ACP_ROOT / "ops" / "acp-auto-schedule.timer").read_text(encoding="utf-8")
     help_text = Path(ACP_ROOT / "run.py").read_text(encoding="utf-8")
 
-    combined = "\n".join((readme, runbook, auto_service, auto_timer, help_text))
+    combined = "\n".join((readme, runbook, worker_service, auto_service, auto_timer, help_text))
 
     assert "python3 run.py auto-schedule" in help_text
     assert "sync catalog -> auto-schedule -> worker-once" in combined
     assert "không bật worker" in combined or "không bật publish worker" in combined
     assert "không bật ACP_ADAPTER=live" in combined or "không bật live adapter" in combined
+    assert worker_service.index("run.py\" product-sync") < worker_service.index("run.py\" auto-schedule")
+    assert worker_service.index("run.py\" auto-schedule") < worker_service.index("run.py\" worker-once")
+    assert worker_service.count("ExecStartPre=") >= 2
     assert "run.py auto-schedule" in auto_service
     assert "OnUnitActiveSec=60min" in auto_timer
     for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
+        assert secret_name not in worker_service
         assert secret_name not in auto_service
         assert secret_name not in auto_timer
 

@@ -13,6 +13,7 @@ Implemented Task 5 in `/home/dluowng/Downloads/ACP/worktrees/threads-auto-routin
 - Updated CLI/help text so `auto-schedule` is described as schedule-fill only and documented timer order is `sync catalog -> auto-schedule -> worker-once`.
 - Updated `README.md` and `docs/ACP_RUNBOOK.md` with timer order, safety gates, and user-systemd install steps for the new Auto schedule timer.
 - Added `ops/acp-auto-schedule.service` and `ops/acp-auto-schedule.timer` examples that source active release env without embedding secrets.
+- Follow-up: encoded a concrete systemd chain in shipped units so `acp-worker.service` runs `product-sync` then `auto-schedule` before `worker-once`, and `acp-auto-schedule.service` runs `product-sync` before `auto-schedule`.
 
 ## Files changed
 
