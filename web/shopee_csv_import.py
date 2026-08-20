@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sqlite3
 import threading
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, current_app, render_template, request
 
-from ..core.db import connect
+from ..core.db import audit, connect
 from ..core.shopee_csv_batches import consume_preview, issue_preview, peek_preview
 from ..core.shopee_csv_import import (
     MAX_FILE_BYTES,
@@ -24,6 +25,7 @@ from ..core.shopee_csv_import import (
 bp = Blueprint("shopee_csv_import", __name__)
 _confirm_lock = threading.Lock()
 MAX_TOTAL_BYTES = MAX_FILES * MAX_FILE_BYTES
+_AUDIT_KEYS = ("files", "rows", "new", "updated", "unchanged", "duplicate", "error")
 
 
 def _pending_review_count():
@@ -64,6 +66,26 @@ def _summary(rows, *, files: int) -> dict:
             counts[key] += 1
     counts["valid_unique"] = counts["new"] + counts["updated"] + counts["unchanged"]
     return counts
+
+
+def _audit_detail(summary: dict) -> dict:
+    return {key: int(summary.get(key, 0) or 0) for key in _AUDIT_KEYS}
+
+
+def _safe_audit(conn, batch_id: str, action: str, detail: dict) -> None:
+    try:
+        audit(
+            conn,
+            "shopee_csv_import",
+            batch_id,
+            action,
+            actor="operator",
+            detail=_audit_detail(detail),
+        )
+    except sqlite3.DatabaseError:
+        # Audit failure must not cause a confirmed idempotent import to be
+        # repeated. Log only the event type; never raw rows, URLs, or tokens.
+        current_app.logger.warning("Shopee CSV audit write failed: %s", action)
 
 
 def _render(*, rows=None, summary=None, preview_token=None, import_summary=None,
@@ -123,11 +145,13 @@ def preview():
     conn = connect()
     try:
         preview_rows = preview_rows_against_db(conn, deduped)
+        summary = _summary(preview_rows, files=len(files))
+        batch_id = secrets.token_hex(8)
+        summary["_batch_id"] = batch_id
+        issued = issue_preview(preview_rows, summary)
+        _safe_audit(conn, batch_id, "shopee_csv_preview", summary)
     finally:
         conn.close()
-
-    summary = _summary(preview_rows, files=len(files))
-    issued = issue_preview(preview_rows, summary)
     return _render(rows=preview_rows, summary=summary, preview_token=issued["token"])
 
 
@@ -154,6 +178,16 @@ def confirm():
                 preview_token=token,
                 err="Không thể import vào Product Pool. Dữ liệu chưa được xác nhận; hãy thử lại.",
                 status=500,
+            )
+        else:
+            audit_summary = dict(result)
+            audit_summary["files"] = batch["summary"].get("files", 0)
+            audit_summary["rows"] = batch["summary"].get("rows", result.get("total", 0))
+            _safe_audit(
+                conn,
+                str(batch["summary"].get("_batch_id") or secrets.token_hex(8)),
+                "shopee_csv_import_completed",
+                audit_summary,
             )
         finally:
             conn.close()
