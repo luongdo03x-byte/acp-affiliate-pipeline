@@ -40,6 +40,7 @@ jobs:
             tests.test_factory_v2_state_machine \
             tests.test_factory_v2_identity \
             tests.test_factory_v2_service \
+            tests.test_factory_v2_avatar_pool \
             tests.test_factory_v2_resource_policy \
             tests.test_factory_v2_avd \
             tests.test_factory_v2_scheduler \
