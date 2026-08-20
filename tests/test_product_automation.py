@@ -2553,7 +2553,9 @@ def test_system_setting_schema_is_idempotent_and_unique():
             conn = db.connect()
             try:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(system_setting)")}
-                assert columns == {"key", "value", "updated_at"}
+                # updated_by thêm bởi Content Engine v2 (E6) -- audit ai vừa đổi
+                # setting, dùng chung bảng với publish_worker_enabled ở đây.
+                assert columns == {"key", "value", "updated_at", "updated_by"}
                 conn.execute(
                     "INSERT INTO system_setting (key, value, updated_at) VALUES (?,?,?)",
                     ("publish_worker_enabled", "0", db.now()),

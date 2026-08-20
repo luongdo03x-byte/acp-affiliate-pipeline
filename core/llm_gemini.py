@@ -1,8 +1,18 @@
-"""Gọi Gemini free tier cho caption và structured Seeding generation.
+"""Gọi Gemini free tier để viết lại caption/nội dung tự nhiên hơn từ bản
+nháp deterministic, cho 2 nơi dùng độc lập:
 
-Bật bằng ACP_CAPTION_LLM=gemini + ACP_GEMINI_API_KEY trong shared/.env.local.
-``rewrite()`` trả text tự do cho caption; ``rewrite_json()`` dùng Gemini JSON
-mode cho các caller cần JSON hợp lệ như Seeding multi-account planner.
+- ACP_CAPTION_LLM=gemini -- rewrite() (v1), core/content.py dùng.
+- ACP_CONTENT_ENGINE_LLM=gemini -- rewrite_json() (G1), 6 hook của Content
+  Engine v2 dùng.
+- ACP_CAPTION_LLM=gemini -- rewrite_json() cho Seeding multi-account planner.
+
+Cả 2 cờ đều cần ACP_GEMINI_API_KEY (lấy miễn phí ở aistudio.google.com,
+không cần thẻ thanh toán) trong shared/.env.local; tắt cờ nào thì phần đó
+chỉ dùng template/logic tĩnh -- không có gì đổi.
+
+Hàm rewrite() ở đây ĐƯỢC PHÉP raise -- core/content.py::generate() là nơi
+bắt exception và rơi về bản nháp deterministic (xem docstring generate()),
+không phải hàm này, để lỗi không bị nuốt câm khi gọi trực tiếp lúc debug.
 """
 import os
 
@@ -32,21 +42,32 @@ def rewrite(prompt: str) -> str:
 
 
 def rewrite_json(prompt: str) -> str:
-    """Return Gemini output in JSON response mode for structured callers."""
+    """fn(prompt) -> str theo đúng chữ ký các set_*() của Content Engine
+    v2 và Seeding yêu cầu -- model PHẢI trả JSON hợp lệ, dùng Gemini JSON
+    mode thay vì text thô như rewrite() (v1) để giảm rủi ro model bọc
+    markdown code-fence (```json ... ```) làm vỡ json.loads() ở phía gọi.
+    Callers (E1-E4) đã tự retry tối đa 3 lần + fallback khi parse lỗi --
+    hàm này KHÔNG tự retry, ĐƯỢC PHÉP raise, giống rewrite() ở trên.
+    """
     from google.genai import types
-
     client = _client()
     if client is None:
+        print("  ! Content Engine v2 LLM lỗi: ACP_GEMINI_API_KEY chưa được đặt")
         raise RuntimeError("ACP_GEMINI_API_KEY chưa được đặt")
     model = os.environ.get("ACP_GEMINI_MODEL", "gemini-flash-latest")
+    # timeout=30000ms -- SDK cài trong .venv mặc định KHÔNG timeout; không
+    # chặn thì 1 request tạo bài có thể xếp hàng tới ~13 lần gọi hook x tối
+    # đa 3 lần retry mỗi hook, treo cả tiến trình Flask đơn luồng nếu Gemini
+    # bị đứng.
     response = client.models.generate_content(
-        model=model,
-        contents=prompt,
+        model=model, contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=30000),
         ),
     )
     text = (response.text or "").strip()
     if not text:
-        raise RuntimeError("Gemini trả về JSON rỗng")
+        print("  ! Content Engine v2 LLM lỗi: Gemini trả về rỗng")
+        raise RuntimeError("Gemini trả về rỗng")
     return text

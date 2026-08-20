@@ -1,90 +1,98 @@
-"""Pairing giữa trang /sanpham và ACP Shopee Helper (Chrome extension).
+"""Pairing between /sanpham and ACP Shopee Helper (Chrome extension).
 
-Bài toán: Shopee chặn request server-side (CAPTCHA/403 -- xem
-adapters/shopee_affiliate.py), nên khi ACP không tự đọc được metadata, người
-vận hành có thể mở trang Shopee thật trong Chrome (đã render bình thường,
-không phải scrape) rồi bấm nút của extension để gửi tên/giá/ảnh/shop về ACP.
+Shopee can block server-side metadata requests with CAPTCHA/403.  ACP therefore
+lets the operator open the real Shopee product page and explicitly click the
+helper extension.  The helper only transfers rendered product metadata back to
+ACP; it does not automate Shopee or read authentication state.
 
-Ba lớp phòng thủ, không lớp nào thay được lớp kia:
-  1. Token một lần dùng, TTL ngắn (5 phút), gắn với ĐÚNG product_url đang xác
-     nhận -- không cho nộp metadata cho sản phẩm khác bằng token cũ.
-  2. Endpoint nhận dữ liệu (`/api/helper/shopee-product`) chỉ chấp nhận request
-     từ loopback (127.0.0.1/::1) -- xem web/server.py.
-  3. Endpoint đó KHÔNG bật CORS, nên một trang web bất kỳ không thể tự ý POST
-     tới đây bằng fetch() của trình duyệt (preflight sẽ bị chặn) -- chỉ
-     extension (request đặc quyền, không chịu CORS trang web) gọi được.
-
-Không lưu cookie/session Shopee. Không tự động hoá thao tác trên Shopee --
-người dùng tự bấm nút, extension chỉ đọc DOM đã render sẵn.
+Security boundaries:
+  1. Pairing tokens are one-time, live for 300 seconds and are bound to one
+     canonical Shopee product identity.
+  2. The HTTP submit endpoint independently restricts callers to loopback.
+  3. Submitted metadata is allowlisted and validated before the token is
+     consumed.  A wrong/invalid tab never burns the token.
 """
 import secrets
 import threading
 import time
 
-TTL_SECONDS = 300  # 5 phút -- đủ để mở tab Shopee và bấm nút, không dài hơn.
+from .shopee_helper import (
+    ShopeeHelperError,
+    canonical_helper_product,
+    validate_helper_submission,
+)
+
+
+TTL_SECONDS = 300
 
 _lock = threading.Lock()
-_tokens = {}  # token -> {"product_url", "created_at", "metadata", "consumed"}
+_tokens = {}
 
 
 def _gc(now: float) -> None:
-    expired = [t for t, e in _tokens.items() if now - e["created_at"] > TTL_SECONDS]
-    for t in expired:
-        _tokens.pop(t, None)
+    expired = [token for token, entry in _tokens.items()
+               if now - entry["created_at"] > TTL_SECONDS]
+    for token in expired:
+        _tokens.pop(token, None)
 
 
 def issue(product_url: str) -> dict:
-    """Gọi từ trang /sanpham (đã đăng nhập) khi bấm 'Mở Shopee & lấy thông tin'."""
+    """Issue a one-time token bound to a concrete canonical Shopee product."""
+    canonical_url, product_id = canonical_helper_product(product_url)
     token = secrets.token_urlsafe(32)
-    now = time.monotonic()
+    current = time.monotonic()
     with _lock:
-        _gc(now)
+        _gc(current)
         _tokens[token] = {
-            "product_url": product_url, "created_at": now,
-            "metadata": None, "consumed": False,
+            "product_url": canonical_url,
+            "product_id": product_id,
+            "created_at": current,
+            "metadata": None,
+            "consumed": False,
         }
     return {"token": token, "expires_in": TTL_SECONDS}
 
 
-def submit(token: str, product_url: str, metadata: dict) -> bool:
-    """Extension gọi để nộp metadata đọc được từ tab Shopee.
+def submit(token: str, observed_product_url: str, metadata: dict) -> bool:
+    """Accept validated metadata from the product tab observed by the helper.
 
-    Trả False cho mọi lý do thất bại (token sai, hết hạn, đã dùng, hoặc
-    product_url không khớp) -- không tiết lộ lý do cụ thể ra response để
-    không lộ thông tin giúp dò token.
+    False is intentionally returned for every invalid-token, expiry, replay,
+    product-mismatch or metadata-validation failure so the endpoint does not
+    reveal token state.  Invalid submissions do not consume a still-valid
+    token, allowing the operator to switch back to the correct product tab.
     """
-    now = time.monotonic()
+    current = time.monotonic()
     with _lock:
-        _gc(now)
+        _gc(current)
         entry = _tokens.get(token)
         if not entry or entry["consumed"]:
             return False
-        if entry["product_url"] != product_url:
+        try:
+            submission = validate_helper_submission(
+                entry["product_url"], observed_product_url, metadata)
+        except ShopeeHelperError:
             return False
-        entry["metadata"] = dict(metadata or {})
+        if submission.product_id != entry["product_id"]:
+            return False
+        entry["metadata"] = submission.metadata
         entry["consumed"] = True
         return True
 
 
 def poll(token: str):
-    """Trang /sanpham gọi định kỳ để hỏi đã có dữ liệu từ extension chưa.
-
-    None nếu token không tồn tại/hết hạn. Vẫn trả "ready" ở các lần poll sau
-    (không xoá ngay sau lần đọc đầu) để không mất dữ liệu nếu một lần poll bị
-    rớt mạng -- token tự dọn theo TTL như bình thường.
-    """
-    now = time.monotonic()
+    """Return pending/ready state until the short-lived pairing entry expires."""
+    current = time.monotonic()
     with _lock:
-        _gc(now)
+        _gc(current)
         entry = _tokens.get(token)
         if not entry:
             return None
         if entry["metadata"] is None:
             return {"status": "pending"}
-        return {"status": "ready", "metadata": entry["metadata"]}
+        return {"status": "ready", "metadata": dict(entry["metadata"])}
 
 
 def reset() -> None:
-    """Chỉ dùng trong test."""
+    """Clear in-memory pairing state. Intended for tests only."""
     with _lock:
         _tokens.clear()

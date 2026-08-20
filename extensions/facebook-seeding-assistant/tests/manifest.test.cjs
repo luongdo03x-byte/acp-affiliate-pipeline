@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..');
 test('manifest uses MV3 and minimal permissions', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ['storage']);
+  assert.deepEqual(manifest.permissions, ['storage', 'alarms']);
   assert.equal(manifest.host_permissions.includes('<all_urls>'), false);
   assert.equal(manifest.permissions.includes('debugger'), false);
   assert.equal(manifest.permissions.includes('cookies'), false);

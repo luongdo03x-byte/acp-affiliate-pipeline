@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS product_price_history (
 );
 CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id, observed_at);
 
+CREATE TABLE IF NOT EXISTS product_facts (
+    product_id      TEXT PRIMARY KEY REFERENCES product(id),
+    facts_json      TEXT NOT NULL,
+    unknown_json    TEXT NOT NULL,
+    category        TEXT,
+    source_hash     TEXT NOT NULL,
+    prompt_version  TEXT NOT NULL,
+    extracted_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS channel (
     id                  TEXT PRIMARY KEY,
     code                TEXT UNIQUE NOT NULL,
@@ -267,9 +277,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 
 CREATE TABLE IF NOT EXISTS system_setting (
-    key        TEXT PRIMARY KEY,
-    value      TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    updated_by  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS seeding_campaign (
@@ -352,6 +363,34 @@ CREATE TABLE IF NOT EXISTS seeding_activity (
 );
 CREATE INDEX IF NOT EXISTS idx_seed_activity_shift
     ON seeding_activity(shift_id, created_at);
+
+CREATE TABLE IF NOT EXISTS content_generation_run (
+    id          TEXT PRIMARY KEY,
+    post_id     TEXT NOT NULL REFERENCES post(id),
+    status      TEXT NOT NULL DEFAULT 'READY',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS content_variant_row (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES content_generation_run(id),
+    label           TEXT NOT NULL,
+    angle           TEXT NOT NULL,
+    hook            TEXT NOT NULL,
+    main_message    TEXT NOT NULL,
+    body_json       TEXT NOT NULL,
+    cta             TEXT NOT NULL,
+    structure       TEXT NOT NULL,
+    rule_score      REAL,
+    hybrid_score    REAL,
+    final_score     REAL,
+    is_best         INTEGER NOT NULL DEFAULT 0,
+    manual_edited   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_content_variant_run ON content_variant_row(run_id);
 """
 
 
@@ -431,6 +470,7 @@ MIGRATIONS = [
     ("post", "caption_instagram", "ALTER TABLE post ADD COLUMN caption_instagram TEXT"),
     ("publish_target", "caption_override", "ALTER TABLE publish_target ADD COLUMN caption_override TEXT"),
     ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
+    ("system_setting", "updated_by", "ALTER TABLE system_setting ADD COLUMN updated_by TEXT"),
 ] + PRODUCT_MIGRATIONS
 
 
@@ -519,6 +559,8 @@ def init_db() -> None:
         applied = migrate(conn)
         if applied:
             print(f"  ↑ nâng cấp schema: {', '.join(applied)}")
+        from .factory_v2.schema import ensure_schema as ensure_factory_v2_schema
+        ensure_factory_v2_schema(conn)
 
 
 def audit(conn, entity: str, entity_id: str, action: str, actor: str = "system", detail=None) -> None:

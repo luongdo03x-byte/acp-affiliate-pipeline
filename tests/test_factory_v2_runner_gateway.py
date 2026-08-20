@@ -1,0 +1,102 @@
+import sqlite3
+import unittest
+
+from core.factory_v2.repository import FactoryRepository
+from core.factory_v2.runner_gateway import RunnerGateway
+from core.factory_v2.scheduler import Scheduler
+from core.factory_v2.schema import ensure_schema
+from core.factory_v2.service import FactoryService
+
+
+class FakeWorkerProcesses:
+    def __init__(self):
+        self.last_worker_id = None
+        self.last_command = None
+
+    def request(self, worker_id, command):
+        self.last_worker_id = worker_id
+        self.last_command = command
+        return {"ok": True, "package": "com.instagram.android"}
+
+
+class FactoryV2RunnerGatewayTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        ensure_schema(self.conn)
+        self.repo = FactoryRepository(self.conn)
+        self.service = FactoryService(self.repo)
+        self.scheduler = Scheduler(self.repo, self.service)
+        self.processes = FakeWorkerProcesses()
+        self.gateway = RunnerGateway(self.repo, self.processes)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _leased_job(self, worker_id, runner_type):
+        row = {"id": worker_id, "runner_type": runner_type, "state": "READY"}
+        if runner_type == "REMOTE_AVD":
+            row["avd_name"] = worker_id
+        else:
+            row["device_id"] = worker_id
+            row["device_name"] = worker_id
+        self.repo.insert_worker(row)
+        batch = self.service.create_batch(worker_id, count=1, seed=len(worker_id))
+        account = self.repo.list_accounts(batch["id"])[0]
+        target = "AUTO_AVD" if runner_type == "REMOTE_AVD" else worker_id
+        self.conn.execute(
+            "UPDATE factory_account SET execution_target=? WHERE id=?",
+            (target, account["id"]),
+        )
+        return self.scheduler.assign_next(worker_id)
+
+    def test_avd_gateway_uses_worker_process_transport(self):
+        job = self._leased_job("avd-1", "REMOTE_AVD")
+        result = self.gateway.send(
+            job, "OPEN_PACKAGE", {"package": "com.instagram.android"}
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("avd-1", self.processes.last_worker_id)
+        self.assertEqual("OPEN_PACKAGE", self.processes.last_command.action)
+
+    def test_remote_avd_automation_action_is_forwarded(self):
+        job = self._leased_job("avd-automation", "REMOTE_AVD")
+        result = self.gateway.send(
+            job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user", "display_name": "Sample User", "bio": "Sample bio"}},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("AUTOMATE_INSTAGRAM", self.processes.last_command.action)
+        self.assertEqual("sample_user", self.processes.last_command.payload["profile"]["username"])
+
+    def test_local_gateway_queues_command_without_adb(self):
+        job = self._leased_job("phone-1", "LOCAL_DEVICE")
+        result = self.gateway.send(
+            job, "OPEN_PACKAGE", {"package": "com.instagram.android"}
+        )
+
+        self.assertEqual("pending", result["status"])
+        queued = self.repo.get_runner_command(result["command_id"])
+        self.assertEqual("LOCAL_DEVICE", queued["runner_type"])
+        self.assertEqual("OPEN_PACKAGE", queued["action"])
+        self.assertIsNone(self.processes.last_command)
+
+    def test_local_gateway_rejects_avd_automation_action(self):
+        job = self._leased_job("phone-automation", "LOCAL_DEVICE")
+        with self.assertRaisesRegex(ValueError, "unsupported local runner action"):
+            self.gateway.send(job, "AUTOMATE_INSTAGRAM", {"profile": {"username": "sample_user"}})
+        self.assertIsNone(self.processes.last_command)
+
+    def test_local_gateway_reuses_unfinished_command(self):
+        job = self._leased_job("phone-2", "LOCAL_DEVICE")
+        first = self.gateway.send(job, "OBSERVE_FOREGROUND")
+        second = self.gateway.send(job, "OBSERVE_FOREGROUND")
+        self.assertEqual(first["command_id"], second["command_id"])
+
+
+if __name__ == "__main__":
+    unittest.main()

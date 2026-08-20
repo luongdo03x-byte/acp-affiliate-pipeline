@@ -70,6 +70,20 @@ def get_seeding_llm():
     return None
 
 
+def get_content_engine_llm():
+    """Trả về fn(prompt)->str cho 6 set_*() của Content Engine v2
+    (core/content_facts.py, content_hook.py, content_variant.py,
+    content_checker.py, content_scoring.py), hoặc None nếu tắt.
+    ACP_CONTENT_ENGINE_LLM=gemini bật -- CỜ RIÊNG, độc lập với
+    ACP_CAPTION_LLM (v1) vì khối lượng gọi khác hẳn nhau (~13 lần/bài
+    so với 1 lần/bài của v1)."""
+    choice = (os.environ.get("ACP_CONTENT_ENGINE_LLM") or "").lower()
+    if choice == "gemini":
+        from ..core import llm_gemini
+        return llm_gemini.rewrite_json
+    return None
+
+
 def get_publishers() -> dict:
     """platform -> Publisher. Đủ 3 platform kể từ sub-project C."""
     publishers = {"threads": get_channel()}

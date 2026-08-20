@@ -5,13 +5,18 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 
-test('content script uses server decisions and single-submit helper', () => {
+test('content script uses account-scoped work APIs and keeps Facebook actions manual', () => {
   const source = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
-  assert.equal(source.includes('/api/seeding/analyze'), true);
-  assert.equal(source.includes('/api/seeding/status'), true);
-  assert.equal(source.includes('performSingleSubmit'), true);
+  for (const path of [
+    '/api/seeding/account/next-work',
+    '/api/seeding/account/prepare',
+    '/api/seeding/account/like-result',
+    '/api/seeding/account/work-result',
+  ]) assert.equal(source.includes(path), true, `missing account API: ${path}`);
+  assert.equal(source.includes('/api/seeding/next-target'), false);
+  assert.equal(source.includes('Extension không tự click Like.'), true);
+  assert.equal(source.includes('tự bấm Đăng'), true);
   assert.equal(source.includes('UNKNOWN'), true);
-  assert.equal(source.includes('REVIEW_REQUIRED'), true);
 });
 
 test('content script has no anti-detection or bypass mechanisms', () => {

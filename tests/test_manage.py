@@ -69,6 +69,8 @@ def create_fake_release(root: Path, version: str, port: int) -> Path:
         "print('SEEDING_TEST_OK')\n", encoding="utf-8"
     )
     (app / "tests" / "test_seeding_web.py").write_text(
+        "import os\n"
+        "assert os.environ.get('ACP_ENV') == 'test', os.environ.get('ACP_ENV')\n"
         "print('SEEDING_WEB_TEST_OK')\n", encoding="utf-8"
     )
     (app / "core" / "__init__.py").write_text("", encoding="utf-8")
