@@ -4,6 +4,17 @@ function jsonResponse(value) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+function safeSheetCell(value) {
+  var text = String(value == null ? '' : value);
+  // setValues() interprets leading formula characters. Prefix an apostrophe so
+  // user/AI text is stored as literal text while Sheet displays the original
+  // visible value without evaluating it as a formula.
+  if (/^[=+\-@]/.test(text)) {
+    return "'" + text;
+  }
+  return text;
+}
+
 function doPost(e) {
   try {
     var props = PropertiesService.getScriptProperties();
@@ -25,7 +36,7 @@ function doPost(e) {
       if (!Array.isArray(row) || row.length !== 3) {
         throw new Error('each report row must contain exactly B/C/D values');
       }
-      return row.map(function (cell) { return String(cell == null ? '' : cell); });
+      return row.map(function (cell) { return safeSheetCell(cell); });
     });
 
     var campaignId = String(body.campaign_id);
