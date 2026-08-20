@@ -222,18 +222,26 @@ def _quota_count_for_local_date(conn, channel_id: str, tz_name: str, local_date)
 
 
 def live_slot_occupied(conn, channel_id: str, scheduled_at: str) -> bool:
-    row = conn.execute(
+    try:
+        slot_utc = datetime.fromisoformat(scheduled_at).astimezone(timezone.utc).isoformat(timespec="seconds")
+    except (TypeError, ValueError):
+        return False
+    rows = conn.execute(
         f"""
-        SELECT 1
+        SELECT scheduled_at
         FROM publish_target
         WHERE channel_id = ?
-          AND scheduled_at = ?
           AND status IN ({",".join("?" for _ in LIVE_TARGET_STATUSES)})
-        LIMIT 1
         """,
-        (channel_id, scheduled_at, *LIVE_TARGET_STATUSES),
-    ).fetchone()
-    return bool(row)
+        (channel_id, *LIVE_TARGET_STATUSES),
+    ).fetchall()
+    for row in rows:
+        try:
+            if datetime.fromisoformat(row["scheduled_at"]).astimezone(timezone.utc).isoformat(timespec="seconds") == slot_utc:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _occupied_slots_for_local_date(conn, channel_id: str, tz_name: str, local_date) -> set[str]:

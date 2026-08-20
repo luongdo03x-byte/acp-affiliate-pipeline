@@ -2169,6 +2169,43 @@ def test_approve_post_custom_schedule():
     conn.close()
 
 
+def test_approve_post_normalizes_timezone_schedule_for_job_claim():
+    print("\nduyệt giờ có timezone địa phương lưu UTC để worker claim đúng hạn")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=3, rng=random.Random(2026))
+    check("có bài để test giờ +07", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": MockThreads(seed=2026)})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    check("có bài chờ duyệt để test giờ +07", post is not None)
+
+    local_slot = "2026-08-20T09:30:00+07:00"
+    expected_utc = "2026-08-20T02:30:00+00:00"
+    res = pipeline.approve_post(conn, post["id"], scheduled_at=local_slot)
+    check("duyệt với giờ +07 thành công", res["ok"], res.get("error"))
+    check("response trả giờ UTC", res["scheduled_at"] == expected_utc, res.get("scheduled_at"))
+
+    row = conn.execute("SELECT scheduled_at FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("post lưu scheduled_at UTC", row["scheduled_at"] == expected_utc, row["scheduled_at"])
+    target = conn.execute("SELECT scheduled_at FROM publish_target WHERE id=?",
+                          (res["publish_target_id"],)).fetchone()
+    check("publish_target lưu scheduled_at UTC", target["scheduled_at"] == expected_utc,
+          target["scheduled_at"])
+    job = conn.execute("SELECT id, run_after FROM job_queue WHERE idempotency_key=?",
+                       (f"pub:{res['publish_target_id']}",)).fetchone()
+    check("job publish enqueue run_after UTC", job is not None and job["run_after"] == expected_utc,
+          dict(job) if job else None)
+
+    original_now = jobs.now
+    try:
+        jobs.now = lambda: expected_utc
+        claimed = jobs.claim(conn, limit=1)
+    finally:
+        jobs.now = original_now
+    check("job claim được đúng lúc UTC tương ứng", len(claimed) == 1 and claimed[0]["id"] == job["id"],
+          claimed)
+    conn.close()
+
+
 def test_auto_schedule_cli_prints_only_aggregate_counts():
     print("\nauto-schedule CLI in aggregate, không lộ payload job")
     from acp import run
@@ -4871,6 +4908,7 @@ if __name__ == "__main__":
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_approve_post_custom_schedule()
+    test_approve_post_normalizes_timezone_schedule_for_job_claim()
     test_auto_schedule_cli_prints_only_aggregate_counts()
     test_daily_cap()
     test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target()

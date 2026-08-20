@@ -1294,10 +1294,10 @@ class AutoScheduleFillTests(unittest.TestCase):
 
         self.assertEqual(stats["scheduled"], 4)
         self.assertEqual([row["scheduled_at"] for row in targets], [
-            "2026-08-20T09:30:00+07:00",
-            "2026-08-20T12:30:00+07:00",
-            "2026-08-21T09:30:00+07:00",
-            "2026-08-21T12:30:00+07:00",
+            "2026-08-20T02:30:00+00:00",
+            "2026-08-20T05:30:00+00:00",
+            "2026-08-21T02:30:00+00:00",
+            "2026-08-21T05:30:00+00:00",
         ])
         self.assertEqual([row["auto_scheduled"] for row in targets], [1, 1, 1, 1])
         self.assertEqual(jobs, 4)
@@ -1328,7 +1328,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                 "caption",
                 "https://example.test/aff",
                 "SCHEDULED",
-                "2026-08-20T09:30:00+07:00",
+                "2026-08-20T02:30:00+00:00",
                 db.now(),
                 db.now(),
             ),
@@ -1344,7 +1344,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                 "existing-post",
                 "channel-1",
                 "SCHEDULED",
-                "2026-08-20T09:30:00+07:00",
+                "2026-08-20T02:30:00+00:00",
                 db.now(),
                 db.now(),
             ),
@@ -1365,7 +1365,7 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(len(slots), len(set(slots)))
         self.assertLessEqual(per_day["2026-08-20"], 3)
         self.assertLessEqual(per_day["2026-08-21"], 3)
-        self.assertIn("2026-08-21T20:30:00+07:00", slots)
+        self.assertIn("2026-08-21T13:30:00+00:00", slots)
 
     def test_fill_auto_schedule_is_idempotent_and_never_reuses_products(self):
         from acp.core import pipeline
@@ -1459,7 +1459,7 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(post["reviewed_by"], "auto_scheduler")
         self.assertIn('"provider": "accesstrade_product"', post["sub_id_payload"])
         self.assertIn('"sub1": "' + post["id"] + '"', post["sub_id_payload"])
-        self.assertEqual(target["scheduled_at"], "2026-08-20T09:30:00+07:00")
+        self.assertEqual(target["scheduled_at"], "2026-08-20T02:30:00+00:00")
         self.assertEqual(target["auto_scheduled"], 1)
         self.assertIsNotNone(job)
 
@@ -1876,7 +1876,7 @@ class AutoScheduleFillTests(unittest.TestCase):
             ).fetchall()
         ]
         self.assertEqual(stats["scheduled"], 1)
-        self.assertEqual(slots, ["2026-08-21T09:30:00+07:00"])
+        self.assertEqual(slots, ["2026-08-21T02:30:00+00:00"])
 
     def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
         from acp.core import pipeline
@@ -1896,10 +1896,10 @@ class AutoScheduleFillTests(unittest.TestCase):
 
         self.assertEqual(stats["scheduled"], 4)
         self.assertEqual(slots, [
-            "2026-08-21T09:30:00+07:00",
-            "2026-08-21T12:30:00+07:00",
-            "2026-08-22T09:30:00+07:00",
-            "2026-08-22T12:30:00+07:00",
+            "2026-08-21T02:30:00+00:00",
+            "2026-08-21T05:30:00+00:00",
+            "2026-08-22T02:30:00+00:00",
+            "2026-08-22T05:30:00+00:00",
         ])
 
     def test_fill_auto_schedule_clamps_malformed_core_target_to_three_slots(self):
@@ -1924,12 +1924,12 @@ class AutoScheduleFillTests(unittest.TestCase):
 
         self.assertEqual(stats["scheduled"], 6)
         self.assertEqual(slots, [
-            "2026-08-20T09:30:00+07:00",
-            "2026-08-20T12:30:00+07:00",
-            "2026-08-20T15:30:00+07:00",
-            "2026-08-21T09:30:00+07:00",
-            "2026-08-21T12:30:00+07:00",
-            "2026-08-21T15:30:00+07:00",
+            "2026-08-20T02:30:00+00:00",
+            "2026-08-20T05:30:00+00:00",
+            "2026-08-20T08:30:00+00:00",
+            "2026-08-21T02:30:00+00:00",
+            "2026-08-21T05:30:00+00:00",
+            "2026-08-21T08:30:00+00:00",
         ])
 
     def test_fill_auto_schedule_rechecks_slot_inside_transaction_on_collision(self):

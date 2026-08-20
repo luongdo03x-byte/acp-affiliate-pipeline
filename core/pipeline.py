@@ -1229,14 +1229,21 @@ def _resolve_caption(post, target, channel) -> str:
     return post["caption_final"]
 
 
+def _utc_iso(value: str) -> str:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
                   channel_ids: list = None, caption_facebook: str = None,
                   caption_instagram: str = None, caption_overrides: dict = None,
                   scheduled_at: str = None, auto_scheduled: bool = False) -> dict:
     """scheduled_at: giờ đăng do operator tự chọn (ISO 8601, có timezone). Bỏ
-    trống thì mỗi kênh tự tính slot riêng (_next_slot()). Không tự quy đổi
-    timezone ở đây -- gọi từ web/server.py đã quy đổi giờ địa phương của
-    operator sang UTC trước khi truyền vào."""
+    trống thì mỗi kênh tự tính slot riêng (_next_slot()). Mọi giá trị được
+    chấp nhận đều lưu UTC ISO để job_queue so sánh chuỗi với now() UTC đúng
+    thời điểm."""
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
@@ -1286,12 +1293,12 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     # sort/hiển thị, không còn là giờ đăng chính xác khi có từ 2 kênh trở lên.
     if scheduled_at:
         try:
-            datetime.fromisoformat(scheduled_at)
+            scheduled_at = _utc_iso(scheduled_at)
         except ValueError:
             return {"ok": False, "error": "Giờ đăng không hợp lệ"}
         slots = {ch["id"]: scheduled_at for ch in channels}
     else:
-        slots = {ch["id"]: _next_slot(conn, ch["id"]) for ch in channels}
+        slots = {ch["id"]: _utc_iso(_next_slot(conn, ch["id"])) for ch in channels}
     earliest = min(slots.values())
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",

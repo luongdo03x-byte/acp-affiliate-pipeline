@@ -24,6 +24,7 @@
 - After artifact preparation, the transaction uses the freshly re-fetched channel Auto state for eligibility, slot-collision checks, and approval. If Auto is disabled concurrently, the prepared post remains review-only and no publish target/job is created.
 - The shared `pipeline.current_auto_product_eligibility(...)` recheck covers current channel status/Auto state, product availability, catalog inventory/link fields, `affiliate_link_status != UNAVAILABLE`, blocked category config, current channel niche match, category/day cap, and cooldown/active-post idempotency. Scorer hard filters are normalized to the `/kenh` channel niches before `_reasons()` so global scoring-config niches do not override channel checkbox routing.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
+- `approve_post()` normalizes every accepted scheduled publish time to UTC ISO before storing `post.scheduled_at`, `publish_target.scheduled_at`, and `job_queue.run_after`, so the UTC string comparison in `jobs.claim()` sees due Auto slots at the correct instant. Slot collision checks compare instants, preserving duplicate-slot protection across local/UTC representations.
 - Auto OFF channels create review-only posts up to their review target and do not create publish targets or publish jobs.
 - Re-running fill is idempotent for already queued/scheduled products and does not reuse products already in active post states.
 
@@ -141,6 +142,22 @@ Expected failure observed before the fix:
 
 - with global scoring niches set to `gia-dung` and channel niches set to `my-pham`, a matching `my-pham` Auto product was rejected as `product_quality_filter`.
 
+Final timezone regression red run:
+
+```bash
+test_parent=$(mktemp -d); ln -s "$(pwd)" "$test_parent/acp"; cd "$test_parent"; python3 - <<'PY'
+from acp.tests import test_pipeline
+conn = test_pipeline.setup(); conn.close()
+test_pipeline.test_approve_post_normalizes_timezone_schedule_for_job_claim()
+if test_pipeline.FAIL:
+    raise SystemExit(1)
+PY
+```
+
+Expected failure observed before the fix:
+
+- approving `2026-08-20T09:30:00+07:00` stored/enqueued the local offset string unchanged, and `jobs.claim()` did not claim the job when UTC reached the equivalent `2026-08-20T02:30:00+00:00`.
+
 ### Green
 
 Commands:
@@ -161,7 +178,8 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 35 tests passed.
+- focused routing/fill tests: 35 tests passed after updating persisted Auto schedule assertions to UTC.
+- focused approve-post timezone regression and existing manual UTC custom-schedule regression: passed.
 - focused CLI contract: passed.
 - product automation CLI group: 14 tests passed.
 - targeted sibling-target pipeline regression: passed.
