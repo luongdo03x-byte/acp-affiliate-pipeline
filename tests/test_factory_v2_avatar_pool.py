@@ -52,6 +52,25 @@ class FactoryV2AvatarPoolTests(unittest.TestCase):
             counts = Counter(assigned)
             self.assertLessEqual(max(counts.values()) - min(counts.values()), 1)
 
+    def test_new_batch_avoids_the_last_avatar_when_usage_is_tied(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            avatar_root = Path(temp_dir)
+            self._write_images(avatar_root, 2)
+            service = FactoryService(
+                self.repo,
+                avatar_dir=avatar_root,
+                avatar_rng=random.Random(17082026),
+            )
+
+            first_batch = service.create_batch("First", count=2, seed=1)
+            first_accounts = self.repo.list_accounts(first_batch["id"])
+            last_avatar = first_accounts[-1]["avatar_file"]
+
+            second_batch = service.create_batch("Second", count=1, seed=2)
+            next_avatar = self.repo.list_accounts(second_batch["id"])[0]["avatar_file"]
+
+            self.assertNotEqual(last_avatar, next_avatar)
+
     def test_empty_avatar_directory_leaves_avatar_unset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = FactoryService(
