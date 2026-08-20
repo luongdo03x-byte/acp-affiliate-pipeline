@@ -16,8 +16,9 @@
 - `daily_post_target=3` uses the optional third slot while respecting `daily_post_cap`; malformed persisted/caller values above 3 are clamped in core routing/fill logic.
 - Existing live targets occupy their slots; fill does not create a second target for the same channel/slot.
 - Slot occupancy is rechecked inside the fill transaction immediately before automated approval, so a concurrent reservation of the same channel/slot is skipped instead of creating a duplicate live target or leaking Auto ON content into review-only state.
-- Candidate acquisition is per channel through `scoring.score_candidates(..., niches=channel_niches(...))`.
+- Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates retain channel niche, blocked category, cooldown, active-post, category-day, inventory, link, and availability hard filters.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
+- Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches the product and rechecks product eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
 - Auto ON posts are approved with `actor='auto_scheduler'`, scheduled at the selected slot, and create `auto_scheduled=1` publish targets/jobs.
 - Auto OFF channels create review-only posts up to their review target and do not create publish targets or publish jobs.
 - Re-running fill is idempotent for already queued/scheduled products and does not reuse products already in active post states.
@@ -55,6 +56,17 @@ Expected failures observed before the fix:
 - tightened collision test also exposed a leaked Auto ON `PENDING_REVIEW` post after a skipped collided slot.
 - malformed target/cap test scheduled 5 slots per day instead of enforcing the core maximum of 3.
 
+Second follow-up review regression red run:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoScheduleFillTests -v
+```
+
+Expected failures observed before the fix:
+
+- synced `ACCESSTRADE_TIKTOK` catalog products were not scheduled because Auto fill used only the legacy scorer, which intentionally excludes that provider.
+- tracking-link creation, image composition, and storage upload ran while the write transaction was held.
+
 ### Green
 
 Commands:
@@ -75,7 +87,7 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 15 tests passed.
+- focused routing/fill tests: 28 tests passed.
 - focused CLI contract: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.
@@ -86,3 +98,4 @@ Results:
 - Raw `python3 -m unittest tests.test_auto_scheduler -v` still fails on the existing web tests because system Python lacks `flask`; the focused non-web scheduler/fill classes pass.
 - Raw `python3 -m acp.tests.test_pipeline` through a temporary package symlink progressed through the changed pipeline/publish-target areas and later stopped on missing `google.genai`; `./manage.sh test` uses the managed environment and passed.
 - Direct `python3 run.py auto-schedule` from this worktree path fails before this task's code runs because the worktree directory is not literally named `acp`; the package-symlink smoke command exercises the same command against this worktree. The release layout used by `manage.sh` does not have that issue.
+- Because artifacts are now created before the DB transaction, a late stale-product or slot-collision recheck can safely leave an external link/media artifact orphan. No DB rows are inserted in that case; cleanup is limited to provider/storage retention policies because those external calls are not reversible through this code path.

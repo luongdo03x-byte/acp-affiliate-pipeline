@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import importlib.util
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1153,6 +1154,57 @@ class AutoScheduleFillTests(unittest.TestCase):
                 ),
             )
 
+    def _insert_catalog_product(self, product_id="catalog-product-1", *, category_code="my-pham", name=None):
+        ts = db.now()
+        self.conn.execute(
+            """
+            INSERT INTO product (
+                id, source, merchant, external_product_id, name, description,
+                current_price, original_price, commission_value, commission_rate,
+                category_code, rating, review_count, sold_count, image_url_original,
+                image_path_local, product_url, is_available, last_seen_at,
+                created_at, updated_at, provider, shop_name, detail_link, main_image_url,
+                commission_amount, commission_rate_percent, units_sold, has_inventory,
+                score, affiliate_link_status, last_synced_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                product_id,
+                "accesstrade_tiktok",
+                "TikTok Shop",
+                f"external-{product_id}",
+                name or "Serum duong am catalog",
+                "Duong am da mat",
+                100000,
+                150000,
+                50000,
+                0.1,
+                category_code,
+                4.8,
+                120,
+                1000,
+                "https://img.test/catalog.jpg",
+                os.path.join(self.tempdir.name, "catalog-source.jpg"),
+                f"https://example.test/catalog/{product_id}",
+                1,
+                ts,
+                ts,
+                ts,
+                "ACCESSTRADE_TIKTOK",
+                "TikTok Shop",
+                f"https://shop.example.test/{product_id}",
+                "https://img.test/catalog-main.jpg",
+                50000,
+                12.5,
+                1000,
+                1,
+                99.0,
+                "NOT_CREATED",
+                ts,
+            ),
+        )
+        return self.conn.execute("SELECT * FROM product WHERE id=?", (product_id,)).fetchone()
+
     def test_fill_auto_schedule_fills_default_two_slots_per_day_for_48_hours(self):
         from acp.core import pipeline
 
@@ -1291,6 +1343,113 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(targets, 0)
         self.assertEqual(jobs, 0)
 
+    def test_fill_auto_schedule_schedules_synced_tiktok_catalog_products(self):
+        from acp.adapters.accesstrade_client import LinkResult
+        from acp.adapters import factory
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_catalog_product()
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        class _ProductClient:
+            def create_product_link(self, detail_link, *, post_id, external_product_id):
+                return LinkResult(
+                    full_url=f"https://go.example.test/full/{post_id}",
+                    short_url=f"https://go.example.test/s/{post_id}",
+                )
+
+        class _Storage:
+            def put(self, image_path):
+                return "https://cdn.example.test/catalog.jpg"
+
+        original_build_context = factory.build_context
+        original_compose = pipeline.imaging.compose
+        try:
+            factory.build_context = lambda: {"product_client": _ProductClient(), "storage": _Storage()}
+            pipeline.imaging.compose = lambda *args, **kwargs: os.path.join(self.tempdir.name, "catalog-composed.jpg")
+
+            stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        finally:
+            factory.build_context = original_build_context
+            pipeline.imaging.compose = original_compose
+
+        post = self.conn.execute(
+            "SELECT * FROM post WHERE product_id='catalog-product-1'"
+        ).fetchone()
+        target = self.conn.execute(
+            "SELECT * FROM publish_target WHERE post_id=?",
+            (post["id"] if post else None,),
+        ).fetchone()
+        job = self.conn.execute(
+            "SELECT * FROM job_queue WHERE job_type='PUBLISH_POST'"
+        ).fetchone()
+
+        self.assertEqual(stats["scheduled"], 1)
+        self.assertIsNotNone(post)
+        self.assertEqual(post["status"], "SCHEDULED")
+        self.assertEqual(post["reviewed_by"], "auto_scheduler")
+        self.assertIn('"provider": "accesstrade_product"', post["sub_id_payload"])
+        self.assertIn('"sub1": "' + post["id"] + '"', post["sub_id_payload"])
+        self.assertEqual(target["scheduled_at"], "2026-08-20T09:30:00+07:00")
+        self.assertEqual(target["auto_scheduled"], 1)
+        self.assertIsNotNone(job)
+
+    def test_fill_auto_schedule_keeps_external_artifact_calls_outside_write_transaction(self):
+        from acp.adapters.accesstrade_client import LinkResult
+        from acp.core import pipeline
+        from acp.adapters import factory
+
+        self._insert_channel()
+        self._insert_products(4)
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        state = {"in_write_tx": False}
+        violations = []
+
+        class _Source:
+            def create_tracking_link(self, product_url, sub_ids):
+                if state["in_write_tx"]:
+                    violations.append("tracking")
+                return LinkResult(full_url="https://go.example.test/full", short_url="https://go.example.test/short")
+
+        class _Storage:
+            def put(self, image_path):
+                if state["in_write_tx"]:
+                    violations.append("storage")
+                return "https://cdn.example.test/image.jpg"
+
+        original_build_context = factory.build_context
+        original_transaction = pipeline.transaction
+        original_compose = pipeline.imaging.compose
+
+        @contextmanager
+        def tracking_transaction(conn):
+            with original_transaction(conn) as active:
+                state["in_write_tx"] = True
+                try:
+                    yield active
+                finally:
+                    state["in_write_tx"] = False
+
+        def compose_without_side_effects(*args, **kwargs):
+            if state["in_write_tx"]:
+                violations.append("image")
+            return os.path.join(self.tempdir.name, "composed.jpg")
+
+        try:
+            factory.build_context = lambda: {"source": _Source(), "storage": _Storage()}
+            pipeline.transaction = tracking_transaction
+            pipeline.imaging.compose = compose_without_side_effects
+
+            stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        finally:
+            factory.build_context = original_build_context
+            pipeline.transaction = original_transaction
+            pipeline.imaging.compose = original_compose
+
+        self.assertEqual(stats["scheduled"], 4)
+        self.assertEqual(violations, [])
+
     def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
         from acp.core import pipeline
 
@@ -1375,10 +1534,11 @@ class AutoScheduleFillTests(unittest.TestCase):
                 db.now(),
             ),
         )
-        original_create = pipeline._create_auto_sales_post
+        original_prepare = pipeline._prepare_auto_sales_post_artifacts
         injected = {"done": False}
 
         def inject_collision(*args, **kwargs):
+            prepared = original_prepare(*args, **kwargs)
             if not injected["done"]:
                 injected["done"] = True
                 self.conn.execute(
@@ -1397,13 +1557,13 @@ class AutoScheduleFillTests(unittest.TestCase):
                         db.now(),
                     ),
                 )
-            return original_create(*args, **kwargs)
+            return prepared
 
-        pipeline._create_auto_sales_post = inject_collision
+        pipeline._prepare_auto_sales_post_artifacts = inject_collision
         try:
             stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
         finally:
-            pipeline._create_auto_sales_post = original_create
+            pipeline._prepare_auto_sales_post_artifacts = original_prepare
 
         slot_counts = {
             row["scheduled_at"]: row["n"]

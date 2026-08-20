@@ -115,12 +115,100 @@ def _tracking_link_from_result(result) -> str:
     return getattr(result, "short_url", None) or getattr(result, "full_url", None) or result
 
 
-def _create_auto_sales_post(conn, ctx, product, campaign, channel, template,
-                            variant_code: str, score: float = None,
-                            actor: str = "auto_scheduler") -> dict:
+def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> list:
+    """Provider-aware Auto candidates for synced ACCESSTRADE TikTok catalog rows.
+
+    This intentionally does not loosen the legacy scorer's provider safeguard.
+    Catalog rows use their own hard quality fields while retaining the shared
+    channel niche, blocked category, cooldown, active-post, and category-day
+    filters expected by Auto routing.
+    """
+    nl = channel_niches(conn, channel["id"])
+    if not nl:
+        return []
+    _, filters = scoring.active_config(conn)
+    cooldown_days = filters.get("cooldown_days", scoring.DEFAULT_FILTERS["cooldown_days"])
+    cutoff = (now_utc - timedelta(days=cooldown_days)).isoformat(timespec="seconds")
+    local_today = now_utc.astimezone(auto_scheduler._parse_timezone(channel["posting_timezone"])).date().isoformat()
+    cat_today = {
+        row[0]: row[1]
+        for row in conn.execute(
+            """
+            SELECT pr.category_code, COUNT(*)
+            FROM post p
+            JOIN product pr ON pr.id = p.product_id
+            WHERE p.channel_id = ?
+              AND substr(COALESCE(p.published_at, p.scheduled_at, p.created_at), 1, 10) = ?
+            GROUP BY pr.category_code
+            """,
+            (channel["id"], local_today),
+        ).fetchall()
+    }
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM product
+        WHERE provider = ?
+          AND is_available = 1
+          AND has_inventory = 1
+          AND detail_link IS NOT NULL AND detail_link <> ''
+          AND external_product_id IS NOT NULL AND external_product_id <> ''
+          AND COALESCE(affiliate_link_status, '') <> 'UNAVAILABLE'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM post
+              WHERE post.product_id = product.id
+                AND post.post_type = 'SALES'
+                AND (
+                    post.status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED')
+                    OR post.published_at >= ?
+                )
+          )
+        ORDER BY COALESCE(score, 0) DESC, last_seen_at DESC
+        LIMIT ?
+        """,
+        (CATALOG_PROVIDER, cutoff, max(0, int(limit))),
+    ).fetchall()
+    candidates = []
+    blocked_categories = set(filters.get("blocked_categories") or [])
+    max_per_category = filters.get("max_per_category_per_day", scoring.DEFAULT_FILTERS["max_per_category_per_day"])
+    for row in rows:
+        if row["category_code"] in blocked_categories:
+            continue
+        if niche.match_reasons(row, nl):
+            continue
+        if cat_today.get(row["category_code"], 0) >= max_per_category:
+            continue
+        candidates.append({
+            "product": row,
+            "score": float(row["score"] or 0.0) / 100.0,
+            "rejected": [],
+            "breakdown": {"catalog_score": row["score"] or 0.0},
+        })
+    return candidates
+
+
+def _prepare_auto_sales_post_artifacts(conn, ctx, product, campaign, channel, template,
+                                       variant_code: str, score: float = None) -> dict:
     post_id = ulid()
-    subs = attribution.encode_sub_ids(post_id, campaign["code"], variant_code, channel["code"])
-    link = _tracking_link_from_result(ctx["source"].create_tracking_link(product["product_url"], subs))
+    attribution_payload = None
+    if product["provider"] == CATALOG_PROVIDER:
+        link_result = ctx["product_client"].create_product_link(
+            product["detail_link"],
+            post_id=post_id,
+            external_product_id=product["external_product_id"],
+        )
+        link = _tracking_link_from_result(link_result)
+        attribution_payload = {
+            "provider": "accesstrade_product",
+            "link_mode": "post_specific",
+            "sub1": post_id,
+            "external_product_id": product["external_product_id"],
+        }
+    else:
+        subs = attribution.encode_sub_ids(post_id, campaign["code"], variant_code, channel["code"])
+        link = _tracking_link_from_result(ctx["source"].create_tracking_link(product["product_url"], subs))
+        attribution_payload = subs
     if not link:
         return {"ok": False, "error": "Không tạo được tracking link"}
 
@@ -131,20 +219,38 @@ def _create_auto_sales_post(conn, ctx, product, campaign, channel, template,
                                hook_code=variant_code)
     problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
     status = "PENDING_REVIEW" if not problems else "DRAFT"
+    return {
+        "ok": True,
+        "post_id": post_id,
+        "variant_code": variant_code,
+        "caption": caption,
+        "image_url": image_url,
+        "affiliate_link": link,
+        "sub_id_payload": json.dumps(attribution_payload, ensure_ascii=False, sort_keys=True),
+        "score": score,
+        "status": status,
+        "problems": problems,
+    }
+
+
+def _insert_prepared_auto_sales_post(conn, product, campaign, channel, template,
+                                     prepared, actor: str = "auto_scheduler") -> dict:
+    post_id = prepared["post_id"]
 
     conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
                     variant_code, caption_body, disclosure_text, caption_final, image_url_composited,
                     affiliate_link, sub_id_payload, score, status, reject_reason, created_at, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (post_id, product["id"], channel["id"], campaign["id"], template["id"],
-                  variant_code, caption, content.DISCLOSURE_DEFAULT, caption, image_url, link,
-                  json.dumps(subs, ensure_ascii=False, sort_keys=True), score, status,
-                  "; ".join(problems) if problems else None, now(), now()))
+                  prepared["variant_code"], prepared["caption"], content.DISCLOSURE_DEFAULT,
+                  prepared["caption"], prepared["image_url"], prepared["affiliate_link"],
+                  prepared["sub_id_payload"], prepared["score"], prepared["status"],
+                  "; ".join(prepared["problems"]) if prepared["problems"] else None, now(), now()))
     _save_channel_selection(conn, post_id, [channel["id"]])
     audit(conn, "post", post_id, "auto_generated", actor=actor,
-          detail={"template": template["code"], "problems": problems,
+          detail={"template": template["code"], "problems": prepared["problems"],
                   "channel_id": channel["id"], "product_id": product["id"]})
-    return {"ok": True, "post_id": post_id, "status": status, "problems": problems}
+    return {"ok": True, "post_id": post_id, "status": prepared["status"], "problems": prepared["problems"]}
 
 
 def _active_review_count_for_channel(conn, channel_id: str) -> int:
@@ -159,11 +265,24 @@ def _active_review_count_for_channel(conn, channel_id: str) -> int:
     ).fetchone()[0]
 
 
-def _candidate_products_for_channel(conn, channel, limit: int) -> list:
+def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> list:
     nl = channel_niches(conn, channel["id"])
     if not nl:
         return []
-    return scoring.score_candidates(conn, limit=limit, niches=nl)
+    now_utc = now_utc or datetime.now(timezone.utc)
+    legacy = scoring.score_candidates(conn, limit=limit, niches=nl)
+    catalog = _catalog_auto_candidates(conn, channel, limit, now_utc)
+    combined = legacy + catalog
+    combined.sort(key=lambda item: -float(item.get("score") or 0.0))
+    return combined[:limit]
+
+
+def _auto_product_still_eligible(product) -> bool:
+    if not product or not product["is_available"]:
+        return False
+    if product["provider"] == CATALOG_PROVIDER:
+        return bool(product["has_inventory"] and product["detail_link"] and product["external_product_id"])
+    return True
 
 
 def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
@@ -201,7 +320,7 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
         if missing <= 0:
             continue
 
-        candidates = _candidate_products_for_channel(conn, channel, limit=max(20, missing * 5))
+        candidates = _candidate_products_for_channel(conn, channel, limit=max(20, missing * 5), now_utc=now_utc)
         if not candidates:
             stats["skipped"] += missing
             continue
@@ -232,29 +351,34 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
 
             variant = hooks[(stats["scheduled"] + stats["review"]) % len(hooks)]
             try:
+                prepared = _prepare_auto_sales_post_artifacts(
+                    conn, ctx, product, campaign, channel, template,
+                    variant, score=item["score"])
+            except Exception:
+                stats["skipped"] += 1
+                continue
+            if not prepared["ok"]:
+                stats["skipped"] += 1
+                continue
+
+            try:
                 with transaction(conn):
                     fresh_product = conn.execute("SELECT * FROM product WHERE id=?", (product["id"],)).fetchone()
-                    if not fresh_product or auto_scheduler._queued_or_recently_published_product_exists(
+                    if not _auto_product_still_eligible(fresh_product) or auto_scheduler._queued_or_recently_published_product_exists(
                         conn, fresh_product["id"], now_utc
                     ):
                         stats["skipped"] += 1
                         continue
-                    post = _create_auto_sales_post(
-                        conn, ctx, fresh_product, campaign, channel, template,
-                        variant, score=item["score"], actor="auto_scheduler")
+                    if channel["auto_schedule_enabled"] and auto_scheduler.live_slot_occupied(conn, channel["id"], slot):
+                        stats["skipped"] += 1
+                        continue
+                    post = _insert_prepared_auto_sales_post(
+                        conn, fresh_product, campaign, channel, template,
+                        prepared, actor="auto_scheduler")
                     if not post["ok"]:
                         stats["skipped"] += 1
                         continue
                     if channel["auto_schedule_enabled"] and post["status"] == "PENDING_REVIEW":
-                        if auto_scheduler.live_slot_occupied(conn, channel["id"], slot):
-                            reject_post(
-                                conn,
-                                post["post_id"],
-                                "auto_schedule_slot_collision",
-                                actor="auto_scheduler",
-                            )
-                            stats["skipped"] += 1
-                            continue
                         approved = approve_post(
                             conn, post["post_id"], actor="auto_scheduler",
                             scheduled_at=slot, auto_scheduled=True)
