@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.chrome" content-desc="" clickable="false" enabled="true" bounds="[0,0][1080,1920]">
+    <node index="0" text="Allow ACP to access your Threads account" resource-id="title" class="android.widget.TextView" package="com.android.chrome" content-desc="" clickable="false" enabled="true" bounds="[80,320][1000,460]" />
+    <node index="1" text="Allow" resource-id="allow" class="android.widget.Button" package="com.android.chrome" content-desc="Allow" clickable="true" enabled="true" bounds="[100,720][980,840]" />
+  </node>
+</hierarchy>
