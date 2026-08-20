@@ -119,9 +119,10 @@ def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> li
     """Provider-aware Auto candidates for synced ACCESSTRADE TikTok catalog rows.
 
     This intentionally does not loosen the legacy scorer's provider safeguard.
-    Catalog rows use their own hard quality fields while retaining the shared
-    channel niche, blocked category, cooldown, active-post, and category-day
-    filters expected by Auto routing.
+    Catalog rows use their own hard quality fields while retaining shared
+    channel niche, blocked category, cooldown, and active-post filters. The
+    category/day cap is enforced after route selection against the slot's local
+    day.
     """
     nl = channel_niches(conn, channel["id"])
     if not nl:
@@ -130,21 +131,6 @@ def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> li
     filters = dict(filters, niches=nl)
     cooldown_days = filters.get("cooldown_days", scoring.DEFAULT_FILTERS["cooldown_days"])
     cutoff = (now_utc - timedelta(days=cooldown_days)).isoformat(timespec="seconds")
-    local_today = now_utc.astimezone(auto_scheduler._parse_timezone(channel["posting_timezone"])).date().isoformat()
-    cat_today = {
-        row[0]: row[1]
-        for row in conn.execute(
-            """
-            SELECT pr.category_code, COUNT(*)
-            FROM post p
-            JOIN product pr ON pr.id = p.product_id
-            WHERE p.channel_id = ?
-              AND substr(COALESCE(p.published_at, p.scheduled_at, p.created_at), 1, 10) = ?
-            GROUP BY pr.category_code
-            """,
-            (channel["id"], local_today),
-        ).fetchall()
-    }
     rows = conn.execute(
         """
         SELECT *
@@ -171,11 +157,8 @@ def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> li
         (CATALOG_PROVIDER, cutoff, max(0, int(limit))),
     ).fetchall()
     candidates = []
-    max_per_category = filters.get("max_per_category_per_day", scoring.DEFAULT_FILTERS["max_per_category_per_day"])
     for row in rows:
         if scoring._reasons(row, filters):
-            continue
-        if cat_today.get(row["category_code"], 0) >= max_per_category:
             continue
         candidates.append({
             "product": row,
@@ -268,7 +251,15 @@ def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> 
     if not nl:
         return []
     now_utc = now_utc or datetime.now(timezone.utc)
-    legacy = scoring.score_candidates(conn, limit=limit, niches=nl)
+    legacy = [
+        item for item in scoring.score_candidates(
+            conn,
+            limit=limit,
+            niches=nl,
+            enforce_category_day_cap=False,
+        )
+        if int(item["product"]["has_inventory"] or 0) == 1
+    ]
     catalog = _catalog_auto_candidates(conn, channel, limit, now_utc)
     combined = legacy + catalog
     combined.sort(key=lambda item: -float(item.get("score") or 0.0))
@@ -276,10 +267,15 @@ def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> 
 
 
 def _category_count_for_channel_local_day(
-    conn, channel, category_code: str, now_utc: datetime, *, exclude_post_id: str = None
+    conn, channel, category_code: str, now_utc: datetime, *, exclude_post_id: str = None, slot_at: str = None
 ) -> int:
     tz_name = channel["posting_timezone"]
-    local_day = now_utc.astimezone(auto_scheduler._parse_timezone(tz_name)).date().isoformat()
+    reference = now_utc
+    if slot_at:
+        parsed = auto_scheduler._parse_iso_datetime(slot_at)
+        if parsed:
+            reference = parsed
+    local_day = reference.astimezone(auto_scheduler._parse_timezone(tz_name)).date().isoformat()
     count = 0
     rows = conn.execute(
         """
@@ -308,6 +304,7 @@ def current_auto_product_eligibility(
     *,
     require_auto_schedule: bool = True,
     exclude_post_id: str = None,
+    slot_at: str = None,
 ) -> tuple[bool, str]:
     """Recheck mutable Auto eligibility under the caller's current DB snapshot."""
     if not product:
@@ -332,7 +329,7 @@ def current_auto_product_eligibility(
         scoring.DEFAULT_FILTERS["max_per_category_per_day"],
     ) or 0)
     if _category_count_for_channel_local_day(
-        conn, channel, product["category_code"], now_utc, exclude_post_id=exclude_post_id
+        conn, channel, product["category_code"], now_utc, exclude_post_id=exclude_post_id, slot_at=slot_at
     ) >= max_per_category:
         return False, "category_day_cap_full"
 
@@ -348,6 +345,8 @@ def current_auto_product_eligibility(
         rejected = scoring._reasons(product, filters)
         if rejected:
             return False, "product_quality_filter"
+        if int(product["has_inventory"] or 0) != 1:
+            return False, "product_inventory_empty"
 
     if auto_scheduler._queued_or_recently_published_product_exists(
         conn, product["id"], now_utc, exclude_post_id=exclude_post_id
@@ -356,7 +355,7 @@ def current_auto_product_eligibility(
     return True, "ok"
 
 
-def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
+def fill_auto_schedule(conn, campaign_code: str, now_utc=None, *, ctx=None) -> dict:
     """Fill the short rolling Threads schedule without running the publish worker."""
     now_utc = now_utc or datetime.now(timezone.utc)
     campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
@@ -364,9 +363,9 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
     if not campaign or not template:
         return {"scheduled": 0, "review": 0, "skipped": 0, "cancelled": 0}
 
-    from ..adapters import factory
-
-    ctx = factory.build_context()
+    if ctx is None:
+        from ..adapters import factory
+        ctx = factory.build_context()
     hooks = playbook.hook_codes()
     stats = {"scheduled": 0, "review": 0, "skipped": 0, "cancelled": 0}
     channels = conn.execute(
@@ -443,6 +442,7 @@ def fill_auto_schedule(conn, campaign_code: str, now_utc=None) -> dict:
                         fresh_channel,
                         now_utc,
                         require_auto_schedule=fresh_auto_enabled,
+                        slot_at=slot,
                     )
                     if not eligible:
                         stats["skipped"] += 1

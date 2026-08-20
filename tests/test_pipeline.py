@@ -2176,7 +2176,7 @@ def test_auto_schedule_cli_prints_only_aggregate_counts():
     original_fill = getattr(run.pipeline, "fill_auto_schedule", None)
     had_fill = hasattr(run.pipeline, "fill_auto_schedule")
 
-    def fake_fill(conn, campaign_code):
+    def fake_fill(conn, campaign_code, *, ctx=None):
         return {"scheduled": 2, "review": 1, "skipped": 3, "cancelled": 0}
 
     run.pipeline.fill_auto_schedule = fake_fill
@@ -2792,8 +2792,24 @@ def test_sibling_target_not_cancelled_after_first_target_publishes():
     try:
         ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(81))
         check("có job sinh nội dung", len(ids) > 0)
+        generated_job = conn.execute("SELECT payload FROM job_queue WHERE id=?", (ids[0],)).fetchone()
+        generated_payload = json.loads(generated_job["payload"])
         jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=81)}})
-        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+        post = conn.execute(
+            """
+            SELECT *
+            FROM post
+            WHERE product_id=? AND channel_id=? AND variant_code=? AND status='PENDING_REVIEW'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (
+                generated_payload["product_id"],
+                generated_payload["channel_id"],
+                generated_payload["variant_code"],
+            ),
+        ).fetchone()
+        check("chọn đúng post vừa sinh cho sibling target", post is not None, generated_payload)
         ch1_id = post["channel_id"]
 
         # approve_post() 1-kênh như hiện tại -- tạo target A trên ch1.

@@ -99,8 +99,18 @@ def validate_channel_automation_config(payload) -> dict:
     except ValueError:
         return {"ok": False, "error": "Target và cap phải là số nguyên"}
 
-    if not (1 <= daily_post_target <= daily_post_cap <= 3):
-        return {"ok": False, "error": "Cấu hình Auto phải thỏa 1 <= target <= cap <= 3"}
+    existing_cap = None
+    try:
+        if str(payload.get("existing_daily_post_cap", "")).strip():
+            existing_cap = int(str(payload.get("existing_daily_post_cap", "")).strip())
+    except ValueError:
+        existing_cap = None
+    cap_is_existing_legacy = existing_cap is not None and existing_cap > 3 and daily_post_cap == existing_cap
+
+    if not (1 <= daily_post_target <= min(daily_post_cap, 3)):
+        return {"ok": False, "error": "Cấu hình Auto phải thỏa 1 <= target <= min(cap, 3)"}
+    if daily_post_cap > 3 and not cap_is_existing_legacy:
+        return {"ok": False, "error": "Cap Auto mới tối đa là 3; cap legacy hiện có được giữ nguyên"}
 
     posting_timezone = str(payload.get("posting_timezone", "")).strip() or "Asia/Bangkok"
     try:
@@ -827,6 +837,7 @@ def create_app():
                         "auto_schedule_enabled": request.form.get("auto_schedule_enabled", ""),
                         "daily_post_target": request.form.get("daily_post_target", ""),
                         "daily_post_cap": request.form.get("daily_post_cap", ""),
+                        "existing_daily_post_cap": channel["daily_post_cap"],
                         "posting_timezone": request.form.get("posting_timezone", ""),
                         "posting_slots": request.form.getlist("posting_slots"),
                     })

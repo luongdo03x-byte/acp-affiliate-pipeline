@@ -176,7 +176,9 @@ def cmd_auto_schedule():
     try:
         init_db()
         with db.session() as conn:
-            stats = pipeline.fill_auto_schedule(conn, CAMPAIGN_CODE)
+            ctx = factory.build_context()
+            ctx["product_client"] = _product_sync_client()
+            stats = pipeline.fill_auto_schedule(conn, CAMPAIGN_CODE, ctx=ctx)
     except Exception:
         print("Auto schedule failed. Check local service logs.")
         return 1

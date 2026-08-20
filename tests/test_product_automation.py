@@ -1741,6 +1741,61 @@ def test_product_sync_uses_seed_catalog_in_mock_mode():
                     os.environ[name] = value
 
 
+def test_auto_schedule_cli_injects_mock_catalog_context_in_mock_mode():
+    """Mock product-sync followed by auto-schedule must keep using the mock catalog link client."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return "connection"
+
+        def __exit__(self, *_):
+            return False
+
+    class _LiveClient:
+        def create_product_link(self, *_args, **_kwargs):
+            raise AssertionError("auto-schedule must not use the live catalog client in mock mode")
+
+    class _Pipeline:
+        seen = []
+
+        @classmethod
+        def fill_auto_schedule(cls, conn, campaign_code, *, ctx=None):
+            link = ctx["product_client"].create_product_link(
+                "https://example.test/product",
+                post_id="post-1",
+                external_product_id="mock-product",
+            )
+            cls.seen.append((conn, campaign_code, link.full_url))
+            return {"scheduled": 1, "review": 0, "skipped": 0, "cancelled": 0}
+
+    original = {name: getattr(run, name, None) for name in ("db", "factory", "pipeline")}
+    old_values = {name: os.environ.get(name) for name in ("ACP_ADAPTER", "ACP_SOURCE")}
+    try:
+        os.environ.update({"ACP_ADAPTER": "mock", "ACP_SOURCE": "mock"})
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.factory = type("_Factory", (), {"build_context": staticmethod(
+            lambda: {"product_client": _LiveClient()})})
+        run.pipeline = _Pipeline
+
+        assert run.cmd_auto_schedule() == 0
+        assert _Pipeline.seen == [
+            ("connection", run.CAMPAIGN_CODE, "https://mock.acp/product/mock-product?post_id=post-1")
+        ]
+    finally:
+        for name, value in old_values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
 def test_product_sync_initializes_its_catalog_schema_before_syncing():
     """A fresh cron database must receive the catalog migration before acquiring its sync lock."""
     from acp import run
@@ -2854,6 +2909,7 @@ def main():
                       test_product_sync_skip_and_errors_have_cron_safe_exit_codes,
                       test_product_sync_returns_nonzero_without_leaking_provider_errors,
                       test_product_sync_uses_seed_catalog_in_mock_mode,
+                      test_auto_schedule_cli_injects_mock_catalog_context_in_mock_mode,
                       test_product_sync_initializes_its_catalog_schema_before_syncing,
                       test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review,
                       test_auto_prepare_failure_is_redacted_and_returns_nonzero,

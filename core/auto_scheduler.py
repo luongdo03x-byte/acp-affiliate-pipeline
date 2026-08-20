@@ -100,7 +100,14 @@ def preflight_auto_target(conn, target, post, channel, now_utc=None, eligibility
             return False, "product_no_longer_matches_channel"
 
     if eligibility_checker is not None:
-        eligible, reason = eligibility_checker(conn, product, channel, now_utc, exclude_post_id=_row_get(post, "id"))
+        eligible, reason = eligibility_checker(
+            conn,
+            product,
+            channel,
+            now_utc,
+            exclude_post_id=_row_get(post, "id"),
+            slot_at=_row_get(target, "scheduled_at") or _row_get(post, "scheduled_at"),
+        )
         if not eligible:
             return False, reason
 

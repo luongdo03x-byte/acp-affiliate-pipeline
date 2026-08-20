@@ -145,7 +145,22 @@ class ChannelAutomationValidationTests(unittest.TestCase):
         })
 
         self.assertFalse(result["ok"])
-        self.assertIn("1 <= target <= cap <= 3", result["error"])
+        self.assertIn("target", result["error"].lower())
+
+    def test_validate_channel_automation_config_preserves_existing_legacy_cap_above_auto_max(self):
+        from acp.web.server import validate_channel_automation_config
+
+        result = validate_channel_automation_config({
+            "auto_schedule_enabled": "1",
+            "daily_post_target": "3",
+            "daily_post_cap": "12",
+            "existing_daily_post_cap": "12",
+            "posting_timezone": "Asia/Bangkok",
+            "posting_slots": ["09:30", "12:30", "20:30"],
+        })
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["values"]["daily_post_cap"], 12)
 
     def test_validate_channel_automation_config_rejects_invalid_timezone(self):
         from acp.web.server import validate_channel_automation_config
@@ -1168,9 +1183,9 @@ class AutoScheduleFillTests(unittest.TestCase):
                     id, source, merchant, external_product_id, name, description,
                     current_price, original_price, commission_value, commission_rate,
                     category_code, rating, review_count, sold_count, image_url_original,
-                    image_path_local, product_url, is_available, last_seen_at,
+                    image_path_local, product_url, is_available, has_inventory, last_seen_at,
                     created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     f"product-{index}",
@@ -1190,6 +1205,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                     "https://img.test/product.jpg",
                     None,
                     f"https://example.test/product-{index}",
+                    1,
                     1,
                     ts,
                     ts,
@@ -1755,6 +1771,86 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertIsNone(post["scheduled_at"])
         self.assertEqual(targets, 0)
         self.assertEqual(jobs, 0)
+
+    def test_fill_auto_schedule_skips_legacy_products_with_unknown_inventory(self):
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_products(1)
+        self.conn.execute("UPDATE product SET has_inventory=NULL WHERE id='product-0'")
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+
+        targets = self.conn.execute("SELECT COUNT(*) FROM publish_target").fetchone()[0]
+        posts = self.conn.execute("SELECT COUNT(*) FROM post WHERE product_id='product-0'").fetchone()[0]
+        self.assertEqual(stats["scheduled"], 0)
+        self.assertEqual(targets, 0)
+        self.assertEqual(posts, 0)
+
+    def test_fill_auto_schedule_category_cap_uses_selected_slot_local_day(self):
+        from acp.core import pipeline, scoring
+
+        scoring.save_config(
+            self.conn,
+            scoring.DEFAULT_WEIGHTS,
+            dict(scoring.DEFAULT_FILTERS, max_per_category_per_day=1),
+            "slot day cap regression",
+        )
+        self._insert_channel(daily_post_target=1, daily_post_cap=1, posting_slots=["09:30"])
+        self._insert_products(2)
+        self.conn.execute(
+            """
+            INSERT INTO post (
+                id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "today-category-post",
+                "product-0",
+                "channel-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO publish_target (
+                id, post_id, channel_id, status, scheduled_at, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                "today-category-target",
+                "today-category-post",
+                "channel-1",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ),
+        )
+        now_after_today_slot = datetime(2026, 8, 20, 3, 0, tzinfo=timezone.utc)
+
+        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_after_today_slot)
+
+        slots = [
+            row["scheduled_at"]
+            for row in self.conn.execute(
+                "SELECT scheduled_at FROM publish_target WHERE id!='today-category-target' ORDER BY scheduled_at"
+            ).fetchall()
+        ]
+        self.assertEqual(stats["scheduled"], 1)
+        self.assertEqual(slots, ["2026-08-21T09:30:00+07:00"])
 
     def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
         from acp.core import pipeline

@@ -16,8 +16,9 @@
 - `daily_post_target=3` uses the optional third slot while respecting `daily_post_cap`; malformed persisted/caller values above 3 are clamped in core routing/fill logic.
 - Existing live targets occupy their slots; fill does not create a second target for the same channel/slot.
 - Slot occupancy is rechecked inside the fill transaction immediately before automated approval, so a concurrent reservation of the same channel/slot is skipped instead of creating a duplicate live target or leaking Auto ON content into review-only state.
-- Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates now reuse the active scorer hard filters with channel niches, so rating, review count, commission, blocked category, cooldown, active-post, category-day, inventory, link, and availability safeguards all still apply.
+- Candidate acquisition is per channel through legacy `scoring.score_candidates(..., niches=channel_niches(...))` plus an Auto-specific provider-aware catalog path for synced `ACCESSTRADE_TIKTOK` rows. The legacy scorer still keeps its provider exclusion; catalog candidates now reuse the active scorer hard filters with channel niches, so rating, review count, commission, blocked category, cooldown, active-post, inventory, link, and availability safeguards all still apply. Category/day caps are enforced after route selection against the selected slot's local day.
 - `candidate_channels()` evaluates whether the channel has an eligible slot in the rolling horizon, so quota is checked against the selected slot's local day instead of only the current local day.
+- `run.py auto-schedule` builds one context and injects the same mock catalog link client used by `product-sync` when running in mock mode, avoiding accidental live `AccessTradeClient` link creation during mock verification.
 - Auto-created posts reuse the existing attribution, image composition, caption generation, validation, and approval paths.
 - Tracking-link creation, image composition, and storage upload are prepared before the `BEGIN IMMEDIATE` write transaction. The transaction re-fetches product/channel rows and rechecks current Auto eligibility plus slot occupancy before inserting any `post`, `publish_target`, or job rows.
 - After artifact preparation, the transaction uses the freshly re-fetched channel Auto state for eligibility, slot-collision checks, and approval. If Auto is disabled concurrently, the prepared post remains review-only and no publish target/job is created.
@@ -106,6 +107,30 @@ Expected failure observed before the fix:
 
 - when Auto was disabled after artifact preparation, the write-transaction path still used stale channel state and skipped instead of applying the fresh Auto OFF review-only decision.
 
+Final review v3 regression red runs:
+
+```bash
+python3 -m unittest \
+  tests.test_auto_scheduler.AutoScheduleFillTests.test_fill_auto_schedule_skips_legacy_products_with_unknown_inventory \
+  tests.test_auto_scheduler.AutoScheduleFillTests.test_fill_auto_schedule_category_cap_uses_selected_slot_local_day \
+  -v
+python3 -m acp.tests.test_product_automation cli
+python3 - <<'PY'
+from acp.tests import test_pipeline
+conn = test_pipeline.setup(); conn.close()
+test_pipeline.test_sibling_target_not_cancelled_after_first_target_publishes()
+if test_pipeline.FAIL:
+    raise SystemExit(1)
+PY
+```
+
+Expected failures observed before the fix:
+
+- legacy products with `has_inventory=NULL` were selected and scheduled instead of being excluded before Auto approval.
+- category/day cap used the current local day and blocked a valid tomorrow slot.
+- `run.py auto-schedule` did not pass a prepared context/product client into `fill_auto_schedule`.
+- the sibling-target pipeline test could select polluted `PENDING_REVIEW` fixtures instead of the post it generated.
+
 ### Green
 
 Commands:
@@ -126,8 +151,10 @@ git diff --check
 
 Results:
 
-- focused routing/fill tests: 32 tests passed.
+- focused routing/fill tests: 34 tests passed.
 - focused CLI contract: passed.
+- product automation CLI group: 14 tests passed.
+- targeted sibling-target pipeline regression: passed.
 - CLI smoke with mock through package symlink: `Auto schedule: scheduled=0, review=0, skipped=0, cancelled=0`.
 - `./manage.sh test`: passed with `TEST_OK`.
 - `git diff --check`: passed.
