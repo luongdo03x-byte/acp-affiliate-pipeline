@@ -9,6 +9,7 @@ OAUTH_CONSENT = "OAUTH_CONSENT"
 SECURITY_CHALLENGE = "SECURITY_CHALLENGE"
 UNKNOWN = "UNKNOWN"
 
+_BROWSER_PACKAGE = "com.android.chrome"
 _USERNAME_HINTS = (
     "username",
     "user name",
@@ -47,6 +48,9 @@ def _node_text(node) -> str:
 
 class BrowserScreenDetector:
     def detect(self, snapshot) -> DetectedScreen:
+        if str(snapshot.package or "").strip() != _BROWSER_PACKAGE:
+            return DetectedScreen(UNKNOWN, 0.0, (), False)
+
         node_texts = tuple(_node_text(node) for node in snapshot.nodes)
         joined = " | ".join(node_texts)
 
