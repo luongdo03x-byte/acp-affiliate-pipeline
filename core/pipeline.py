@@ -1488,18 +1488,6 @@ def publish_post(conn, payload, ctx):
         return
 
     now_utc = datetime.now(timezone.utc)
-    if target["auto_scheduled"]:
-        ok, reason = auto_scheduler.preflight_auto_target(
-            conn,
-            target,
-            post,
-            channel,
-            now_utc=now_utc,
-            eligibility_checker=current_auto_product_eligibility,
-        )
-        if not ok:
-            _cancel_auto_stale_target(conn, target["id"], post["id"], reason)
-            return
 
     if channel["status"] != "ACTIVE":
         from ..adapters.base import AuthError
@@ -1523,6 +1511,19 @@ def publish_post(conn, payload, ctx):
         from ..adapters.base import ContentViolationError
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đã bị tắt (disabled)")
         raise ContentViolationError(f"Kênh {channel['code']} đã bị tắt (disabled)")
+
+    if target["auto_scheduled"]:
+        ok, reason = auto_scheduler.preflight_auto_target(
+            conn,
+            target,
+            post,
+            channel,
+            now_utc=now_utc,
+            eligibility_checker=current_auto_product_eligibility,
+        )
+        if not ok:
+            _cancel_auto_stale_target(conn, target["id"], post["id"], reason)
+            return
 
     if _published_today(conn, channel["id"], now_utc=now_utc, posting_timezone=channel["posting_timezone"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError

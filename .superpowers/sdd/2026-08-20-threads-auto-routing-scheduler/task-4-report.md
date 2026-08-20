@@ -244,3 +244,91 @@ Results:
 - Focused publish/idempotency/rate-limit/auth/content-violation/Auto-stale/manual/quota script: `PASS 57 FAIL 0`.
 - `py_compile`: passed.
 - `./manage.sh test`: passed with `TEST_OK`.
+
+## Auth-order review follow-up
+
+Review finding fixed after commit `2ee98ca`:
+
+- `publish_post()` now preserves the existing channel status/auth and `enabled=0` branches before running automated product freshness/hard-filter preflight.
+- Auto targets on `NEEDS_REAUTH` now fail through the existing AuthError path (`publish_target.FAILED`) instead of being cancelled as stale product targets.
+- Auto targets on disabled channels now fail through the existing disabled-channel path, preserving the existing channel-status semantics and avoiding stale-product reject reasons.
+- The low-rating regression fixture now gives the product a matching `my-pham` channel niche, so it asserts the intended `product_quality_filter` reason rather than a niche mismatch.
+
+### Auth-order follow-up red
+
+Command:
+
+```bash
+python3 - <<'PY'
+import importlib.util, os, sys
+repo = os.getcwd()
+spec = importlib.util.spec_from_file_location('acp', os.path.join(repo, '__init__.py'), submodule_search_locations=[repo])
+module = importlib.util.module_from_spec(spec)
+sys.modules['acp'] = module
+spec.loader.exec_module(module)
+from acp.tests import test_pipeline as t
+conn = t.setup(); conn.close()
+for name in [
+    'test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics',
+    'test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics',
+    'test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold',
+]:
+    getattr(t, name)()
+print('PASS', len(t.PASS), 'FAIL', len(t.FAIL))
+if t.FAIL:
+    raise SystemExit(1)
+PY
+```
+
+Expected failures observed before the fix:
+
+- Auto + `NEEDS_REAUTH` target was `CANCELLED` with `product_unavailable`; expected existing `FAILED` auth semantics.
+- Auto + disabled target was `CANCELLED` with `product_unavailable`; expected existing disabled-channel failure semantics.
+
+### Auth-order follow-up green
+
+Commands:
+
+```bash
+python3 -m unittest tests.test_auto_scheduler.AutoSchedulerRoutingTests
+python3 - <<'PY'
+import importlib.util, os, sys
+repo = os.getcwd()
+spec = importlib.util.spec_from_file_location('acp', os.path.join(repo, '__init__.py'), submodule_search_locations=[repo])
+module = importlib.util.module_from_spec(spec)
+sys.modules['acp'] = module
+spec.loader.exec_module(module)
+from acp.tests import test_pipeline as t
+conn = t.setup(); conn.close()
+for name in [
+    'test_idempotency_and_double_post',
+    'test_publish_target_failure_semantics',
+    'test_publish_post_authorror_marks_channel',
+    'test_publish_target_cancelled_on_stale_post_status',
+    'test_retry_publish_target',
+    'test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job',
+    'test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics',
+    'test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics',
+    'test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold',
+    'test_publish_post_cancels_auto_target_when_product_category_becomes_blocked',
+    'test_publish_post_keeps_manual_target_behavior_without_freshness_preflight',
+    'test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target',
+    'test_published_today_counts_channel_local_date_at_midnight_boundary',
+]:
+    getattr(t, name)()
+print('PASS', len(t.PASS), 'FAIL', len(t.FAIL))
+if t.FAIL:
+    raise SystemExit(1)
+PY
+python3 -m py_compile core/auto_scheduler.py core/pipeline.py tests/test_auto_scheduler.py tests/test_pipeline.py
+git diff --check
+./manage.sh test
+```
+
+Results:
+
+- `AutoSchedulerRoutingTests`: 19 tests passed.
+- Focused publish/idempotency/rate-limit/auth/content-violation/Auto-stale/manual/quota script: `PASS 68 FAIL 0`.
+- `py_compile`: passed.
+- `git diff --check`: passed.
+- `./manage.sh test`: passed with `TEST_OK`.

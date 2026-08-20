@@ -2550,28 +2550,93 @@ def test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement
     conn.close()
 
 
+def test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics():
+    print("\npublish_post: auto target giữ AuthError/FAILED khi kênh NEEDS_REAUTH")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-needs-reauth", auto_scheduled=1, product_available=0)
+    conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fixture["channel_id"],))
+    publisher = MockThreads(seed=215)
+
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi kênh cần xác thực lại", publisher.published == [], publisher.published)
+        check("auto target NEEDS_REAUTH giữ FAILED, không CANCELLED", target["status"] == "FAILED", dict(target))
+        check("last_error giữ lỗi trạng thái kênh", "NEEDS_REAUTH" in (target["last_error"] or ""), target["last_error"])
+        check("post không bị đưa về review bởi freshness preflight", post["status"] == "SCHEDULED", dict(post))
+        check("reject_reason không bị ghi product stale", post["reject_reason"] is None, post["reject_reason"])
+    finally:
+        conn.execute("UPDATE channel SET status='ACTIVE' WHERE id=?", (fixture["channel_id"],))
+        conn.close()
+
+
+def test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics():
+    print("\npublish_post: auto target giữ FAILED khi kênh enabled=0")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-disabled-channel", auto_scheduled=1, product_available=0)
+    conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (fixture["channel_id"],))
+    publisher = MockThreads(seed=216)
+
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        channel = conn.execute(
+            "SELECT status, enabled FROM channel WHERE id=?", (fixture["channel_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi kênh bị tắt", publisher.published == [], publisher.published)
+        check("auto target disabled giữ FAILED, không CANCELLED", target["status"] == "FAILED", dict(target))
+        check("last_error giữ lỗi kênh bị tắt", "tắt" in (target["last_error"] or "").lower(), target["last_error"])
+        check("channel.status không bị đổi sang NEEDS_REAUTH", channel["status"] == "ACTIVE" and channel["enabled"] == 0,
+              dict(channel))
+        check("post theo nhánh disabled hiện có quay về review", post["status"] == "PENDING_REVIEW", dict(post))
+        check("reject_reason giữ lỗi disabled, không ghi product stale",
+              "tắt" in (post["reject_reason"] or "").lower() and "product_unavailable" not in (post["reject_reason"] or ""),
+              post["reject_reason"])
+    finally:
+        conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (fixture["channel_id"],))
+        conn.close()
+
+
 def test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold():
     print("\npublish_post: auto target bị huỷ nếu product tụt quality sau khi đã schedule")
     conn = connect()
     fixture = _insert_publish_preflight_fixture(
         conn, "auto-low-rating", auto_scheduled=1, product_available=1)
-    conn.execute("UPDATE product SET rating=3.0 WHERE id=?", (fixture["product_id"],))
+    conn.execute("UPDATE channel SET niches=? WHERE id=?", (json.dumps(["my-pham"]), fixture["channel_id"]))
+    conn.execute("UPDATE product SET category_code='my-pham', rating=3.0 WHERE id=?", (fixture["product_id"],))
     publisher = MockThreads(seed=213)
 
-    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
 
-    target = conn.execute(
-        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
-    ).fetchone()
-    post = conn.execute(
-        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
-    ).fetchone()
-    check("publisher không được gọi khi quality không còn đạt", publisher.published == [], publisher.published)
-    check("auto target low-rating bị CANCELLED", target["status"] == "CANCELLED", dict(target))
-    check("reason quality được sanitize", target["last_error"] == "product_no_longer_matches_channel", target["last_error"])
-    check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "product_no_longer_matches_channel",
-          dict(post))
-    conn.close()
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi quality không còn đạt", publisher.published == [], publisher.published)
+        check("auto target low-rating bị CANCELLED", target["status"] == "CANCELLED", dict(target))
+        check("reason quality được sanitize", target["last_error"] == "product_quality_filter", target["last_error"])
+        check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "product_quality_filter",
+              dict(post))
+    finally:
+        conn.execute("UPDATE channel SET niches='[]' WHERE id=?", (fixture["channel_id"],))
+        conn.close()
 
 
 def test_publish_post_cancels_auto_target_when_product_category_becomes_blocked():
@@ -4798,6 +4863,8 @@ if __name__ == "__main__":
     test_publish_post_authorror_marks_channel()
     test_retry_publish_target()
     test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job()
+    test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics()
+    test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics()
     test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold()
     test_publish_post_cancels_auto_target_when_product_category_becomes_blocked()
     test_publish_post_keeps_manual_target_behavior_without_freshness_preflight()
