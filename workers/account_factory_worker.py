@@ -31,6 +31,7 @@ from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, Worker
 
 _INSTAGRAM_PACKAGE = "com.instagram.android"
 _THREADS_PACKAGE = "com.instagram.barcelona"
+_OAUTH_BROWSER_PACKAGE = "com.android.chrome"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _AVATAR_DEVICE_DIR = "/sdcard/Pictures/ACP"
 _AVATAR_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
@@ -183,6 +184,8 @@ class WorkerAgent:
         self.flow = None
         self.last_known_screen = None
         self.last_safe_step = None
+        self.oauth_browser_account_id = None
+        self.oauth_browser_package = _OAUTH_BROWSER_PACKAGE
 
         if instagram_flow is None:
             instagram_flow = InstagramFlow(
@@ -307,7 +310,20 @@ class WorkerAgent:
             if action == "HEARTBEAT":
                 return {"ok": True, "heartbeat": self.heartbeat()}
             if action == "OPEN_URL":
-                self.avd.open_url(self.serial, str(command.payload["url"]))
+                account_id = str(command.account_id or "").strip()
+                if not account_id:
+                    raise ValueError("account binding is required for OAuth URL")
+                if self.oauth_browser_account_id != account_id:
+                    self.avd.reset_browser_session(
+                        self.serial,
+                        self.oauth_browser_package,
+                    )
+                    self.oauth_browser_account_id = account_id
+                self.avd.open_url(
+                    self.serial,
+                    str(command.payload["url"]),
+                    browser_package=self.oauth_browser_package,
+                )
                 self.last_progress_at = _now()
                 return {"ok": True}
             if action == "OPEN_PACKAGE":
