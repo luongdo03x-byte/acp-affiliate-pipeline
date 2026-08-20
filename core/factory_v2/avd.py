@@ -81,7 +81,7 @@ class AvdManager:
                 "-avd", avd_name,
                 "-port", str(port),
                 "-memory", "1536",
-                "-gpu", "swiftshader",
+                "-gpu", "host",
                 "-feature", "-Vulkan",
                 "-no-snapshot",
                 "-noaudio",
