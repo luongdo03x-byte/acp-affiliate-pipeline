@@ -10,6 +10,7 @@ from .selectors import (
     ACCOUNTS_CENTER_ALLOW,
     ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
+    AVATAR_SKIP,
     BIO_INPUT,
     BIRTH_DATE_INPUT,
     CONTINUE,
@@ -22,7 +23,20 @@ from .selectors import (
 )
 
 _EXISTING_SESSION_HOME = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
-_CHECKPOINT_SUCCESSORS = frozenset({"IG_PROFILE_SETUP", "IG_HOME", "IG_POSTCHECK_OK"})
+_CHECKPOINT_SUCCESSORS = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
+_CHECKPOINT_RESUMABLE = frozenset({
+    "IG_EXISTING_PROFILE",
+    "IG_ACCOUNT_SWITCHER",
+    "IG_SIGNUP_ENTRY",
+    "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_USERNAME_ENTRY",
+    "IG_USERNAME_VALID",
+    "IG_USERNAME_UNAVAILABLE",
+    "IG_CONTACT_ENTRY",
+    "IG_BIRTHDAY_ENTRY",
+    "IG_PROFILE_SETUP",
+    "IG_AVATAR_SETUP",
+})
 _IG_PROTECTED = (
     "PASSWORD_REQUIRED",
     "OTP_REQUIRED",
@@ -446,11 +460,14 @@ class InstagramFlow:
             return FlowResult("running", detected.kind, last_safe_step="IG_BIRTHDAY_ENTRY")
         if detected.kind == "IG_AVATAR_SETUP":
             avatar_file = str(profile.get("avatar_file") or "").strip()
-            if not avatar_file:
-                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
-            if self.driver.find(ADD_PROFILE_PHOTO) is None:
-                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
-            action = self._attempt(lambda: self.driver.tap(ADD_PROFILE_PHOTO))
+            if avatar_file:
+                if self.driver.find(ADD_PROFILE_PHOTO) is None:
+                    return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+                action = self._attempt(lambda: self.driver.tap(ADD_PROFILE_PHOTO))
+            else:
+                if self.driver.find(AVATAR_SKIP) is None:
+                    return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+                action = self._attempt(lambda: self.driver.tap(AVATAR_SKIP))
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_AVATAR_SETUP")
@@ -494,6 +511,8 @@ class InstagramFlow:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
         if detected.kind in _CHECKPOINT_SUCCESSORS and detected.automation_allowed:
             return FlowResult("completed", detected.kind, last_safe_step=detected.kind)
+        if detected.kind in _CHECKPOINT_RESUMABLE and detected.automation_allowed:
+            return FlowResult("running", detected.kind, last_safe_step=detected.kind)
         if detected.kind in {"RATE_LIMITED", "ACTION_BLOCKED"}:
             return FlowResult("retry_pending", detected.kind, detected.kind)
         if detected.kind == "ACCOUNT_DISABLED":
