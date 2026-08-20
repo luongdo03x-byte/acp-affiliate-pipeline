@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.chrome" content-desc="" clickable="false" enabled="true" bounds="[0,0][1080,1920]">
+    <node index="0" text="" resource-id="username" class="android.widget.EditText" package="com.android.chrome" content-desc="Username, phone or email" clickable="true" enabled="true" bounds="[100,400][980,520]" />
+    <node index="1" text="" resource-id="password" class="android.widget.EditText" package="com.android.chrome" content-desc="Password" password="true" clickable="true" enabled="true" bounds="[100,560][980,680]" />
+    <node index="2" text="Log in" resource-id="login" class="android.widget.Button" package="com.android.chrome" content-desc="Log in" clickable="true" enabled="true" bounds="[100,720][980,840]" />
+  </node>
+</hierarchy>
