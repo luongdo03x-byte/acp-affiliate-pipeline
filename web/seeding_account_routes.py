@@ -43,7 +43,27 @@ def _report_state(conn, campaign_id: str):
     row = conn.execute(
         "SELECT * FROM seeding_task_report WHERE campaign_id=?", (campaign_id,)
     ).fetchone()
-    return {**completion, "report": dict(row) if row else None}
+    unknown_slots = [
+        dict(item)
+        for item in conn.execute(
+            """SELECT s.id,s.account_slot,s.comment_type,s.item_index,
+                      s.final_text,s.generated_text,a.label AS account_label
+               FROM seeding_comment_slot s
+               JOIN seeding_task_account m
+                 ON m.campaign_id=s.campaign_id AND m.account_slot=s.account_slot
+               JOIN seeding_account a ON a.id=m.account_id
+               WHERE s.campaign_id=? AND s.status='UNKNOWN'
+               ORDER BY s.account_slot,
+                        CASE s.comment_type WHEN 'MAIN' THEN 0 ELSE 1 END,
+                        s.item_index""",
+            (campaign_id,),
+        ).fetchall()
+    ]
+    return {
+        **completion,
+        "report": dict(row) if row else None,
+        "unknown_slots": unknown_slots,
+    }
 
 
 def _safe_auto_report(conn, campaign_id: str) -> dict:
@@ -241,6 +261,29 @@ def seeding_task_accounts_update(campaign_id):
         return redirect(
             url_for("seeding.seeding_accounts_page", campaign_id=campaign_id, err=str(exc))
         )
+    finally:
+        conn.close()
+
+
+@bp.post("/seeding/comment/<slot_id>/reset-unknown")
+def seeding_comment_reset_unknown(slot_id):
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT campaign_id FROM seeding_comment_slot WHERE id=?", (slot_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("Không tìm thấy comment slot")
+        seeding_execution.reset_unknown_comment(conn, slot_id)
+        return redirect(
+            url_for(
+                "seeding.seeding_accounts_page",
+                campaign_id=row["campaign_id"],
+                message="Đã reset UNKNOWN; profile được gán có thể thử lại slot này",
+            )
+        )
+    except ValueError as exc:
+        return redirect(url_for("seeding.seeding_accounts_page", err=str(exc)))
     finally:
         conn.close()
 
