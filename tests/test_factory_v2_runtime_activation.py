@@ -1,7 +1,8 @@
 import sqlite3
 import unittest
 
-from core.db import now, ulid
+from core.db import now
+from core.factory_v2.account_credentials import store_account_password
 from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.runtime import FactoryControllerRuntime
@@ -38,6 +39,20 @@ class FakeGateway:
         if action == "OBSERVE_FOREGROUND":
             return {"package": "com.instagram.barcelona"}
         return {"ok": True}
+
+    def send_transient_login_secret(self, job, *, username, password):
+        self.commands.append((
+            "TRANSIENT_BROWSER_LOGIN",
+            {"username": username, "password": password},
+        ))
+        return {
+            "ok": True,
+            "status": "waiting_human",
+            "result": {
+                "screen": "OAUTH_CONSENT",
+                "reason": "HUMAN_CONSENT_REQUIRED",
+            },
+        }
 
 
 class FakeActivation:
@@ -97,11 +112,18 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def seed_threads_verifying(self, *, completion_mode="ACP_ACTIVE"):
+    def seed_threads_verifying(
+        self,
+        *,
+        completion_mode="ACP_ACTIVE",
+        with_credential=True,
+    ):
         batch = self.service.create_batch(
             "activation", count=1, seed=9, completion_mode=completion_mode
         )
         account = self.repo.list_accounts(batch["id"])[0]
+        if with_credential:
+            store_account_password(self.conn, account["id"], "example-secret")
         worker = self.repo.insert_worker({
             "id": "avd-1",
             "runner_type": "REMOTE_AVD",
@@ -135,9 +157,12 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
             "status": "VERIFYING",
             "created_at": now(),
         })
-        return self.repo.get_account(account["id"]), self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
+        return (
+            self.repo.get_account(account["id"]),
+            self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone(),
+        )
 
-    def test_threads_postcheck_automatically_starts_acp_activation(self):
+    def test_threads_postcheck_opens_oauth_then_uses_decrypted_transient_login(self):
         account, _ = self.seed_threads_verifying()
 
         self.runtime.tick()
@@ -145,7 +170,34 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         saved = self.repo.get_account(account["id"])
         self.assertEqual("ACP_CONNECTING", saved["stage"])
         self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
-        self.assertIn("OPEN_URL", [action for action, _ in self.gateway.commands])
+        actions = [action for action, _ in self.gateway.commands]
+        open_index = actions.index("OPEN_URL")
+        secret_index = actions.index("TRANSIENT_BROWSER_LOGIN")
+        self.assertLess(open_index, secret_index)
+        login_payload = self.gateway.commands[secret_index][1]
+        self.assertEqual(saved["username"], login_payload["username"])
+        self.assertEqual("example-secret", login_payload["password"])
+        job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
+        self.assertEqual("WAIT_ACP", job["desired_action"])
+        self.assertEqual("WAITING_HUMAN", job["state"])
+
+    def test_missing_credential_keeps_oauth_waiting_for_manual_login(self):
+        account, _ = self.seed_threads_verifying(with_credential=False)
+
+        self.runtime.tick()
+
+        actions = [action for action, _ in self.gateway.commands]
+        self.assertIn("OPEN_URL", actions)
+        self.assertNotIn("TRANSIENT_BROWSER_LOGIN", actions)
+        saved = self.repo.get_account(account["id"])
+        self.assertEqual("ACP_CONNECTING", saved["stage"])
+        checkpoint = self.conn.execute(
+            """SELECT * FROM factory_checkpoint
+               WHERE account_id=? AND type='ACP_OAUTH'
+               ORDER BY created_at DESC LIMIT 1""",
+            (account["id"],),
+        ).fetchone()
+        self.assertIn("credential", checkpoint["message"].lower())
         job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
         self.assertEqual("WAIT_ACP", job["desired_action"])
         self.assertEqual("WAITING_HUMAN", job["state"])
