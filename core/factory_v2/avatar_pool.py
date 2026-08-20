@@ -65,15 +65,21 @@ class AvatarPool:
         self.rng = rng or random.SystemRandom()
         self.images = self._scan_images()
         self.usage = self._load_usage()
+        self.last_assigned = self._load_last_assigned()
 
     def _scan_images(self) -> tuple[str, ...]:
         if not self.avatar_root.is_dir():
             return ()
-        images = [
-            str(path.resolve())
-            for path in self.avatar_root.rglob("*")
-            if path.is_file() and path.suffix.lower() in _SUPPORTED_SUFFIXES
-        ]
+        images = []
+        for path in self.avatar_root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in _SUPPORTED_SUFFIXES:
+                continue
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(self.avatar_root)
+            except ValueError:
+                continue
+            images.append(str(resolved))
         return tuple(sorted(set(images)))
 
     def _load_usage(self) -> Counter:
@@ -85,13 +91,24 @@ class AvatarPool:
         ).fetchall()
         return Counter({str(row[0]): int(row[1]) for row in rows})
 
+    def _load_last_assigned(self) -> str | None:
+        row = self.connection.execute(
+            """SELECT avatar_file
+               FROM factory_account
+               WHERE avatar_file IS NOT NULL AND avatar_file != ''
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1"""
+        ).fetchone()
+        return None if row is None else str(row[0])
+
     def choose(self, *, avoid: str | None = None) -> str | None:
         if not self.images:
             return None
 
         candidates = list(self.images)
-        if avoid and len(candidates) > 1:
-            without_previous = [path for path in candidates if path != avoid]
+        previous = avoid or self.last_assigned
+        if previous and len(candidates) > 1:
+            without_previous = [path for path in candidates if path != previous]
             if without_previous:
                 candidates = without_previous
 
@@ -99,4 +116,5 @@ class AvatarPool:
         least_used = [path for path in candidates if self.usage.get(path, 0) == minimum]
         selected = self.rng.choice(least_used)
         self.usage[selected] += 1
+        self.last_assigned = selected
         return selected
