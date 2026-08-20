@@ -24,7 +24,7 @@ from acp.adapters.live import AT_BASE, AccessTradeSource  # noqa: E402
 from acp.adapters.mock import MockAccessTrade  # noqa: E402
 from acp.adapters.tiktokshop import AT_ROOT, AccessTradeTikTokShopSource  # noqa: E402
 from acp.core import crypto, jobs, niche, pipeline, scoring  # noqa: E402
-from acp.core import content, playbook, valuepost  # noqa: E402
+from acp.core import content, content_checker, content_facts, content_hook, content_scoring, content_variant, playbook, valuepost  # noqa: E402
 from acp.core.db import connect, init_db, now, ulid  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -211,6 +211,14 @@ def test_factory():
     check("get_caption_llm() trả về llm_gemini.rewrite khi bật",
           llm is not None and llm.__name__ == "rewrite")
     os.environ.pop("ACP_CAPTION_LLM", None)
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+    check("get_content_engine_llm() tắt mặc định (không set ACP_CONTENT_ENGINE_LLM)",
+          factory.get_content_engine_llm() is None)
+    os.environ["ACP_CONTENT_ENGINE_LLM"] = "gemini"
+    llm2 = factory.get_content_engine_llm()
+    check("get_content_engine_llm() trả về llm_gemini.rewrite_json khi bật",
+          llm2 is not None and llm2.__name__ == "rewrite_json")
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
 
 
 def test_mock_meta_connection_service():
@@ -540,6 +548,84 @@ def test_caption_llm_wired_regardless_of_manual_flow():
     finally:
         content.set_llm(None)
         os.environ.pop("ACP_CAPTION_LLM", None)
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_content_engine_llm_wired_at_create_app():
+    """create_app() phải bật đủ 6 hook Content Engine v2 (extractor,
+    hook_generator, hook_judge, body_generator, variant_judge,
+    hybrid_judge) khi ACP_CONTENT_ENGINE_LLM=gemini -- cùng lý do đặt ở
+    create_app() như content.set_llm() phía trên (G1)."""
+    print("\nLLM Content Engine v2 được bật đủ 6 hook tại create_app()")
+    _saved = {k: os.environ.get(k) for k in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY")}
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    os.environ["ACP_CONTENT_ENGINE_LLM"] = "gemini"
+    content_facts.set_extractor(None)
+    content_hook.set_hook_generator(None)
+    content_hook.set_hook_judge(None)
+    content_variant.set_body_generator(None)
+    content_checker.set_variant_judge(None)
+    content_scoring.set_hybrid_judge(None)
+    try:
+        from acp.web.server import create_app
+        create_app()
+        check("extractor được bật", content_facts._extractor_fn is not None
+              and content_facts._extractor_fn.__name__ == "rewrite_json")
+        check("hook_generator được bật", content_hook._hook_generator_fn is not None
+              and content_hook._hook_generator_fn.__name__ == "rewrite_json")
+        check("hook_judge được bật", content_hook._hook_judge_fn is not None
+              and content_hook._hook_judge_fn.__name__ == "rewrite_json")
+        check("body_generator được bật", content_variant._body_generator_fn is not None
+              and content_variant._body_generator_fn.__name__ == "rewrite_json")
+        check("variant_judge được bật", content_checker._variant_judge_fn is not None
+              and content_checker._variant_judge_fn.__name__ == "rewrite_json")
+        check("hybrid_judge được bật", content_scoring._hybrid_judge_fn is not None
+              and content_scoring._hybrid_judge_fn.__name__ == "rewrite_json")
+    finally:
+        content_facts.set_extractor(None)
+        content_hook.set_hook_generator(None)
+        content_hook.set_hook_judge(None)
+        content_variant.set_body_generator(None)
+        content_checker.set_variant_judge(None)
+        content_scoring.set_hybrid_judge(None)
+        os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_content_engine_llm_not_wired_when_flag_off():
+    """Không set ACP_CONTENT_ENGINE_LLM -- create_app() không đụng gì tới
+    6 hook (giữ nguyên None), không đổi baseline rule-based/template
+    của toàn bộ E1-E6."""
+    print("\ncreate_app() KHÔNG bật hook nào khi ACP_CONTENT_ENGINE_LLM không set")
+    _saved = {k: os.environ.get(k) for k in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY")}
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    os.environ.pop("ACP_CONTENT_ENGINE_LLM", None)
+    content_facts.set_extractor(None)
+    content_hook.set_hook_generator(None)
+    content_hook.set_hook_judge(None)
+    content_variant.set_body_generator(None)
+    content_checker.set_variant_judge(None)
+    content_scoring.set_hybrid_judge(None)
+    try:
+        from acp.web.server import create_app
+        create_app()
+        check("extractor vẫn None", content_facts._extractor_fn is None)
+        check("hook_generator vẫn None", content_hook._hook_generator_fn is None)
+        check("hook_judge vẫn None", content_hook._hook_judge_fn is None)
+        check("body_generator vẫn None", content_variant._body_generator_fn is None)
+        check("variant_judge vẫn None", content_checker._variant_judge_fn is None)
+        check("hybrid_judge vẫn None", content_scoring._hybrid_judge_fn is None)
+    finally:
         for k, v in _saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -2776,6 +2862,488 @@ def test_vanhanh_shows_multi_channel_post_breakdown():
         os.environ.pop(var, None)
 
 
+def test_duyet_shows_variants_block_when_generation_run_exists():
+    print("\nGET /duyet hiện khối CONTENT VARIANTS khi bài có content_generation_run READY")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        # Assert tường minh thay vì lặng lẽ bỏ qua: fixture không ra được run
+        # READY thì đây là failure có tên, không phải "test đạt với 0 check".
+        check("có content_generation_run READY", run is not None and run["status"] == "READY",
+              run["status"] if run else None)
+        if run and run["status"] == "READY":
+            body = c.get("/duyet").get_data(as_text=True)
+            check("có chữ CONTENT VARIANTS trong trang", "CONTENT VARIANTS" in body, "không tìm thấy")
+            check("có nhãn Variant hoặc Bản tốt nhất", ("Variant" in body or "Bản tốt nhất" in body))
+    conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_no_variants_block_when_no_generation_run():
+    print("\nGET /duyet KHÔNG hiện khối CONTENT VARIANTS cho bài tạo lúc flag tắt")
+    from acp.core import system_settings
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=50) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        check("không có content_generation_run", run is None, run)
+    conn.close()
+
+
+def test_duyet_variant_card_embeds_use_variant_button():
+    print("\nGET /duyet mỗi variant card có nút acpUseVariant với data caption_by_platform nhúng qua tojson")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res.get("post_id"),)).fetchone() if res.get("ok") else None
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("tạo được bài có content_generation_run READY",
+          res.get("ok") and run is not None and run["status"] == "READY",
+          (res.get("error"), run["status"] if run else None))
+    if res.get("ok") and run and run["status"] == "READY":
+        body = c.get("/duyet").get_data(as_text=True)
+        check("có acpUseVariant( trong trang (nút chọn variant)", "acpUseVariant(" in body, "không tìm thấy")
+        # Đủ 3 nút regenerate, không chỉ mỗi "Đổi hook" -- 2 action lam-lai/
+        # doi-angle đã có ở review_action() nhưng trước đây không có UI nào gọi.
+        check("có form POST /duyet/<id>/doi-hook", f"/duyet/{res['post_id']}/doi-hook" in body)
+        check("có form POST /duyet/<id>/lam-lai", f"/duyet/{res['post_id']}/lam-lai" in body)
+        check("có form POST /duyet/<id>/doi-angle", f"/duyet/{res['post_id']}/doi-angle" in body)
+    conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_page_defines_acp_use_variant_function():
+    print("\nGET /duyet có định nghĩa function acpUseVariant trong <script>")
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    body = c.get("/duyet").get_data(as_text=True)
+    check("có function acpUseVariant", "function acpUseVariant(" in body, "không tìm thấy")
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def _mk_ready_variant_row_and_client():
+    """Tạo 1 bài qua Content Engine v2 (flag bật tạm thời) + 1 Flask test
+    client đã đăng nhập, trả (post_id, variant_row đầu tiên, client, csrf)
+    -- dùng chung cho các test regenerate action.
+
+    Fixture hỏng (không tạo được bài READY) thì check() ngay TẠI ĐÂY thành
+    một failure có tên rõ ràng, rồi vẫn trả (None, None, None, None) để
+    guard `if post_id:` của caller là lớp phòng thủ thứ hai. Trước đây hàm
+    này im lặng trả None -- mọi test dùng nó sẽ "đạt" với 0 check chạy
+    thật, không phân biệt được với "tất cả check đều đạt"."""
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("fixture regenerate: tạo được bài", res.get("ok"), res.get("error"))
+    if not res.get("ok"):
+        conn.close()
+        return None, None, None, None
+    run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+    check("fixture regenerate: có content_generation_run READY",
+          run is not None and run["status"] == "READY", run["status"] if run else None)
+    if not run or run["status"] != "READY":
+        conn.close()
+        return None, None, None, None
+    variant_row = conn.execute("SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label LIMIT 1", (run["id"],)).fetchone()
+    check("fixture regenerate: có ít nhất 1 content_variant_row", variant_row is not None)
+    if variant_row is None:
+        conn.close()
+        return None, None, None, None
+    conn.close()
+    return res["post_id"], dict(variant_row), c, csrf
+
+
+def test_review_action_doi_hook_changes_only_hook():
+    print("\nPOST /duyet/<id>/doi-hook chỉ đổi hook, không đổi angle/main_message/cta của variant")
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        c.post(f"/duyet/{post_id}/doi-hook", data={"variant_id": variant["id"], "_csrf": csrf})
+        conn = connect()
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        conn.close()
+        check("angle không đổi", after["angle"] == variant["angle"], (after["angle"], variant["angle"]))
+        check("main_message không đổi", after["main_message"] == variant["main_message"])
+        check("cta không đổi", after["cta"] == variant["cta"])
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_lam_lai_regenerates_same_angle():
+    print("\nPOST /duyet/<id>/lam-lai sinh lại variant cùng angle, nội dung thực sự đổi")
+    from acp.core import content_variant as _cv
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        # Không có body generator thì generate_body() rơi về template cố định
+        # -- sinh lại ra y hệt chuỗi cũ, "đổi hay không đổi" phụ thuộc may rủi
+        # của rng.choice(CTA_POOL) 2 phần tử. Đăng ký generator trả nội dung
+        # khác nhau mỗi lần để khẳng định chắc chắn: route CÓ chạy lại bộ sinh
+        # và CÓ ghi kết quả mới xuống DB, không âm thầm no-op.
+        calls = {"n": 0}
+
+        def counting_body_generator(prompt):
+            calls["n"] += 1
+            return json.dumps({"main_message": f"Ý chính sinh lại lần {calls['n']}",
+                               "body": [f"Điểm phụ lần {calls['n']}"]}, ensure_ascii=False)
+
+        _cv.set_body_generator(counting_body_generator)
+        try:
+            c.post(f"/duyet/{post_id}/lam-lai", data={"variant_id": variant["id"], "_csrf": csrf})
+        finally:
+            _cv.set_body_generator(None)
+        conn = connect()
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        conn.close()
+        check("angle giữ nguyên (regenerate cùng angle)", after["angle"] == variant["angle"])
+        check("bộ sinh body được gọi lại đúng 1 lần", calls["n"] == 1, calls["n"])
+        changed = [f for f in ("hook", "main_message", "cta", "body_json") if after[f] != variant[f]]
+        check("nội dung thực sự được sinh lại (ít nhất 1 trong hook/main_message/cta/body_json đổi)",
+              bool(changed), changed)
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_doi_angle_changes_angle():
+    print("\nPOST /duyet/<id>/doi-angle đổi THẬT sang angle khác chưa dùng trong run")
+    from acp.core import content_angle
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        conn = connect()
+        used_before = {r["angle"] for r in conn.execute(
+            "SELECT cv.angle FROM content_variant_row cv JOIN content_generation_run cgr "
+            "ON cv.run_id=cgr.id WHERE cgr.post_id=?", (post_id,)).fetchall()}
+        conn.close()
+        resp = c.post(f"/duyet/{post_id}/doi-angle", data={"variant_id": variant["id"], "_csrf": csrf})
+        conn = connect()
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        conn.close()
+        check("variant vẫn còn tồn tại sau request (không bị xoá/lỗi 500)", after is not None)
+        # Pool candidate của "đổi angle" là TOÀN BỘ content_angle.ANGLES (11
+        # angle), còn 1 run chỉ dùng 1-3 -- luôn còn angle chưa dùng, nên phải
+        # đổi được thật, không được rơi vào "Không còn angle nào khác để đổi".
+        check("redirect không kèm err= (route xử lý thành công)",
+              "err=" not in (resp.headers.get("Location") or ""),
+              resp.headers.get("Location"))
+        check("angle đã đổi sang giá trị khác", after["angle"] != variant["angle"],
+              (after["angle"], variant["angle"]))
+        check("angle mới nằm trong content_angle.ANGLES", after["angle"] in content_angle.ANGLES,
+              after["angle"])
+        check("angle mới chưa từng dùng trong run này", after["angle"] not in used_before,
+              (after["angle"], used_before))
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_invalid_action_still_404():
+    print("\nPOST /duyet/<id>/<action_la> action lạ vẫn 404 như trước E6 (không mở khoá action tuỳ ý)")
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        resp = c.post(f"/duyet/{post_id}/hanh-dong-khong-ton-tai", data={"_csrf": csrf})
+        check("404 với action không được định nghĩa", resp.status_code == 404, resp.status_code)
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_doi_hook_missing_variant_id_errors_gracefully():
+    print("\nPOST /duyet/<id>/doi-hook thiếu variant_id -> lỗi rõ, không crash 500")
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        resp = c.post(f"/duyet/{post_id}/doi-hook", data={"_csrf": csrf})
+        check("không crash (không phải 500)", resp.status_code != 500, resp.status_code)
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_doi_hook_rejects_variant_from_other_post():
+    print("\nPOST /duyet/<post_A>/doi-hook với variant_id thuộc post_B -> bị chặn, không đổi hook của post_B")
+    from acp.core import system_settings
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+    with c.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    candidates = [p for p in src.fetch_products(limit=80) if p.product_url]
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res_a = pipeline.create_post_for_product(conn, ctx, candidates[0].external_product_id, "gd2026")
+    res_b = pipeline.create_post_for_product(conn, ctx, candidates[1].external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+
+    check("tạo được cả 2 bài", res_a.get("ok") and res_b.get("ok"),
+          (res_a.get("error"), res_b.get("error")))
+    if res_a.get("ok") and res_b.get("ok"):
+        post_a_id, post_b_id = res_a["post_id"], res_b["post_id"]
+        run_a = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (post_a_id,)).fetchone()
+        run_b = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (post_b_id,)).fetchone()
+        check("cả 2 bài đều có run READY",
+              bool(run_a and run_a["status"] == "READY" and run_b and run_b["status"] == "READY"),
+              (run_a["status"] if run_a else None, run_b["status"] if run_b else None))
+        if run_a and run_a["status"] == "READY" and run_b and run_b["status"] == "READY":
+            variant_b_before = conn.execute(
+                "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label LIMIT 1", (run_b["id"],)).fetchone()
+            conn.close()
+
+            resp = c.post(f"/duyet/{post_a_id}/doi-hook",
+                          data={"variant_id": variant_b_before["id"], "_csrf": csrf})
+            check("không crash (không phải 500)", resp.status_code != 500, resp.status_code)
+
+            conn = connect()
+            variant_b_after = conn.execute(
+                "SELECT * FROM content_variant_row WHERE id=?", (variant_b_before["id"],)).fetchone()
+            conn.close()
+            check("hook của variant post_B không đổi (bị chặn trộn nội dung giữa 2 bài)",
+                  variant_b_after["hook"] == variant_b_before["hook"],
+                  (variant_b_after["hook"], variant_b_before["hook"]))
+        else:
+            conn.close()
+    else:
+        conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_review_action_regenerate_exception_redirects_gracefully_not_500():
+    print("\nPOST /duyet/<id>/doi-hook khi content_engine raise -> redirect có lỗi, không phải 500, có audit")
+    from acp.core import content_engine
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        original = content_engine.regenerate_hook
+
+        def crashing_regenerate(conn, post_id, variant_id):
+            raise RuntimeError("giả lập lỗi LLM")
+
+        content_engine.regenerate_hook = crashing_regenerate
+        try:
+            resp = c.post(f"/duyet/{post_id}/doi-hook", data={"variant_id": variant["id"], "_csrf": csrf})
+            check("không phải 500", resp.status_code != 500, resp.status_code)
+            check("redirect thường (302)", resp.status_code == 302, resp.status_code)
+            conn = connect()
+            audit_row = conn.execute(
+                "SELECT * FROM audit_log WHERE entity='content_variant_row' AND entity_id=? "
+                "AND action='doi-hook_failed' ORDER BY created_at DESC LIMIT 1", (variant["id"],)).fetchone()
+            conn.close()
+            check("có audit doi-hook_failed", audit_row is not None, audit_row)
+        finally:
+            content_engine.regenerate_hook = original
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card():
+    print("\nGET /duyet KHÔNG render variant bị loại vì fact-unsafe (3 cột điểm NULL) thành card chọn được")
+    from acp.core import system_settings, content_variant as _cv
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    src = MockAccessTrade()
+    # Sản phẩm giảm >=5% + category gia-dung -> select_angle_candidates() trả
+    # đủ 3 angle (E2), đủ chỗ cho 1 variant bị loại mà run vẫn READY nhờ các
+    # variant còn lại -- đúng trường hợp mà Option A phải xử lý.
+    target = next(p for p in src.fetch_products(limit=80)
+                  if p.product_url and p.category_code == "gia-dung"
+                  and p.original_price and p.original_price > p.current_price
+                  and (p.original_price - p.current_price) / p.original_price >= 0.05)
+    calls = {"n": 0}
+
+    def first_call_unsafe_generator(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Bịa trải nghiệm cá nhân -> check_fact_safety() chặn ->
+            # select_best_variant() (E4) loại variant khỏi candidates ->
+            # persist_run() ghi NULL cả rule_score/hybrid_score/final_score.
+            return json.dumps({"main_message": "Mình đã dùng 2 tuần rồi, thấy rất ổn.",
+                               "body": []}, ensure_ascii=False)
+        return json.dumps({"main_message": "Thông số ghi trên trang bán.",
+                           "body": []}, ensure_ascii=False)
+
+    _cv.set_body_generator(first_call_unsafe_generator)
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    try:
+        ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+        res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    finally:
+        _cv.set_body_generator(None)
+        system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    if res.get("ok"):
+        run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?", (res["post_id"],)).fetchone()
+        check("run vẫn READY (vẫn còn variant đạt fact safety)",
+              run is not None and run["status"] == "READY", run["status"] if run else None)
+        variant_rows = conn.execute(
+            "SELECT * FROM content_variant_row WHERE run_id=? ORDER BY label",
+            (run["id"],)).fetchall() if run else []
+
+        def _is_rejected(r):
+            return r["rule_score"] is None and r["hybrid_score"] is None and r["final_score"] is None
+
+        rejected = [r for r in variant_rows if _is_rejected(r)]
+        kept = [r for r in variant_rows if not _is_rejected(r)]
+        check("có đúng 1 variant bị loại vì fact-unsafe (3 cột điểm NULL)", len(rejected) == 1,
+              [(r["label"], r["final_score"]) for r in variant_rows])
+        check("vẫn còn ít nhất 1 variant hợp lệ", len(kept) >= 1, len(kept))
+        if rejected and kept:
+            body = c.get("/duyet").get_data(as_text=True)
+            check("variant fact-unsafe KHÔNG xuất hiện trên trang (không chọn/duyệt nhầm được)",
+                  rejected[0]["id"] not in body, rejected[0]["id"])
+            check("variant hợp lệ vẫn hiện bình thường", kept[0]["id"] in body, kept[0]["id"])
+    conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_hides_variant_after_regenerate_produces_unsafe_content():
+    print("\nGET /duyet ẩn variant sau khi REGENERATE sinh ra nội dung fact-unsafe (không chỉ lúc tạo bài)")
+    from acp.core import content_variant as _cv
+    post_id, variant, c, csrf = _mk_ready_variant_row_and_client()
+    if post_id:
+        conn = connect()
+        before = c.get("/duyet").get_data(as_text=True)
+        check("trước khi làm lại, variant có hiện trên /duyet", variant["id"] in before, variant["id"])
+
+        def unsafe_gen(prompt):
+            # Bịa trải nghiệm cá nhân -> check_fact_safety() chặn ->
+            # _rescore_variant() (G3) set cả 3 cột điểm NULL + is_best=0.
+            return json.dumps({"main_message": "Mình đã dùng 2 tuần rồi, thấy rất ổn.",
+                               "body": []}, ensure_ascii=False)
+
+        _cv.set_body_generator(unsafe_gen)
+        try:
+            resp = c.post(f"/duyet/{post_id}/lam-lai",
+                          data={"variant_id": variant["id"], "_csrf": csrf})
+            check("không phải 500", resp.status_code != 500, resp.status_code)
+            check("redirect thường (302)", resp.status_code == 302, resp.status_code)
+        finally:
+            _cv.set_body_generator(None)
+        after = conn.execute("SELECT * FROM content_variant_row WHERE id=?", (variant["id"],)).fetchone()
+        check("3 cột điểm về NULL sau khi chấm lại",
+              after["rule_score"] is None and after["hybrid_score"] is None and after["final_score"] is None,
+              (after["rule_score"], after["hybrid_score"], after["final_score"]))
+        body = c.get("/duyet").get_data(as_text=True)
+        check("variant fact-unsafe sau regenerate KHÔNG còn hiện trên /duyet",
+              variant["id"] not in body, variant["id"])
+        conn.close()
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
+def test_duyet_still_renders_when_content_variant_lookup_fails():
+    print("\nGET /duyet vẫn 200 khi phần đọc variant của Content Engine v2 lỗi (bảng chưa migrate) -- không 500")
+    from acp.core import system_settings, content_platform as _cp
+    os.environ["ACP_ADMIN_PASSWORD"] = "matkhau-test"
+    os.environ["ACP_SECRET_KEY"] = "khoa-phien-test"
+    from acp.web.server import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    c = app.test_client()
+    c.post("/dangnhap", data={"password": "matkhau-test"})
+
+    conn = connect()
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "1")
+    src = MockAccessTrade()
+    target = next(p for p in src.fetch_products(limit=80) if p.product_url)
+    ctx = {"source": src, "publishers": {}, "storage": _FakeStorage()}
+    res = pipeline.create_post_for_product(conn, ctx, target.external_product_id, "gd2026")
+    system_settings.set_setting(conn, "content_engine_v2_enabled", "0")
+    check("tạo bài thành công", res.get("ok"), res.get("error"))
+    run = conn.execute("SELECT * FROM content_generation_run WHERE post_id=?",
+                       (res.get("post_id"),)).fetchone() if res.get("ok") else None
+    check("có content_generation_run READY", run is not None and run["status"] == "READY",
+          run["status"] if run else None)
+    variant_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM content_variant_row WHERE run_id=?", (run["id"],)).fetchall()] if run else []
+    conn.close()
+
+    if run and run["status"] == "READY":
+        original = _cp.adapt_for_platforms
+
+        def crashing_adapt(*a, **kw):
+            # Đại diện cho MỌI lỗi trong khối đọc/dựng variant của E6 (bảng
+            # chưa tồn tại, dữ liệu hỏng...) -- trang /duyet không được 500.
+            raise RuntimeError("giả lập lỗi khối Content Engine v2 ở /duyet")
+
+        _cp.adapt_for_platforms = crashing_adapt
+        try:
+            resp = c.get("/duyet")
+        finally:
+            _cp.adapt_for_platforms = original
+        body = resp.get_data(as_text=True)
+        check("trang /duyet vẫn trả 200 (không 500)", resp.status_code == 200, resp.status_code)
+        check("vẫn render danh sách bài chờ duyệt", "Chờ duyệt" in body)
+        check("khối variant bị bỏ trống, không render card nào",
+              all(vid not in body for vid in variant_ids), variant_ids)
+    for var in ("ACP_ADMIN_PASSWORD", "ACP_SECRET_KEY"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     setup()
     test_niche_matching()
@@ -2807,6 +3375,8 @@ if __name__ == "__main__":
     test_shopee_edge_hardening()
     test_shopee_helper_pairing()
     test_caption_llm_wired_regardless_of_manual_flow()
+    test_content_engine_llm_wired_at_create_app()
+    test_content_engine_llm_not_wired_when_flag_off()
     test_web_security()
     test_value_posts()  # phải chạy SAU test_web_security() -- xem docstring
     test_publish_target_retry_route()
@@ -2830,6 +3400,20 @@ if __name__ == "__main__":
     test_kenh_account_group_crud_end_to_end()
     test_sanpham_shows_account_group_quick_select_both_modes()
     test_vanhanh_shows_multi_channel_post_breakdown()
+    test_duyet_shows_variants_block_when_generation_run_exists()
+    test_duyet_no_variants_block_when_no_generation_run()
+    test_duyet_variant_card_embeds_use_variant_button()
+    test_duyet_page_defines_acp_use_variant_function()
+    test_review_action_doi_hook_changes_only_hook()
+    test_review_action_lam_lai_regenerates_same_angle()
+    test_review_action_doi_angle_changes_angle()
+    test_review_action_invalid_action_still_404()
+    test_review_action_doi_hook_missing_variant_id_errors_gracefully()
+    test_review_action_doi_hook_rejects_variant_from_other_post()
+    test_review_action_regenerate_exception_redirects_gracefully_not_500()
+    test_duyet_does_not_render_fact_unsafe_variant_as_selectable_card()
+    test_duyet_hides_variant_after_regenerate_produces_unsafe_content()
+    test_duyet_still_renders_when_content_variant_lookup_fails()
     print(f"\n{len(PASS)} đạt, {len(FAIL)} hỏng")
     if FAIL:
         print("Hỏng: " + ", ".join(FAIL))
