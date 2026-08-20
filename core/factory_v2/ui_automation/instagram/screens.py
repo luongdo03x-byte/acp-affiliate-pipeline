@@ -5,6 +5,8 @@ from ..detector import ScreenDetector, ScreenSignature
 from ..selectors import Selector
 from .selectors import (
     ACCOUNT_SWITCHER,
+    ACCOUNTS_CENTER_ALLOW,
+    ACCOUNTS_CENTER_TITLE,
     ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
     BIO_INPUT,
@@ -184,6 +186,15 @@ def build_instagram_detector() -> ScreenDetector:
             59,
         ),
         ScreenSignature("IG_POSTCHECK_OK", PACKAGE, (HOME, PROFILE), 2, 0.99, False, 60),
+        ScreenSignature(
+            "IG_ACCOUNTS_CENTER_CONSENT",
+            PACKAGE,
+            (ACCOUNTS_CENTER_TITLE, ACCOUNTS_CENTER_ALLOW),
+            2,
+            0.99,
+            False,
+            73,
+        ),
         ScreenSignature(
             "IG_USERNAME_UNAVAILABLE",
             PACKAGE,
