@@ -52,6 +52,8 @@ Trong file Shopee hiện tại, cột có tiêu đề `Doanh thu` chứa giá tr
 
 `Link ưu đãi` phải là HTTPS `s.shopee.vn/...` và được lưu nguyên văn.
 
+Các numeric parser từ chối giá trị không hữu hạn như `NaN`/`Infinity` thay vì để chúng lọt xuống DB hoặc biến thành lỗi nội bộ không thân thiện.
+
 ## Limits
 
 Một preview có các giới hạn vận hành:
@@ -65,9 +67,9 @@ preview TTL:     15 phút
 
 ACP không lưu raw CSV sau khi parse. Preview server-side chỉ giữ normalized rows trong bộ nhớ process và tự mất khi hết TTL hoặc ACP restart.
 
-## Duplicate rule
+## Duplicate and identity rules
 
-Dedupe key:
+Dedupe key trong một upload:
 
 ```text
 (shop_id, item_id)
@@ -80,6 +82,10 @@ Nếu cùng sản phẩm xuất hiện nhiều lần trong các file đã chọn
 - chỉ winner được phép mutate Product DB;
 - row lỗi không thể trở thành duplicate winner.
 
+Product namespace hiện tại vẫn có natural key lịch sử theo `external_product_id`/item ID. Vì vậy nếu ACP đã có cùng `item_id` nhưng canonical Product URL cho thấy **khác `shop_id`**, importer không tự overwrite. Preview chuyển row đó thành `ERROR` để operator kiểm tra dữ liệu. Đây là guard chống collision, không phải dedupe bình thường.
+
+Row lỗi giữ lại `source_filename` + `source_row_number` để bảng preview chỉ đúng file/dòng cần sửa.
+
 ## Preview semantics
 
 Upload CSV chỉ tạo preview và classification:
@@ -88,7 +94,7 @@ Upload CSV chỉ tạo preview và classification:
 NEW       → chưa có canonical manual_shopee Product
 UPDATED   → Product có nhưng ít nhất một field CSV-owned khác
 UNCHANGED → Product đã đúng với dữ liệu CSV
-ERROR     → row không hợp lệ
+ERROR     → row không hợp lệ hoặc identity collision
 ```
 
 Preview không mutate `product`, `product_price_history`, `post`, `job_queue`, approval, scheduling hoặc publish state. Audit preview chỉ lưu aggregate counts, không lưu raw row hay affiliate URL.
@@ -159,6 +165,7 @@ python -m acp.tests.test_shopee_csv_batches -v
 python -m acp.tests.test_shopee_csv_import -v
 python -m acp.tests.test_shopee_csv_web -v
 python -m acp.tests.test_shopee_csv_audit -v
+python -m acp.tests.test_shopee_csv_review_regressions -v
 python -m acp.tests.test_pipeline
 python -m acp.tests.test_pilot
 ```
@@ -181,7 +188,7 @@ Do the first real CSV pilot against a test/non-production DB:
 3. Open `/sanpham/shopee-import`.
 4. Upload the CSV and click `Preview`.
 5. Confirm preview does not change Product/Post/job counts.
-6. Check NEW/UPDATED/UNCHANGED/ERROR rows.
+6. Check NEW/UPDATED/UNCHANGED/ERROR rows and source file/row for errors.
 7. Click `Import vào Product Pool`.
 8. Verify the exact Shopee short links are stored unchanged.
 9. Import the same file again and verify idempotency.
@@ -189,6 +196,10 @@ Do the first real CSV pilot against a test/non-production DB:
 11. Confirm existing image/rating/category metadata survives update.
 12. Confirm no Post and no job was created.
 13. Stop. Do not approve or publish anything as part of this pilot.
+
+## Current catalog boundary
+
+The current default `/sanpham` catalog query is still scoped to `provider='ACCESSTRADE_TIKTOK'`. CSV import therefore writes canonical Shopee Product rows into the shared Product DB, but this phase intentionally does not redesign that catalog view. Exposing/filtering `SHOPEE_AFFILIATE` rows there is a separate follow-up change.
 
 ## Later phase
 
