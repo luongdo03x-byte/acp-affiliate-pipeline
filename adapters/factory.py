@@ -56,6 +56,20 @@ def get_caption_llm():
     return None
 
 
+def get_seeding_llm():
+    """Structured JSON LLM used by the Seeding multi-account planner.
+
+    Reuse ACP_CAPTION_LLM as the operator switch, but use Gemini JSON mode rather
+    than the free-form caption rewrite callback because seeding_tasks expects an
+    ``accounts[]`` JSON document.
+    """
+    choice = (os.environ.get("ACP_CAPTION_LLM") or "").lower()
+    if choice == "gemini":
+        from ..core import llm_gemini
+        return llm_gemini.rewrite_json
+    return None
+
+
 def get_publishers() -> dict:
     """platform -> Publisher. Đủ 3 platform kể từ sub-project C."""
     publishers = {"threads": get_channel()}
