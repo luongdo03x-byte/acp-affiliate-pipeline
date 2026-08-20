@@ -63,6 +63,8 @@ class ShopeeCsvRowResult:
     row: ShopeeAffiliateCsvRow | None
     error: str | None
     status: str = "VALID"
+    source_filename: str | None = None
+    source_row_number: int | None = None
 
 
 def _required_text(value, label: str) -> str:
@@ -78,9 +80,12 @@ def _decimal_display(value: str, *, label: str) -> Decimal:
         raise ShopeeCsvError(f"Thiếu {label}.")
     normalized = text.replace(".", "").replace(",", ".")
     try:
-        return Decimal(normalized)
+        number = Decimal(normalized)
     except (InvalidOperation, ValueError) as exc:
         raise ShopeeCsvError(f"{label} không hợp lệ.") from exc
+    if not number.is_finite():
+        raise ShopeeCsvError(f"{label} không hợp lệ.")
+    return number
 
 
 def parse_price_vnd(value: str) -> int:
@@ -214,6 +219,16 @@ def _normalize_row(values: dict, *, filename: str, row_number: int) -> ShopeeAff
     )
 
 
+def _row_result(*, row, error, status, filename, row_number):
+    return ShopeeCsvRowResult(
+        row=row,
+        error=error,
+        status=status,
+        source_filename=filename,
+        source_row_number=row_number,
+    )
+
+
 def parse_shopee_affiliate_csv(data: bytes, filename: str) -> list[ShopeeCsvRowResult]:
     if not isinstance(data, (bytes, bytearray)):
         raise ShopeeCsvError("Dữ liệu CSV không hợp lệ.")
@@ -235,23 +250,38 @@ def parse_shopee_affiliate_csv(data: bytes, filename: str) -> list[ShopeeCsvRowR
             raise ShopeeCsvError("CSV thiếu cột bắt buộc: " + ", ".join(missing))
         raise ShopeeCsvError("CSV không đúng cấu trúc 9 cột Shopee Affiliate.")
 
+    source_filename = str(filename or "").strip() or "upload.csv"
     results: list[ShopeeCsvRowResult] = []
     try:
         for row_number, values in enumerate(reader, start=2):
             if None in values:
-                results.append(ShopeeCsvRowResult(
+                results.append(_row_result(
                     row=None,
                     error="Dòng CSV có số cột không hợp lệ.",
                     status="ERROR",
+                    filename=source_filename,
+                    row_number=row_number,
                 ))
                 continue
             try:
-                row = _normalize_row(values, filename=filename, row_number=row_number)
+                row = _normalize_row(values, filename=source_filename, row_number=row_number)
             except (ShopeeCsvError, ShopeeProductError, TypeError, ValueError) as exc:
                 message = str(exc).strip() or "Dòng CSV không hợp lệ."
-                results.append(ShopeeCsvRowResult(row=None, error=message, status="ERROR"))
+                results.append(_row_result(
+                    row=None,
+                    error=message,
+                    status="ERROR",
+                    filename=source_filename,
+                    row_number=row_number,
+                ))
             else:
-                results.append(ShopeeCsvRowResult(row=row, error=None, status="VALID"))
+                results.append(_row_result(
+                    row=row,
+                    error=None,
+                    status="VALID",
+                    filename=source_filename,
+                    row_number=row_number,
+                ))
     except csv.Error as exc:
         raise ShopeeCsvError("CSV không hợp lệ.") from exc
     return results
@@ -280,6 +310,23 @@ def _find_product(conn, item_id: str):
         "SELECT * FROM product WHERE source=? AND merchant=? AND external_product_id=?",
         (PRODUCT_SOURCE, PRODUCT_MERCHANT, str(item_id)),
     ).fetchone()
+
+
+def _find_matching_product(conn, row: ShopeeAffiliateCsvRow):
+    existing = _find_product(conn, row.item_id)
+    if existing is None:
+        return None
+    try:
+        identity = identity_from_url(existing["product_url"])
+    except (ShopeeProductError, TypeError, ValueError) as exc:
+        raise ShopeeCsvError(
+            f"Product hiện có cho item {row.item_id} không có canonical Shopee identity an toàn."
+        ) from exc
+    if identity.item_id != row.item_id or identity.shop_id != row.shop_id:
+        raise ShopeeCsvError(
+            f"Mã sản phẩm {row.item_id} đã tồn tại nhưng thuộc khác shop; không tự overwrite."
+        )
+    return existing
 
 
 def _csv_owned_values(row: ShopeeAffiliateCsvRow) -> dict:
@@ -314,7 +361,7 @@ def _csv_owned_values(row: ShopeeAffiliateCsvRow) -> dict:
 
 
 def classify_row_against_db(conn, row: ShopeeAffiliateCsvRow) -> str:
-    existing = _find_product(conn, row.item_id)
+    existing = _find_matching_product(conn, row)
     if existing is None:
         return "NEW"
     for column, desired in _csv_owned_values(row).items():
@@ -331,7 +378,12 @@ def preview_rows_against_db(conn, row_results: list[ShopeeCsvRowResult]) -> list
         elif result.status == "DUPLICATE_IN_UPLOAD":
             previewed.append(result)
         else:
-            previewed.append(replace(result, status=classify_row_against_db(conn, result.row)))
+            try:
+                status = classify_row_against_db(conn, result.row)
+            except ShopeeCsvError as exc:
+                previewed.append(replace(result, status="ERROR", error=str(exc)))
+            else:
+                previewed.append(replace(result, status=status))
     return previewed
 
 
@@ -438,12 +490,16 @@ def import_rows(conn, row_results: list[ShopeeCsvRowResult]) -> dict:
                 summary["duplicate"] += 1
                 continue
 
-            state = classify_row_against_db(conn, result.row)
+            try:
+                state = classify_row_against_db(conn, result.row)
+            except ShopeeCsvError:
+                summary["error"] += 1
+                continue
             if state == "NEW":
                 _insert_product(conn, result.row)
                 summary["new"] += 1
             elif state == "UPDATED":
-                existing = _find_product(conn, result.row.item_id)
+                existing = _find_matching_product(conn, result.row)
                 _update_product(conn, existing, result.row)
                 summary["updated"] += 1
             else:
