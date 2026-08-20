@@ -46,10 +46,15 @@ class FakeResponse:
 class RecordingHttp:
     def __init__(self):
         self.post_calls = []
+        self.get_calls = []
 
     def post(self, url, **kwargs):
         self.post_calls.append((url, kwargs))
         return FakeResponse({"access_token": "short-secret", "user_id": "uid-alice"})
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return FakeResponse({"access_token": "long-secret", "expires_in": 3600})
 
 
 class ThreadsOAuthClientHttpTests(unittest.TestCase):
@@ -74,6 +79,25 @@ class ThreadsOAuthClientHttpTests(unittest.TestCase):
             },
             kwargs.get("data"),
         )
+
+    def test_exchange_long_lived_sends_short_token_as_access_token_query_param(self):
+        http = RecordingHttp()
+        client = ThreadsOAuthClient(app_id="123", app_secret="secret", http=http)
+
+        result = client.exchange_long_lived("short-secret")
+
+        self.assertEqual("long-secret", result["access_token"])
+        self.assertEqual(1, len(http.get_calls))
+        _, kwargs = http.get_calls[0]
+        self.assertEqual(
+            {
+                "grant_type": "th_exchange_token",
+                "client_secret": "secret",
+                "access_token": "short-secret",
+            },
+            kwargs.get("params"),
+        )
+        self.assertNotIn("headers", kwargs)
 
 
 class AccountFactoryCoreTests(unittest.TestCase):
