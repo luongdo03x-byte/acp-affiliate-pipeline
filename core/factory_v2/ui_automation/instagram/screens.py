@@ -72,6 +72,7 @@ def build_instagram_detector() -> ScreenDetector:
                 _text(
                     "signup_terms_marker",
                     "By signing up, you agree to our Terms",
+                    "To sign up, read and agree to our terms and policies",
                     "Terms",
                     "Điều khoản",
                 ),
