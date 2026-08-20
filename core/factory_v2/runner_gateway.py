@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from core.db import now, ulid
 
+from .account_credentials import get_account_password
 from .models import RunnerType
 from .worker_protocol import WorkerCommand
 
@@ -74,6 +75,19 @@ class RunnerGateway:
             ),
         )
 
+    def _remote_oauth_login_after_open(self, job: dict, opened: dict) -> dict:
+        account = self.repo.get_account(job["account_id"])
+        if account is None:
+            return opened
+        password = get_account_password(self.repo.conn, account["id"])
+        if password is None:
+            return opened
+        return self.send_transient_login_secret(
+            job,
+            username=account["username"],
+            password=password,
+        )
+
     def send(self, job: dict, action: str, payload: dict | None = None) -> dict:
         action = str(action).upper()
         payload = {"job_id": job["id"], **(payload or {})}
@@ -82,7 +96,7 @@ class RunnerGateway:
         runner_type = self._runner_type(job)
 
         if runner_type == RunnerType.REMOTE_AVD.value:
-            return self.worker_processes.request(
+            response = self.worker_processes.request(
                 job["worker_id"],
                 WorkerCommand(
                     command_id=ulid(),
@@ -91,6 +105,9 @@ class RunnerGateway:
                     payload=payload,
                 ),
             )
+            if action == "OPEN_URL":
+                return self._remote_oauth_login_after_open(job, response)
+            return response
 
         if runner_type != RunnerType.LOCAL_DEVICE.value:
             raise ValueError(f"unsupported runner type: {runner_type}")
