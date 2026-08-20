@@ -43,7 +43,7 @@
     <div class="field"><label><input type="checkbox" name="auto_schedule_enabled" value="1" {{ 'checked' if c.auto_schedule_enabled }}> Bật Auto cho account này</label></div>
     <div class="niche-grid">
       <label class="niche-tile"><span>Mục tiêu/ngày<small>1 đến cap, mặc định 2</small><input type="number" name="daily_post_target" min="1" max="3" value="{{ c.daily_post_target }}"></span></label>
-      <label class="niche-tile"><span>Trần/ngày<small>target <= cap <= 3</small><input type="number" name="daily_post_cap" min="1" max="3" value="{{ c.daily_post_cap }}"></span></label>
+      <label class="niche-tile"><span>Trần/ngày<small>target <= cap <= 3; cap legacy hiện có vẫn gửi lại được</small><input type="number" name="daily_post_cap" min="1" max="{{ c.daily_post_cap_input_max }}" value="{{ c.daily_post_cap }}"></span></label>
       <label class="niche-tile"><span>Múi giờ<small>IANA timezone</small><input type="text" name="posting_timezone" value="{{ c.posting_timezone }}"></span></label>
     </div>
     <div class="field"><label for="posting-slots-{{ c.id }}">Posting slots</label><textarea id="posting-slots-{{ c.id }}" name="posting_slots" rows="3" placeholder="09:30&#10;12:30&#10;20:30">{{ c.posting_slots_text }}</textarea><small class="note">Mỗi dòng một slot HH:MM, từ 2 đến 3 slot, không trùng.</small></div>

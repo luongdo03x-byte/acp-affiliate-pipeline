@@ -888,6 +888,7 @@ def create_app():
                     posting_slots = []
             rows.append(dict(ch, niches=nl, posting_slots_list=posting_slots,
                              posting_slots_text="\n".join(posting_slots),
+                             daily_post_cap_input_max=max(3, int(ch["daily_post_cap"] or 3)),
                              pool=len(scoring.score_candidates(conn, limit=9999, niches=nl)),
                              published=conn.execute(
                                  "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED'",

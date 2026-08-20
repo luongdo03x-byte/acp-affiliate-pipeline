@@ -225,6 +225,13 @@ class ChannelAutomationWebTests(unittest.TestCase):
                     id, code, platform, handle, status, enabled, daily_post_cap,
                     min_gap_minutes, niches, created_at
                 ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, ("threads-legacy", "threads_legacy", "threads", "@legacy-threads", "ACTIVE", 1, 12, 90,
+                  '["gia-dung"]', db.now()))
+            conn.execute("""
+                INSERT INTO channel (
+                    id, code, platform, handle, status, enabled, daily_post_cap,
+                    min_gap_minutes, niches, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """, ("facebook-1", "facebook_1", "facebook", "FB Page", "ACTIVE", 1, 3, 90,
                   "[]", db.now()))
         finally:
@@ -257,8 +264,39 @@ class ChannelAutomationWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Tự duyệt + lên lịch", response.text)
         self.assertIn("worker toàn hệ thống", response.text)
-        self.assertEqual(response.text.count('name="daily_post_target"'), 1)
-        self.assertEqual(response.text.count('name="posting_slots"'), 1)
+        self.assertEqual(response.text.count('name="daily_post_target"'), 2)
+        self.assertEqual(response.text.count('name="posting_slots"'), 2)
+
+    def test_legacy_threads_channel_renders_dynamic_cap_max_and_accepts_unchanged_submit(self):
+        response = self.client.get("/kenh")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('name="daily_post_cap" min="1" max="12" value="12"', response.text)
+
+        save = self.client.post("/kenh", data={
+            "_csrf": self.csrf,
+            "channel_id": "threads-legacy",
+            "niches": ["gia-dung", "cong-nghe"],
+            "auto_schedule_enabled": "",
+            "daily_post_target": "2",
+            "daily_post_cap": "12",
+            "posting_timezone": "Asia/Bangkok",
+            "posting_slots": ["09:30", "12:30", "20:30"],
+        })
+        self.assertEqual(save.status_code, 200)
+        self.assertIn("Đã cập nhật nhóm sản phẩm cho @legacy-threads.", save.text)
+
+        conn = db.connect()
+        try:
+            row = conn.execute("""
+                SELECT daily_post_cap, niches
+                FROM channel
+                WHERE id='threads-legacy'
+            """).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row["daily_post_cap"], 12)
+        self.assertEqual(json.loads(row["niches"]), ["gia-dung", "cong-nghe"])
 
     def test_threads_channel_form_persists_automation_config_and_audits(self):
         response = self.client.post("/kenh", data={

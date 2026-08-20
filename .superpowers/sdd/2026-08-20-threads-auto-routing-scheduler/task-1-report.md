@@ -41,8 +41,24 @@ Follow-up red -> green evidence:
 Updated verification commands:
 - `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_auto_scheduler -v` -> PASS
 - `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_account_factory tests.test_auto_scheduler -v` -> PASS
+- `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_auto_scheduler.ChannelAutomationWebTests -v` -> PASS
+- `./manage.sh test` -> PASS (`TEST_OK`, mock mode)
 - `git diff --check` -> PASS
 - `git status --short` -> reviewed before follow-up commit
+
+Legacy browser-cap follow-up:
+- Fixed `/kenh` browser-side `daily_post_cap` input max for legacy Threads channels so unchanged legacy caps like `12` can be submitted without the browser blocking before POST.
+- Kept the server-side Auto clamp semantics unchanged:
+  - new Auto cap values above `3` are still rejected
+  - unchanged legacy caps above `3` are still allowed through validation
+  - niche-only saves still work and do not emit `updated_automation`
+- Implemented dynamic rendering via per-channel `daily_post_cap_input_max` in `web/server.py` and `web/templates/channels.html`.
+
+Legacy browser-cap red -> green evidence:
+- Red: `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_auto_scheduler.ChannelAutomationWebTests -v`
+  - Failed because `/kenh` still rendered legacy Threads `daily_post_cap` with `max="3"` even when the existing stored cap was `12`
+- Green: `/home/dluowng/Downloads/ACP/releases/2.0/acp/.venv/bin/python -m unittest tests.test_auto_scheduler.ChannelAutomationWebTests -v`
+  - Result: `Ran 5 tests ... OK`
 
 Concerns:
 - None within Task 1 scope.
