@@ -22,7 +22,8 @@ class ShopeePolishUiTests(unittest.TestCase):
     def test_review_polish_adds_live_count_context_badges_and_copy_links(self):
         body = read("web/static/shopee_polish.js")
         self.assertIn("/api/review/shopee-context", body)
-        self.assertIn("caption.length", body)
+        self.assertIn("caption.value.length", body)
+        self.assertIn('caption.addEventListener("input", updateCount)', body)
         self.assertIn("Shopee Direct", body)
         self.assertIn("navigator.clipboard", body)
         self.assertIn("affiliate_url", body)
