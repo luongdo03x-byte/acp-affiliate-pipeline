@@ -89,6 +89,55 @@ AVATAR_SKIP = Selector(
     require_clickable=True,
 )
 
+CHOOSE_FROM_LIBRARY = Selector(
+    semantic="choose_from_library",
+    content_descs=("Choose from library", "Chọn từ thư viện"),
+    texts=("Choose from library", "Chọn từ thư viện"),
+    require_clickable=True,
+)
+
+TAKE_PHOTO = Selector(
+    semantic="take_photo",
+    content_descs=("Take photo", "Chụp ảnh"),
+    texts=("Take photo", "Chụp ảnh"),
+    require_clickable=True,
+)
+
+MEDIA_PERMISSION_MESSAGE = Selector(
+    semantic="media_permission_message",
+    text_contains_all=("allow instagram", "photos and videos"),
+)
+
+ALLOW_LIMITED_PHOTOS = Selector(
+    semantic="allow_limited_photos",
+    resource_ids=(
+        "com.android.permissioncontroller:id/permission_allow_selected_button",
+    ),
+    content_descs=("Allow limited access", "Cho phép quyền truy cập hạn chế"),
+    texts=("Allow limited access", "Cho phép quyền truy cập hạn chế"),
+    require_clickable=True,
+)
+
+MEDIA_PICKER_PHOTO = Selector(
+    semantic="media_picker_photo",
+    class_names=("android.widget.FrameLayout",),
+    require_clickable=True,
+)
+
+MEDIA_PICKER_CONFIRM = Selector(
+    semantic="media_picker_confirm",
+    resource_ids=("com.google.android.providers.media.module:id/button_add",),
+    require_clickable=True,
+)
+
+AVATAR_CROP_DONE = Selector(
+    semantic="avatar_crop_done",
+    resource_ids=("com.instagram.android:id/next_button_textview",),
+    content_descs=("Done", "Xong"),
+    texts=("Done", "Xong"),
+    require_clickable=True,
+)
+
 FINAL_SIGNUP_SUBMIT = Selector(
     semantic="final_signup_submit",
     content_descs=("I agree",),
