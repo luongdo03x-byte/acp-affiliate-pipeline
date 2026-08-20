@@ -112,6 +112,7 @@ Runtime/secrets nằm ở `~/Downloads/ACP/shared`, log ở `~/Downloads/ACP/log
 | `python3 run.py work` | Chạy hàng đợi tới khi hết việc |
 | `python3 run.py worker-once` | Chạy một lượt worker theo công tắc tự đăng |
 | `python3 run.py worker-status` | Xem công tắc tự đăng và tổng số job an toàn |
+| `python3 run.py auto-schedule` | Lấp lịch Threads Auto 48 giờ; không bật worker/global publish |
 | `python3 run.py niche` | Xem nhóm sản phẩm của từng kênh |
 | `python3 run.py niche <kênh> <nhóm...>` | Đặt nhóm cho một kênh |
 | `python3 run.py niche <kênh>` | Xoá nhóm (kênh nhận mọi danh mục) |
@@ -401,6 +402,12 @@ và timer `OnUnitActiveSec=60min`. Không đặt scheduler trong Flask worker. K
 trong database sẽ từ chối một lượt đồng bộ đang chạy, nên không chạy chồng nhiều
 job.
 
+Luồng timer an toàn là `sync catalog -> auto-schedule -> worker-once`. `product-sync`
+chỉ cập nhật catalog cục bộ; `auto-schedule` chỉ tạo, duyệt và xếp lịch target
+Auto trong 48 giờ tới; `worker-once` mới là bước có thể publish nếu công tắc
+publish worker toàn hệ thống đã được operator bật. Không timer nào tự bật worker
+hoặc tự chuyển sang live adapter.
+
 Để chạy thủ công, mở `/sanpham`, nhập từ khóa nếu cần và bấm **Đồng bộ**. Trang
 này chỉ đọc catalog cục bộ sau khi sync; operator có thể tạo link affiliate hoặc
 tạo bài nháp cho một sản phẩm. `--auto-prepare` chỉ có hiệu lực khi
@@ -459,6 +466,21 @@ systemctl --user status acp-worker.timer
 Xem lượt chạy gần nhất bằng `journalctl --user -u acp-worker.service -n 100`.
 Sau upgrade, giữ timer đang bật; unit sẽ theo symlink release active. Khi cần
 dừng lịch worker, chạy `systemctl --user disable --now acp-worker.timer`.
+
+Để lấp rolling schedule cho Threads Auto sau mỗi lượt sync, cài thêm timer:
+
+```bash
+cp ops/acp-auto-schedule.service ops/acp-auto-schedule.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acp-auto-schedule.timer
+systemctl --user status acp-auto-schedule.timer
+```
+
+Timer này gọi `run.py auto-schedule` mỗi 60 phút, source đúng `.env.local` của
+release active, không bật publish worker và không bật `ACP_ADAPTER=live`. Giữ
+thứ tự `acp-product-sync.timer` chạy trước, rồi `acp-auto-schedule.timer`, cuối
+cùng mới đến `acp-worker.timer`.
+Nói ngắn gọn: timer này không bật live adapter.
 
 ### Kiểm tra end-to-end bằng mock
 

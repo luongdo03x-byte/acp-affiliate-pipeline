@@ -29,7 +29,7 @@ from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
-from ..core import attribution, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
+from ..core import attribution, auto_scheduler, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
 from ..core import content_checker, content_engine, content_facts, content_hook, content_platform, content_scoring, content_variant
 from ..core.db import connect, now
@@ -58,6 +58,7 @@ class ProductUserError(Exception):
 
 PLATFORM_LABELS = {"threads": "Threads", "facebook": "Facebook", "instagram": "Instagram"}
 _SLOT_RE = re.compile(r"^\d{2}:\d{2}$")
+_AUTO_LIVE_STATUSES = ("SCHEDULED", "PENDING", "RUNNING")
 
 
 def _fmt_vnd(v):
@@ -141,6 +142,89 @@ def validate_channel_automation_config(payload) -> dict:
             "posting_timezone": posting_timezone,
             "posting_slots": json.dumps(posting_slots, ensure_ascii=False),
         },
+    }
+
+
+def _parse_ops_now_utc(raw_value: str | None):
+    text = str(raw_value or "").strip().replace(" ", "+")
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_auto_ops_summary(conn, now_utc: datetime) -> dict:
+    horizon_utc = now_utc + timedelta(hours=48)
+    auto_channels = [dict(row) for row in conn.execute(
+        """
+        SELECT *
+        FROM channel
+        WHERE platform='threads'
+          AND status='ACTIVE'
+          AND COALESCE(enabled, 1)=1
+          AND COALESCE(auto_schedule_enabled, 0)=1
+        ORDER BY code
+        """
+    ).fetchall()]
+    open_slots = sum(len(auto_scheduler.available_slots(conn, channel, now_utc)) for channel in auto_channels)
+
+    placeholders = ",".join("?" for _ in _AUTO_LIVE_STATUSES)
+    upcoming = []
+    for row in conn.execute(
+        f"""
+        SELECT pt.channel_id, pt.status, pt.scheduled_at, ch.handle AS channel_handle, ch.code AS channel_code
+        FROM publish_target pt
+        JOIN channel ch ON ch.id = pt.channel_id
+        WHERE pt.auto_scheduled = 1
+          AND pt.scheduled_at IS NOT NULL
+          AND pt.status IN ({placeholders})
+        ORDER BY pt.scheduled_at ASC, ch.code ASC
+        """,
+        _AUTO_LIVE_STATUSES,
+    ).fetchall():
+        try:
+            scheduled_at = datetime.fromisoformat(row["scheduled_at"]).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if not (now_utc <= scheduled_at < horizon_utc):
+            continue
+        item = dict(row)
+        item.pop("channel_code", None)
+        upcoming.append(item)
+        if len(upcoming) >= 12:
+            break
+
+    stale_reason_counts = {}
+    for row in conn.execute(
+        """
+        SELECT detail
+        FROM audit_log
+        WHERE action='auto_stale_cancelled'
+        ORDER BY id DESC
+        LIMIT 50
+        """
+    ).fetchall():
+        try:
+            detail = json.loads(row["detail"] or "{}")
+        except (TypeError, ValueError):
+            detail = {}
+        reason = str(detail.get("reason") or "unknown").strip() or "unknown"
+        stale_reason_counts[reason] = stale_reason_counts.get(reason, 0) + 1
+
+    return {
+        "enabled_channels": len(auto_channels),
+        "open_slots": open_slots,
+        "upcoming_count": len(upcoming),
+        "upcoming": upcoming,
+        "stale_reasons": [
+            {"reason": reason, "count": stale_reason_counts[reason]}
+            for reason in sorted(stale_reason_counts)
+        ],
     }
 
 
@@ -1037,11 +1121,13 @@ def create_app():
     @app.route("/vanhanh")
     def ops():
         conn = connect()
+        now_utc = _parse_ops_now_utc(request.args.get("now")) or datetime.now(timezone.utc)
         worker_row = conn.execute(
             "SELECT value, updated_at FROM system_setting WHERE key=?", (PUBLISH_WORKER_ENABLED,)).fetchone()
         data = dict(
             worker_enabled=publish_worker_enabled(conn),
             worker_updated_at=worker_row["updated_at"] if worker_row else None,
+            auto_ops=_build_auto_ops_summary(conn, now_utc),
             queue=jobs.queue_summary(conn),
             failed=[dict(r) for r in conn.execute(
                 "SELECT * FROM job_queue WHERE status='FAILED' ORDER BY updated_at DESC LIMIT 10").fetchall()],
@@ -1052,7 +1138,7 @@ def create_app():
                 SELECT c.*, (SELECT COUNT(*) FROM post p WHERE p.channel_id=c.id AND p.status='PUBLISHED'
                              AND substr(p.published_at,1,10)=substr(?,1,10)) AS today,
                        (SELECT COUNT(*) FROM post p WHERE p.channel_id=c.id AND p.status='SCHEDULED') AS queued
-                FROM channel c""", (now(),)).fetchall()],
+                FROM channel c""", (now_utc.isoformat(timespec="seconds"),)).fetchall()],
             posts_by_status=[dict(r) for r in conn.execute(
                 "SELECT status, COUNT(*) AS n FROM post GROUP BY status ORDER BY n DESC").fetchall()],
             publish_targets=[dict(r) for r in conn.execute("""

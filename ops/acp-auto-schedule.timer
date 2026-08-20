@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ACP auto-schedule after catalog sync
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=60min
+AccuracySec=30s
+Persistent=true
+Unit=acp-auto-schedule.service
+
+[Install]
+WantedBy=timers.target

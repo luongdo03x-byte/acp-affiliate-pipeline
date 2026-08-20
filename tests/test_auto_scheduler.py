@@ -311,6 +311,159 @@ class ChannelAutomationWebTests(unittest.TestCase):
 
         self.assertEqual(actions, ["set_niches"])
 
+    def test_ops_page_shows_auto_schedule_summary_with_sanitized_reasons(self):
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        conn = db.connect()
+        try:
+            conn.execute("""
+                UPDATE channel
+                SET auto_schedule_enabled=1,
+                    daily_post_target=2,
+                    daily_post_cap=3,
+                    posting_timezone='Asia/Bangkok',
+                    posting_slots='["09:30", "12:30", "20:30"]'
+                WHERE id='threads-1'
+            """)
+            conn.execute("""
+                INSERT INTO campaign (id, code, name, created_at)
+                VALUES (?,?,?,?)
+            """, ("camp-1", "camp", "Campaign", db.now()))
+            for product_id, name in (("product-1", "Serum dưỡng ẩm"), ("product-2", "Kem chống nắng")):
+                conn.execute("""
+                    INSERT INTO product (
+                        id, source, merchant, external_product_id, name, description,
+                        current_price, original_price, commission_value, commission_rate,
+                        category_code, rating, review_count, sold_count, image_url_original,
+                        image_path_local, product_url, is_available, has_inventory, last_seen_at,
+                        created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    product_id,
+                    "mock",
+                    "Shop",
+                    product_id,
+                    name,
+                    "",
+                    100000,
+                    150000,
+                    20000,
+                    0.1,
+                    "my-pham",
+                    4.8,
+                    20,
+                    100,
+                    "https://img.test/product.jpg",
+                    None,
+                    f"https://example.test/{product_id}",
+                    1,
+                    1,
+                    db.now(),
+                    db.now(),
+                    db.now(),
+                ))
+            conn.execute("""
+                INSERT INTO post (
+                    id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                    disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                    created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                "post-upcoming",
+                "product-1",
+                "threads-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff-1",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                db.now(),
+                db.now(),
+            ))
+            conn.execute("""
+                INSERT INTO publish_target (
+                    id, post_id, channel_id, status, scheduled_at, auto_scheduled, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?)
+            """, (
+                "target-upcoming",
+                "post-upcoming",
+                "threads-1",
+                "SCHEDULED",
+                "2026-08-20T09:30:00+07:00",
+                1,
+                db.now(),
+                db.now(),
+            ))
+            conn.execute("""
+                INSERT INTO post (
+                    id, product_id, channel_id, campaign_id, variant_code, caption_body,
+                    disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+                    created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                "post-cancelled",
+                "product-2",
+                "threads-1",
+                "camp-1",
+                "A",
+                "caption",
+                "Ad",
+                "caption",
+                "https://example.test/aff-2",
+                "PENDING_REVIEW",
+                "2026-08-20T12:30:00+07:00",
+                db.now(),
+                db.now(),
+            ))
+            conn.execute("""
+                INSERT INTO publish_target (
+                    id, post_id, channel_id, status, scheduled_at, auto_scheduled, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?)
+            """, (
+                "target-cancelled",
+                "post-cancelled",
+                "threads-1",
+                "CANCELLED",
+                "2026-08-20T12:30:00+07:00",
+                1,
+                db.now(),
+                db.now(),
+            ))
+            conn.execute("""
+                INSERT INTO audit_log (
+                    entity, entity_id, action, actor, detail, created_at
+                ) VALUES (?,?,?,?,?,?)
+            """, (
+                "publish_target",
+                "target-cancelled",
+                "auto_stale_cancelled",
+                "system",
+                json.dumps({
+                    "target_id": "target-cancelled",
+                    "post_id": "post-cancelled",
+                    "reason": "product_sync_stale",
+                    "affiliate_link": "https://secret.example/token-123",
+                }),
+                db.now(),
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.get("/vanhanh?now=2026-08-20T01:00:00+00:00")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Lịch Auto 48 giờ tới", response.text)
+        self.assertIn("Auto kênh chỉ tạo, duyệt và xếp lịch", response.text)
+        self.assertIn("Worker global vẫn phải bật riêng", response.text)
+        self.assertIn("1 target Auto sắp tới", response.text)
+        self.assertIn("09:30", response.text)
+        self.assertIn("product_sync_stale", response.text)
+        self.assertNotIn("https://secret.example/token-123", response.text)
+        self.assertNotIn("affiliate_link", response.text)
+
 
 class AutoSchedulerRoutingTests(unittest.TestCase):
     def setUp(self):

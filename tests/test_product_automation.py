@@ -2023,6 +2023,27 @@ def test_user_worker_units_use_active_env_without_embedded_secrets():
         assert secret_name not in timer
 
 
+def test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate():
+    """Docs and timer examples must sequence sync -> auto-schedule -> worker without implying auto publish."""
+    readme = Path(ACP_ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = Path(ACP_ROOT / "docs" / "ACP_RUNBOOK.md").read_text(encoding="utf-8")
+    auto_service = Path(ACP_ROOT / "ops" / "acp-auto-schedule.service").read_text(encoding="utf-8")
+    auto_timer = Path(ACP_ROOT / "ops" / "acp-auto-schedule.timer").read_text(encoding="utf-8")
+    help_text = Path(ACP_ROOT / "run.py").read_text(encoding="utf-8")
+
+    combined = "\n".join((readme, runbook, auto_service, auto_timer, help_text))
+
+    assert "python3 run.py auto-schedule" in help_text
+    assert "sync catalog -> auto-schedule -> worker-once" in combined
+    assert "không bật worker" in combined or "không bật publish worker" in combined
+    assert "không bật ACP_ADAPTER=live" in combined or "không bật live adapter" in combined
+    assert "run.py auto-schedule" in auto_service
+    assert "OnUnitActiveSec=60min" in auto_timer
+    for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
+        assert secret_name not in auto_service
+        assert secret_name not in auto_timer
+
+
 @contextlib.contextmanager
 def _catalog_web_app(*, require_auth=False):
     """Create an isolated catalog-backed web client without touching production data."""
@@ -2830,7 +2851,8 @@ def main():
                       test_worker_once_uses_context_and_respects_persisted_publish_switch,
                       test_worker_status_prints_only_switch_and_queue_counts,
                       test_worker_once_returns_safe_nonzero_on_operational_failure,
-                      test_user_worker_units_use_active_env_without_embedded_secrets],
+                      test_user_worker_units_use_active_env_without_embedded_secrets,
+                      test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate],
               "web": [test_products_page_is_local_and_renders_filters,
                       test_catalog_routes_require_csrf_and_hide_api_errors,
                       test_catalog_publish_error_is_redacted_from_redirect_and_page,

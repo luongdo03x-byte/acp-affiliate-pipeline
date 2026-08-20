@@ -33,6 +33,41 @@
   </form>
 </section>
 
+<section class="card panel">
+  <div class="panel-header">
+    <h2>Lịch Auto 48 giờ tới</h2>
+    <span class="tag {{ 'ok' if auto_ops.enabled_channels else '' }}">{{ auto_ops.enabled_channels }} kênh Auto</span>
+  </div>
+  <p class="note">
+    Auto kênh chỉ tạo, duyệt và xếp lịch cho Threads. Worker global vẫn phải bật riêng thì
+    target đến hạn mới được publish.
+  </p>
+  <div class="kpi-grid kpi-grid--4">
+    <div class="kpi-card"><div class="kpi-label">Target Auto sắp tới</div><div class="kpi-value">{{ auto_ops.upcoming_count }}</div><div class="kpi-meta">{{ auto_ops.upcoming_count }} target Auto sắp tới</div></div>
+    <div class="kpi-card"><div class="kpi-label">Slot còn trống</div><div class="kpi-value">{{ auto_ops.open_slots }}</div><div class="kpi-meta">48 giờ tới</div></div>
+    <div class="kpi-card"><div class="kpi-label">Lý do stale</div><div class="kpi-value">{{ auto_ops.stale_reasons|length }}</div><div class="kpi-meta">mã đã khử nhạy cảm</div></div>
+    <div class="kpi-card"><div class="kpi-label">Worker global</div><div class="kpi-value">{{ 'ON' if worker_enabled else 'OFF' }}</div><div class="kpi-meta">tách riêng khỏi Auto</div></div>
+  </div>
+  <div class="grid2">
+    <section>
+      <div class="section-heading section-heading--spaced"><div><h3>Slot đã xếp</h3><p class="note">Chỉ hiển thị kênh, giờ và trạng thái an toàn.</p></div></div>
+      {% if auto_ops.upcoming %}
+      <div class="table-card"><table class="data-table"><thead><tr><th>Kênh</th><th>Giờ</th><th>Trạng thái</th></tr></thead><tbody>
+      {% for item in auto_ops.upcoming %}<tr><td>{{ item.channel_handle }}</td><td class="mono">{{ item.scheduled_at[5:16]|replace('T',' ') }}</td><td><span class="tag">{{ item.status }}</span></td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<div class="empty-state">Chưa có target Auto nào trong 48 giờ tới.</div>{% endif %}
+    </section>
+    <section>
+      <div class="section-heading section-heading--spaced"><div><h3>Lý do freshness gần đây</h3><p class="note">Chỉ hiển thị mã aggregate, không lộ URL, token hay lỗi provider thô.</p></div></div>
+      {% if auto_ops.stale_reasons %}
+      <div class="table-card"><table class="data-table"><thead><tr><th>Mã</th><th class="n">Số lần</th></tr></thead><tbody>
+      {% for item in auto_ops.stale_reasons %}<tr><td class="mono">{{ item.reason }}</td><td class="n">{{ item.count }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<div class="empty-state">Chưa có freshness cancel gần đây.</div>{% endif %}
+    </section>
+  </div>
+</section>
+
 <div class="section-heading section-heading--spaced"><div><h2>Kênh đăng bài</h2><p class="note">Quota và lịch đăng của từng kênh.</p></div></div>
 <div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Kênh</th><th>Trạng thái</th><th class="n">Hôm nay</th><th class="n">Trần ngày</th><th class="n">Chờ đăng</th><th class="n">Giãn cách</th></tr></thead><tbody>
 {% for c in channels %}<tr><td><strong>{{ c.handle }}</strong><span class="mono-sub">{{ c.code }}</span></td><td><span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ c.status }}</span></td><td class="n">{{ c.today }}</td><td class="n dim">{{ c.daily_post_cap }}</td><td class="n dim">{{ c.queued }}</td><td class="n dim">{{ c.min_gap_minutes }} phút</td></tr>{% endfor %}

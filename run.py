@@ -8,13 +8,14 @@
     python3 run.py work                 chạy hàng đợi tới khi hết việc
     python3 run.py worker-once          chạy một lượt worker theo công tắc tự đăng
     python3 run.py worker-status        xem công tắc tự đăng và số lượng job an toàn
-    python3 run.py auto-schedule        lấp lịch Threads Auto 48 giờ; chỉ in số tổng hợp
+    python3 run.py auto-schedule        lấp lịch Threads Auto 48 giờ; không bật worker/global publish
     python3 run.py niche                xem chủ đề của từng kênh
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
     python3 run.py product-sync [từ khoá] [--auto-prepare]
                                          đồng bộ catalog ACCESSTRADE; chỉ tạo bài chờ duyệt
                                          khi có --auto-prepare và ACP_AUTO_PREPARE_CONTENT=true
+                                         thứ tự timer an toàn: sync catalog -> auto-schedule -> worker-once
     python3 run.py product <mã sp>      MỘT sản phẩm -> MỘT bài chờ duyệt
     python3 run.py valuepost <kênh> [loại]   bài không bán hàng cho một kênh
                                          loại: price_level | real_discount | checklist
