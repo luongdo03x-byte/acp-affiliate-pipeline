@@ -15,6 +15,7 @@ from .worker_protocol import WorkerCommand
 
 _ALLOWED_ENV = (
     "PATH", "HOME", "LANG", "LC_ALL", "ANDROID_HOME", "ANDROID_SDK_ROOT",
+    "ACP_AVATAR_DIR",
 )
 _UI_ACTIONS = frozenset({
     "PREPARE_INSTAGRAM",
