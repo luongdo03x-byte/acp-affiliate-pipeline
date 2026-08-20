@@ -67,7 +67,25 @@ ADD_PROFILE_PHOTO = Selector(
         "com.instagram.android:id/add_profile_photo",
         "com.instagram.android:id/add_photo_button",
     ),
-    texts=("Add profile photo", "Thêm ảnh đại diện"),
+    content_descs=(
+        "Add profile photo",
+        "Add a profile picture",
+        "Add picture",
+        "Thêm ảnh đại diện",
+    ),
+    texts=(
+        "Add profile photo",
+        "Add a profile picture",
+        "Add picture",
+        "Thêm ảnh đại diện",
+    ),
+    require_clickable=True,
+)
+
+AVATAR_SKIP = Selector(
+    semantic="avatar_skip",
+    content_descs=("Skip", "Bỏ qua"),
+    texts=("Skip", "Bỏ qua"),
     require_clickable=True,
 )
 
