@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 from . import seeding_accounts, seeding_tasks
 
-_TERMINAL_SLOT_STATUSES = {"DONE", "SKIPPED"}
+_TERMINAL_SLOT_STATUSES = {"DONE", "SKIPPED", "UNKNOWN"}
+_TERMINAL_LIKE_STATUSES = {"DONE", "SKIPPED", "UNKNOWN"}
 
 
 def _now() -> str:
@@ -95,7 +96,7 @@ def next_account_work(conn, instance_id: str) -> dict:
             "account_slot": row["account_slot"],
             "target": _target_payload(row),
         }
-        if bool(rules.get("like_required")) and row["like_status"] != "DONE":
+        if bool(rules.get("like_required")) and row["like_status"] not in _TERMINAL_LIKE_STATUSES:
             return {**base, "action": "LIKE"}
 
         slots = conn.execute(
@@ -297,7 +298,7 @@ def record_comment_result(
     account = _account_for_instance(conn, instance_id)
     outcome = str(result or "").strip().upper()
     if outcome not in _TERMINAL_SLOT_STATUSES:
-        raise ValueError("Kết quả comment phải là DONE hoặc SKIPPED")
+        raise ValueError("Kết quả comment phải là DONE, SKIPPED hoặc UNKNOWN")
     row = conn.execute(
         """SELECT s.*,m.account_id
            FROM seeding_comment_slot s
@@ -316,7 +317,7 @@ def record_comment_result(
         raise ValueError("Comment slot chưa sẵn sàng")
 
     text = str(final_text or row["generated_text"] or "").strip()
-    if outcome == "DONE":
+    if outcome in {"DONE", "UNKNOWN"}:
         if not text:
             raise ValueError("Nội dung comment cuối không được để trống")
         _validate_final_comment(conn, row, text)
@@ -326,5 +327,24 @@ def record_comment_result(
            SET final_text=?,status=?,proof_ref=?,completed_at=?,updated_at=?
            WHERE id=?""",
         (text or None, outcome, proof_ref, stamp, stamp, row["id"]),
+    )
+    return dict(conn.execute("SELECT * FROM seeding_comment_slot WHERE id=?", (row["id"],)).fetchone())
+
+
+def reset_unknown_comment(conn, slot_id: str) -> dict:
+    """Explicit operator retry boundary for an UNKNOWN result."""
+    ensure_execution_schema(conn)
+    row = conn.execute(
+        "SELECT * FROM seeding_comment_slot WHERE id=?", (str(slot_id or "").strip(),)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Không tìm thấy comment slot")
+    if row["status"] != "UNKNOWN":
+        raise ValueError("Chỉ comment UNKNOWN mới được reset")
+    conn.execute(
+        """UPDATE seeding_comment_slot
+           SET status='GENERATED',proof_ref=NULL,completed_at=NULL,updated_at=?
+           WHERE id=?""",
+        (_now(), row["id"]),
     )
     return dict(conn.execute("SELECT * FROM seeding_comment_slot WHERE id=?", (row["id"],)).fetchone())
