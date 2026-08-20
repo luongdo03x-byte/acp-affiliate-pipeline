@@ -10,11 +10,16 @@ from .selectors import (
     ACCOUNTS_CENTER_ALLOW,
     ADD_ACCOUNT,
     ADD_PROFILE_PHOTO,
+    ALLOW_LIMITED_PHOTOS,
+    AVATAR_CROP_DONE,
     AVATAR_SKIP,
     BIO_INPUT,
     BIRTH_DATE_INPUT,
+    CHOOSE_FROM_LIBRARY,
     CONTINUE,
     DISPLAY_NAME_INPUT,
+    MEDIA_PICKER_CONFIRM,
+    MEDIA_PICKER_PHOTO,
     PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
@@ -35,6 +40,10 @@ _CHECKPOINT_RESUMABLE = frozenset({
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
     "IG_AVATAR_SETUP",
+    "IG_AVATAR_SOURCE_MENU",
+    "ANDROID_MEDIA_PERMISSION",
+    "ANDROID_MEDIA_PICKER",
+    "IG_AVATAR_CROP",
 })
 _IG_PROTECTED = (
     "PASSWORD_REQUIRED",
@@ -127,6 +136,18 @@ _AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
     "IG_HOME",
     "IG_POSTCHECK_OK",
 )
+_AFTER_AVATAR_CROP = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_EXISTING_PROFILE",
+    "IG_HOME",
+    "IG_POSTCHECK_OK",
+)
+_ALLOWED_MEDIA_CONFIRM_TEXTS = frozenset({
+    "Allow (1)",
+    "Allow 1 photo",
+    "Allow 1 photo and video",
+    "Cho phép (1)",
+    "Cho phép 1 ảnh",
+})
 
 
 class InstagramFlow:
@@ -470,6 +491,65 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="IG_AVATAR_SETUP")
+        if detected.kind == "IG_AVATAR_SOURCE_MENU":
+            if not str(profile.get("avatar_file") or "").strip():
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+            if self.driver.find(CHOOSE_FROM_LIBRARY) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(CHOOSE_FROM_LIBRARY))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_AVATAR_SOURCE_MENU")
+        if detected.kind == "ANDROID_MEDIA_PERMISSION":
+            if not str(profile.get("avatar_file") or "").strip():
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+            if self.driver.find(ALLOW_LIMITED_PHOTOS) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(ALLOW_LIMITED_PHOTOS))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="ANDROID_MEDIA_PERMISSION")
+        if detected.kind == "ANDROID_MEDIA_PICKER":
+            if not str(profile.get("avatar_file") or "").strip():
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+            if self.driver.find(MEDIA_PICKER_PHOTO) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(MEDIA_PICKER_PHOTO))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+
+            confirm = None
+            confirm_text = ""
+            for _ in range(3):
+                candidate = self.driver.find(MEDIA_PICKER_CONFIRM)
+                if candidate is None:
+                    continue
+                confirm = candidate
+                confirm_text = str(getattr(candidate, "text", "") or "").strip()
+                if confirm_text in _ALLOWED_MEDIA_CONFIRM_TEXTS:
+                    break
+            if confirm is None or confirm_text not in _ALLOWED_MEDIA_CONFIRM_TEXTS:
+                return FlowResult("needs_confirmation", detected.kind, "MEDIA_PICKER_NOT_CONFIRMED")
+
+            action = self._attempt(lambda: self.driver.tap(MEDIA_PICKER_CONFIRM))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="ANDROID_MEDIA_PICKER")
+        if detected.kind == "IG_AVATAR_CROP":
+            if not str(profile.get("avatar_file") or "").strip():
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
+            if self.driver.find(AVATAR_CROP_DONE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(
+                lambda: self.driver.tap(
+                    AVATAR_CROP_DONE,
+                    expected_screens=_AFTER_AVATAR_CROP,
+                    timeout=12.0,
+                )
+            )
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("completed", detected.kind, last_safe_step="IG_AVATAR_CROP")
         if detected.kind == "IG_PROFILE_SETUP":
             approved = (
                 (USERNAME_INPUT, str(profile.get("username") or "")),
