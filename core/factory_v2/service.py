@@ -7,6 +7,7 @@ import re
 
 from core.db import now, transaction, ulid
 
+from .avatar_pool import AvatarPool, configured_avatar_root, validate_avatar_reference
 from .identity import generate_profiles
 from .models import AccountStage, BatchStatus, RunnerType, WorkerState
 from .state_machine import require_transition, safe_stage_after_transition
@@ -91,24 +92,25 @@ def _validate_birth_date(value) -> str | None:
     return born.isoformat()
 
 
-def _validate_avatar_file(value) -> str | None:
+def _validate_avatar_file(value, *, avatar_root: Path) -> str | None:
     text = _clean_optional_signup_text(value, "avatar_file", max_length=300)
     if text is None:
         return None
-    relative = Path(text)
-    if relative.is_absolute():
-        raise ValueError("avatar_file must be a repository-relative path")
-    resolved = (_REPO_ROOT / relative).resolve()
     try:
-        resolved.relative_to(_REPO_ROOT)
+        return validate_avatar_reference(
+            text,
+            repo_root=_REPO_ROOT,
+            avatar_root=avatar_root,
+        )
     except ValueError as exc:
-        raise ValueError("avatar_file must stay inside the repository") from exc
-    return relative.as_posix()
+        raise ValueError("invalid avatar_file") from exc
 
 
 class FactoryService:
-    def __init__(self, repository):
+    def __init__(self, repository, *, avatar_dir=None, avatar_rng=None):
         self.repo = repository
+        self.avatar_root = configured_avatar_root(_REPO_ROOT, avatar_dir)
+        self.avatar_rng = avatar_rng
 
     def create_batch(
         self,
@@ -134,31 +136,41 @@ class FactoryService:
             "reminder_interval_minutes": 10,
             "completion_mode": completion_mode,
         }
-        account_rows = []
-        for sequence, profile in enumerate(profiles, start=1):
-            account_rows.append({
-                "id": ulid(),
-                "batch_id": batch_id,
-                "sequence": sequence,
-                "group_no": ((sequence - 1) // 5) + 1,
-                "username": profile.username,
-                "display_name": profile.display_name,
-                "bio": profile.bio,
-                "gender_profile": profile.gender_profile,
-                "primary_niche": profile.primary_niche,
-                "secondary_interest": profile.secondary_interest,
-                "personality_style": profile.personality_style,
-                "content_tone": profile.content_tone,
-                "avatar_type": profile.avatar_type,
-                "avatar_theme": profile.avatar_theme,
-                "avatar_prompt": profile.avatar_prompt,
-                "stage": AccountStage.PROFILE_READY.value,
-                "last_safe_stage": AccountStage.PROFILE_READY.value,
-                "execution_target": execution_target,
-                "created_at": created_at,
-                "updated_at": created_at,
-            })
         with transaction(self.repo.conn):
+            avatar_pool = AvatarPool(
+                self.repo.conn,
+                self.avatar_root,
+                rng=self.avatar_rng,
+            )
+            account_rows = []
+            previous_avatar = None
+            for sequence, profile in enumerate(profiles, start=1):
+                avatar_file = avatar_pool.choose(avoid=previous_avatar)
+                if avatar_file is not None:
+                    previous_avatar = avatar_file
+                account_rows.append({
+                    "id": ulid(),
+                    "batch_id": batch_id,
+                    "sequence": sequence,
+                    "group_no": ((sequence - 1) // 5) + 1,
+                    "username": profile.username,
+                    "display_name": profile.display_name,
+                    "bio": profile.bio,
+                    "gender_profile": profile.gender_profile,
+                    "primary_niche": profile.primary_niche,
+                    "secondary_interest": profile.secondary_interest,
+                    "personality_style": profile.personality_style,
+                    "content_tone": profile.content_tone,
+                    "avatar_type": profile.avatar_type,
+                    "avatar_theme": profile.avatar_theme,
+                    "avatar_prompt": profile.avatar_prompt,
+                    "avatar_file": avatar_file,
+                    "stage": AccountStage.PROFILE_READY.value,
+                    "last_safe_stage": AccountStage.PROFILE_READY.value,
+                    "execution_target": execution_target,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                })
             self.repo.create_batch(batch_row)
             self.repo.insert_accounts(account_rows)
         return self.repo.get_batch(batch_id)
@@ -214,7 +226,10 @@ class FactoryService:
             raise ValueError("email is required when signup_contact_type=email")
 
         clean_birth_date = _validate_birth_date(birth_date)
-        clean_avatar_file = _validate_avatar_file(avatar_file)
+        clean_avatar_file = _validate_avatar_file(
+            avatar_file,
+            avatar_root=self.avatar_root,
+        )
 
         batch = self.create_batch(
             name,
@@ -225,7 +240,8 @@ class FactoryService:
         account = self.repo.list_accounts(batch["id"])[0]
         self.repo.conn.execute(
             """UPDATE factory_account
-               SET signup_contact_type=?, phone=?, email=?, birth_date=?, avatar_file=?, updated_at=?
+               SET signup_contact_type=?, phone=?, email=?, birth_date=?,
+                   avatar_file=COALESCE(?, avatar_file), updated_at=?
                WHERE id=?""",
             (
                 contact_type,
