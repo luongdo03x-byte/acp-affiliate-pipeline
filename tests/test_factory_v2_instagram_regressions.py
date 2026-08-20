@@ -67,6 +67,16 @@ class AvatarFlowDriver:
         return ActionResult("completed")
 
 
+class ExistingProfileCheckpointDriver:
+    def detect_screen(self):
+        return DetectedScreen(
+            "IG_EXISTING_PROFILE",
+            0.97,
+            ("profile", "account_switcher"),
+            False,
+        )
+
+
 class CheckpointRouteRuntime(FactoryControllerRuntime):
     def __init__(self):
         self.refreshed = False
@@ -158,6 +168,13 @@ class InstagramRegressionTests(unittest.TestCase):
         self.assertEqual("running", result.status)
         self.assertEqual("IG_AVATAR_SETUP", result.screen)
         self.assertEqual([], driver.mutations)
+
+    def test_existing_profile_checkpoint_completes_without_reentering_signup(self):
+        result = InstagramFlow(ExistingProfileCheckpointDriver()).observe_checkpoint()
+
+        self.assertEqual("completed", result.status)
+        self.assertEqual("IG_EXISTING_PROFILE", result.screen)
+        self.assertEqual("IG_EXISTING_PROFILE", result.last_safe_step)
 
     def test_running_checkpoint_result_routes_back_to_automation(self):
         runtime = CheckpointRouteRuntime()
