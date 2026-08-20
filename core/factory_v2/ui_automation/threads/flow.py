@@ -6,7 +6,8 @@ from .screens import PACKAGE
 from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, JOIN_THREADS
 
 _SUCCESS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
-_CHECKPOINT_SUCCESSORS = frozenset({"THREADS_PROFILE_SETUP", "THREADS_HOME", "THREADS_POSTCHECK_OK"})
+_CHECKPOINT_SUCCESSORS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
+_CHECKPOINT_RESUMABLE = frozenset({"THREADS_ONBOARDING", "THREADS_PROFILE_SETUP"})
 _THREADS_PROTECTED = (
     "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
     "EMAIL_OR_PHONE_VERIFICATION", "SELFIE_OR_IDENTITY_CHECK",
@@ -114,6 +115,8 @@ class ThreadsFlow:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
         if detected.kind in _CHECKPOINT_SUCCESSORS and detected.automation_allowed:
             return FlowResult("completed", detected.kind, last_safe_step=detected.kind)
+        if detected.kind in _CHECKPOINT_RESUMABLE and detected.automation_allowed:
+            return FlowResult("running", detected.kind, last_safe_step=detected.kind)
         if detected.kind in {"RATE_LIMITED", "ACTION_BLOCKED"}:
             return FlowResult("retry_pending", detected.kind, detected.kind)
         if detected.kind == "ACCOUNT_DISABLED":
