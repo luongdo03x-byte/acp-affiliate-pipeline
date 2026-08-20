@@ -315,7 +315,7 @@ class ThreadsOAuthClient:
     def exchange_code(self, code: str, redirect_uri: str):
         response = self.http.post(
             TOKEN_URL,
-            params={
+            data={
                 "client_id": self.app_id,
                 "client_secret": self.app_secret,
                 "code": code,
