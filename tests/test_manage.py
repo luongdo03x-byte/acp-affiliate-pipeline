@@ -149,6 +149,11 @@ class ManageScriptTests(unittest.TestCase):
         status2 = self.run_manage("status")
         self.assertIn("STOPPED", status2.stdout)
 
+    def test_start_runs_schema_migration_before_serving(self) -> None:
+        started = self.run_manage("start")
+        self.assertIn("SCHEMA_OK", started.stdout)
+        self.assertIn("ACP_STARTED", started.stdout)
+
     def test_invalid_command_is_rejected(self) -> None:
         r = self.run_manage("wat", check=False)
         self.assertNotEqual(0, r.returncode)

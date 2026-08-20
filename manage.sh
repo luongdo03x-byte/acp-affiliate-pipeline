@@ -248,6 +248,9 @@ cmd_start() {
     if pid_matches "$APP_PID" "run.py serve"; then
         info "ACP_ALREADY_RUNNING pid=$(cat "$APP_PID")"
     else
+        # init_db() chỉ áp dụng schema/migration idempotent; đây là đường
+        # nâng cấp an toàn cho shared SQLite cũ trước khi route mới truy cập.
+        migrate_release "$release"
         rm -f "$APP_PID"
         (
             cd "$release"
