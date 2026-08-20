@@ -1,6 +1,8 @@
 """Secret-aware browser driver isolated from the general SafeUiDriver."""
 from __future__ import annotations
 
+import time
+
 from ..driver import ActionResult
 from ..hierarchy import UiHierarchyReader
 from ..selectors import normalize_ui_text
@@ -32,10 +34,22 @@ def _node_text(node) -> str:
 class BrowserSecretDriver:
     """Types credentials only on a positively recognized two-field login form."""
 
-    def __init__(self, adb, detector, *, hierarchy_reader=None):
+    def __init__(
+        self,
+        adb,
+        detector,
+        *,
+        hierarchy_reader=None,
+        poll_interval: float = 0.5,
+        monotonic=None,
+        sleeper=None,
+    ):
         self.adb = adb
         self.detector = detector
         self.hierarchy_reader = hierarchy_reader or UiHierarchyReader()
+        self.poll_interval = max(0.0, float(poll_interval))
+        self._monotonic = monotonic or time.monotonic
+        self._sleep = sleeper or time.sleep
 
     def snapshot(self):
         package, activity = self.adb.foreground()
@@ -47,6 +61,15 @@ class BrowserSecretDriver:
 
     def detect_screen(self):
         return self.detector.detect(self.snapshot())
+
+    def wait_for(self, screens, timeout: float):
+        expected = frozenset(screens)
+        deadline = self._monotonic() + max(0.0, float(timeout))
+        last = self.detect_screen()
+        while last.kind not in expected and self._monotonic() < deadline:
+            self._sleep(self.poll_interval)
+            last = self.detect_screen()
+        return last
 
     def _login_nodes(self):
         snapshot = self.snapshot()
