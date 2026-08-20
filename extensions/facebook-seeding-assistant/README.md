@@ -15,7 +15,7 @@ Account slot 2 → FB02
 Account slot 3 → FB03
 ```
 
-Each profile only receives work for its mapped slot.
+Each profile only receives work for its mapped slot. When the visible Facebook post needs a comment plan, ACP reads that post context once and asks Gemini in structured JSON mode to generate the complete distinct plan for the accounts actually mapped to the task. This keeps FB01/FB02/FB03 content different while still applying the task-wide forbidden-word and near-duplicate validators.
 
 ## Safety model
 
@@ -46,6 +46,8 @@ Each profile only receives work for its mapped slot.
    ACP_GEMINI_API_KEY=<gemini-key>
    ```
 
+   `ACP_CAPTION_LLM=gemini` also enables the Seeding planner, but Seeding uses the structured `rewrite_json()` callback rather than the free-form caption callback.
+
 3. Open `chrome://extensions`, enable Developer mode and **Load unpacked**:
 
    ```text
@@ -72,13 +74,17 @@ The extension checks for newly assigned work again while IDLE, so an already-ope
 pair Chrome Profiles
 → create task
 → map accounts
+→ each mapped profile receives only its own account_slot
 → profile opens target
 → operator Like + confirm if required
-→ ACP reads post + generates distinct plan
-→ profile gets its own MAIN/REPLY slot
+→ one mapped profile submits visible post context to ACP
+→ Gemini JSON mode generates one distinct plan for all mapped slots
+→ FB01 receives slot 1 MAIN/REPLY only
+→ FB02 receives slot 2 MAIN/REPLY only
+→ FB03 receives slot 3 MAIN/REPLY only
 → extension fills composer only
 → operator presses Facebook Post
-→ ACP verifies + records final text
+→ ACP verifies + records final edited text
 → when all mapped accounts finish: report B/C/D / optional Google Sheet
 ```
 
@@ -89,5 +95,7 @@ Google Sheets setup: `docs/SEEDING_SHEET_SETUP.md`.
 ```bash
 node --test extensions/facebook-seeding-assistant/tests/*.test.cjs
 ```
+
+The Python Seeding release gate also includes `tests/test_seeding_llm_contract.py`, which ensures `/prepare` uses Gemini JSON response mode rather than the free-form caption callback.
 
 These tests do not open Facebook or publish anything.
