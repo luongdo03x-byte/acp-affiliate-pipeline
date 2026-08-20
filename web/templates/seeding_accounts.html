@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Facebook Accounts — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Facebook profiles</div>
+    <h1>Facebook Account Manager</h1>
+    <p class="lede">Mỗi Chrome Profile có một extension instance riêng. ACP chỉ lưu nhãn, instance id và heartbeat; không lưu mật khẩu hay cookie Facebook.</p>
+  </div>
+  <a class="btn" href="/seeding{% if selected %}?campaign_id={{ selected.id }}{% endif %}">← Quay lại Seeding</a>
+</div>
+
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if request.args.get('message') %}<div class="alert"><strong>Đã cập nhật.</strong><span>{{ request.args.get('message') }}</span></div>{% endif %}
+
+<div class="grid2">
+  <section class="card panel">
+    <div class="panel-header"><h2>Account đã kết nối</h2><span class="tag">{{ facebook_accounts|length }}</span></div>
+    <p class="note">Trong từng Chrome Profile: mở Facebook → ACP extension → nhập nhãn như FB01/FB02 → “Lưu & kết nối”. Heartbeat chạy mỗi phút.</p>
+    {% if facebook_accounts %}
+    <div class="table-card"><div class="table-scroll"><table class="data-table">
+      <thead><tr><th>Account</th><th>Trạng thái</th><th>Profile ID</th><th>Last seen</th></tr></thead>
+      <tbody>
+      {% for a in facebook_accounts %}
+        <tr>
+          <td><strong>{{ a.label }}</strong></td>
+          <td><span class="tag {{ 'ok' if a.online else 'bad' }}">{{ 'ONLINE' if a.online else 'OFFLINE' }}</span></td>
+          <td><code>{{ a.extension_instance_id[:12] }}…</code></td>
+          <td class="dim mono">{{ a.last_seen_at[5:16]|replace('T',' ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div></div>
+    {% else %}
+      <div class="empty-state">Chưa có Chrome Profile nào pair với ACP.</div>
+    {% endif %}
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Gán account cho nhiệm vụ</h2>{% if selected %}<span class="tag">max {{ selected.max_accounts }}</span>{% endif %}</div>
+    {% if campaigns %}
+      <form method="get" action="/seeding/accounts" class="stack-form">
+        <label>Nhiệm vụ
+          <select name="campaign_id" onchange="this.form.submit()">
+            {% for c in campaigns %}<option value="{{ c.id }}" {{ 'selected' if selected and c.id==selected.id }}>{{ c.name }} · max {{ c.max_accounts }}</option>{% endfor %}
+          </select>
+        </label>
+      </form>
+    {% endif %}
+
+    {% if selected %}
+      <form method="post" action="/seeding/campaign/{{ selected.id }}/accounts" class="stack-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <p class="note">Chọn tối đa {{ selected.max_accounts }} account. Sau khi comment đã được sinh/LIKE đã xác nhận, mapping sẽ bị khóa để không gán nhầm nội dung sang profile khác.</p>
+        {% if facebook_accounts %}
+          {% for a in facebook_accounts %}
+            <label class="checkbox-row">
+              <input type="checkbox" name="account_ids" value="{{ a.id }}" {{ 'checked' if a.id in task_account_ids }}>
+              <span><strong>{{ a.label }}</strong> · {{ 'ONLINE' if a.online else 'OFFLINE' }}</span>
+            </label>
+          {% endfor %}
+          <button class="btn btn--primary" type="submit">Lưu mapping account</button>
+        {% else %}
+          <div class="empty-state">Kết nối ít nhất một Chrome Profile trước.</div>
+        {% endif %}
+      </form>
+
+      {% if task_accounts %}
+        <div class="section-heading section-heading--spaced"><div><h3>Mapping hiện tại</h3></div></div>
+        <div class="table-card"><table class="data-table">
+          <thead><tr><th>Slot</th><th>Facebook account</th></tr></thead>
+          <tbody>{% for row in task_accounts %}<tr><td>Account {{ row.account_slot }}</td><td>{{ row.label }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      {% endif %}
+    {% else %}
+      <div class="empty-state">Tạo nhiệm vụ trước rồi quay lại đây để gán account.</div>
+    {% endif %}
+  </section>
+</div>
+
+{% if selected and report_state %}
+<section class="card panel section-heading--spaced">
+  <div class="panel-header">
+    <div><h2>Tiến độ &amp; báo cáo</h2><p class="note">Báo cáo chỉ tự ghi Sheet khi tất cả account đã chọn hoàn thành đủ LIKE (nếu yêu cầu) và toàn bộ comment.</p></div>
+    <span class="tag {{ 'ok' if report_state.complete else '' }}">{{ 'COMPLETE' if report_state.complete else 'IN PROGRESS' }}</span>
+  </div>
+  <div class="kpi-grid kpi-grid--4">
+    <div class="kpi-card"><div class="kpi-label">ACCOUNT</div><div class="kpi-value">{{ report_state.account_count }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">COMMENT</div><div class="kpi-value">{{ report_state.comment_done }}/{{ report_state.comment_total }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">LIKE</div><div class="kpi-value">{{ report_state.like_done }}/{{ report_state.account_count if report_state.like_required else 0 }}</div></div>
+    <div class="kpi-card"><div class="kpi-label">SHEET</div><div class="kpi-value" style="font-size:16px">{{ report_state.report.status if report_state.report else ('READY' if report_state.complete else 'WAIT') }}</div></div>
+  </div>
+  {% if report_state.report and report_state.report.last_error %}
+    <div class="alert alert--error"><strong>Sheet lỗi.</strong><span>{{ report_state.report.last_error }}</span></div>
+  {% endif %}
+
+  {% if report_state.unknown_slots %}
+    <div class="alert alert--error">
+      <strong>Có {{ report_state.unknown_slots|length }} comment UNKNOWN.</strong>
+      <span>ACP đã khóa các slot này để không tự đưa ra đăng lại. Hãy kiểm tra Facebook; chỉ reset nếu chắc chắn comment chưa được đăng.</span>
+    </div>
+    <div class="table-card"><div class="table-scroll"><table class="data-table">
+      <thead><tr><th>Account</th><th>Loại</th><th>Nội dung cuối</th><th>Xử lý</th></tr></thead>
+      <tbody>
+      {% for slot in report_state.unknown_slots %}
+        <tr>
+          <td><strong>{{ slot.account_label }}</strong> · slot {{ slot.account_slot }}</td>
+          <td>{{ 'CMT chính' if slot.comment_type=='MAIN' else 'Reply ' ~ slot.item_index }}</td>
+          <td>{{ slot.final_text or slot.generated_text or '—' }}</td>
+          <td>
+            <form method="post" action="/seeding/comment/{{ slot.id }}/reset-unknown">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+              <button class="btn btn--danger" type="submit">Reset để thử lại</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div></div>
+  {% endif %}
+
+  <div class="button-row" style="margin-top:12px;flex-wrap:wrap">
+    <a class="btn" href="/seeding/campaign/{{ selected.id }}/report.tsv">Tải TSV B/C/D</a>
+    {% if sheet_configured %}
+      <form method="post" action="/seeding/campaign/{{ selected.id }}/report/sheet">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--primary" type="submit" {{ 'disabled' if not report_state.complete }}>Ghi Google Sheet</button>
+      </form>
+    {% else %}
+      <span class="note">Chưa cấu hình ACP_SEEDING_SHEET_WEBHOOK_URL / ACP_SEEDING_SHEET_SECRET.</span>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -10,6 +10,10 @@ from .shopee_helper import register_shopee_helper_hardening
 from .shopee_product_intel import register_shopee_product_intel
 from .shopee_polish import register_shopee_polish
 
+# Import account extensions before server.create_app() registers the shared
+# Seeding blueprint; the extension routes reuse its blueprint instance.
+from . import seeding_account_routes as _seeding_account_routes  # noqa: F401,E402
+
 _base_create_app = _server.create_app
 
 

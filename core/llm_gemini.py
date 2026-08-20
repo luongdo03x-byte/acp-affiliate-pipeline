@@ -3,8 +3,8 @@ nháp deterministic, cho 2 nơi dùng độc lập:
 
 - ACP_CAPTION_LLM=gemini -- rewrite() (v1), core/content.py dùng.
 - ACP_CONTENT_ENGINE_LLM=gemini -- rewrite_json() (G1), 6 hook của Content
-  Engine v2 (E1-E4: content_facts/content_angle/content_hook/
-  content_variant/content_checker/content_scoring) dùng.
+  Engine v2 dùng.
+- ACP_CAPTION_LLM=gemini -- rewrite_json() cho Seeding multi-account planner.
 
 Cả 2 cờ đều cần ACP_GEMINI_API_KEY (lấy miễn phí ở aistudio.google.com,
 không cần thẻ thanh toán) trong shared/.env.local; tắt cờ nào thì phần đó
@@ -43,7 +43,7 @@ def rewrite(prompt: str) -> str:
 
 def rewrite_json(prompt: str) -> str:
     """fn(prompt) -> str theo đúng chữ ký các set_*() của Content Engine
-    v2 (E1-E4) yêu cầu -- model PHẢI trả JSON hợp lệ, dùng Gemini JSON
+    v2 và Seeding yêu cầu -- model PHẢI trả JSON hợp lệ, dùng Gemini JSON
     mode thay vì text thô như rewrite() (v1) để giảm rủi ro model bọc
     markdown code-fence (```json ... ```) làm vỡ json.loads() ở phía gọi.
     Callers (E1-E4) đã tự retry tối đa 3 lần + fallback khi parse lỗi --

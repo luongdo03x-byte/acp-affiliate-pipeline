@@ -15,12 +15,17 @@ from .db import audit, now
 
 
 PUBLISH_WORKER_ENABLED = "publish_worker_enabled"
+SEEDING_GLOBAL_PAUSED = "seeding_global_paused"
 CONTENT_ENGINE_V2_ENABLED = "content_engine_v2_enabled"
 
 # Giá trị các khoá này không nhạy cảm (chỉ "0"/"1") -- ghi thật vào audit
 # thay vì "[redacted]" để vận hành viên xem lịch sử bật/tắt trực tiếp từ
 # audit_log mà không cần tra thêm.
-_UNREDACTED_KEYS = {PUBLISH_WORKER_ENABLED, CONTENT_ENGINE_V2_ENABLED}
+_UNREDACTED_KEYS = {
+    PUBLISH_WORKER_ENABLED,
+    SEEDING_GLOBAL_PAUSED,
+    CONTENT_ENGINE_V2_ENABLED,
+}
 
 
 def get_system_setting(conn, key: str, default=None):
@@ -44,6 +49,16 @@ def set_system_setting(conn, key: str, value, actor: str = "operator") -> None:
 def publish_worker_enabled(conn) -> bool:
     """Fail-safe: không có bản ghi nào đồng nghĩa worker đăng bài đang tắt."""
     return get_system_setting(conn, PUBLISH_WORKER_ENABLED, "0") == "1"
+
+
+def seeding_global_paused(conn) -> bool:
+    """Không có setting nghĩa là seeding đang hoạt động; campaign vẫn tự quyết auto-submit."""
+    return get_system_setting(conn, SEEDING_GLOBAL_PAUSED, "0") == "1"
+
+
+def set_seeding_global_paused(conn, paused: bool, actor: str = "operator") -> None:
+    """Bật/tắt kill switch seeding và để lại audit qua set_system_setting()."""
+    set_system_setting(conn, SEEDING_GLOBAL_PAUSED, "1" if paused else "0", actor=actor)
 
 
 def is_content_engine_v2_enabled(conn) -> bool:

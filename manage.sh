@@ -332,12 +332,14 @@ run_release_tests() {
     load_env_from "$release"
     (
         cd "$parent"
-        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_pipeline
-        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_pilot
+        ACP_ENV=test ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_pipeline
+        ACP_ENV=test ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_pilot
+        ACP_ENV=test ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_seeding
+        ACP_ENV=test ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" -m acp.tests.test_seeding_web
     )
     (
         cd "$release"
-        ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" run.py doctor
+        ACP_ENV=test ACP_ADAPTER=mock ACP_SOURCE=mock ACP_CAPTION_LLM= ACP_CONTENT_ENGINE_LLM= "$release/.venv/bin/python" run.py doctor
     )
 }
 

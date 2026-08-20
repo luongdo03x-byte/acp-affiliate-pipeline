@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Seeding — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Facebook workflow</div>
+    <h1>Seeding</h1>
+    <p class="lede">Tạo nhiệm vụ từ yêu cầu gốc, lưu link bài, parse rule và chuẩn bị comment khác nhau theo từng account.</p>
+  </div>
+  <form method="post" action="/seeding/global-pause">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="campaign_id" value="{{ selected.id if selected else '' }}">
+    <input type="hidden" name="paused" value="{{ '0' if global_paused else '1' }}">
+    <button class="btn {{ 'btn--primary' if global_paused else 'btn--danger' }}" type="submit">
+      {{ 'Tắt Global pause' if global_paused else 'STOP NOW · Global pause' }}
+    </button>
+  </form>
+</div>
+
+{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if request.args.get('message') %}<div class="alert"><strong>Đã cập nhật.</strong><span>{{ request.args.get('message') }}</span></div>{% endif %}
+{% if global_paused %}<div class="alert alert--error"><strong>Global pause đang BẬT.</strong><span>Extension không được lấy target mới hoặc auto-submit cho tới khi operator tắt pause.</span></div>{% endif %}
+
+<section class="card panel card--elevated">
+  <div class="panel-header">
+    <div>
+      <div class="eyebrow">Task intake</div>
+      <h2>Tạo nhiệm vụ</h2>
+      <p class="note">Chỉ cần nhập tên nhiệm vụ, nguyên văn yêu cầu và link bài Facebook. Tên nhiệm vụ có thể trùng; mỗi lần tạo vẫn là một task riêng.</p>
+    </div>
+  </div>
+  <form method="post" action="/seeding/task" class="stack-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Tên nhiệm vụ
+      <input name="task_name" required placeholder="A2GR-64" autocomplete="off">
+    </label>
+    <label>Nội dung / yêu cầu
+      <textarea name="instruction" rows="6" required placeholder="LIKE BÀI ĐĂNG; mỗi acc 3 CMT (1 cmt chính + 2 reply); tối đa 3 acc; KHÔNG NHẮC SỮA..."></textarea>
+    </label>
+    <label>Link bài Facebook
+      <input name="post_url" type="url" required placeholder="https://www.facebook.com/groups/.../permalink/.../">
+    </label>
+    <button class="btn btn--primary" type="submit">Phân tích &amp; tạo nhiệm vụ</button>
+  </form>
+</section>
+
+{% if selected and task_rules %}
+<div class="grid2 section-heading--spaced">
+  <section class="card panel">
+    <div class="panel-header"><h2>Nhiệm vụ đã hiểu</h2><span class="tag ok">READY</span></div>
+    <p><strong>{{ selected.name }}</strong></p>
+    {% if task_target %}<p class="note"><a href="{{ task_target.url }}" target="_blank" rel="noopener">{{ task_target.url }}</a></p>{% endif %}
+    <div class="button-row" style="flex-wrap:wrap; margin-top:12px">
+      <span class="tag">{{ task_rules.max_accounts }} account</span>
+      <span class="tag">{{ task_rules.main_comments_per_account }} main</span>
+      <span class="tag">{{ task_rules.replies_per_account }} reply</span>
+      <span class="tag">{{ task_rules.comments_per_account }} CMT/account</span>
+      <span class="tag {{ 'ok' if task_rules.like_required else '' }}">Like: {{ 'Có' if task_rules.like_required else 'Không' }}</span>
+    </div>
+    {% if task_rules.forbidden_words %}
+      <p class="note"><strong>Không nhắc:</strong> {{ task_rules.forbidden_words|join(', ') }}</p>
+    {% endif %}
+    {% if task_rules.platforms %}
+      <p class="note"><strong>Platform được nhắc trong yêu cầu:</strong> {{ task_rules.platforms|join(', ') }}</p>
+    {% endif %}
+    <details style="margin-top:12px">
+      <summary>Yêu cầu gốc</summary>
+      <p class="note" style="white-space:pre-wrap">{{ selected.brief }}</p>
+    </details>
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Account / comment slots</h2><span class="tag">{{ comment_slots|length }}</span></div>
+    {% if comment_slots %}
+      {% for account_slot in range(1, task_rules.max_accounts + 1) %}
+        <div class="card" style="margin-top:10px">
+          <strong>Account {{ account_slot }}</strong>
+          <div class="table-card" style="margin-top:8px">
+            <table class="data-table">
+              <thead><tr><th>Loại</th><th>#</th><th>Nội dung</th><th>Trạng thái</th></tr></thead>
+              <tbody>
+              {% for slot in comment_slots if slot.account_slot == account_slot %}
+                <tr>
+                  <td>{{ 'CMT chính' if slot.comment_type=='MAIN' else 'Reply' }}</td>
+                  <td>{{ slot.item_index }}</td>
+                  <td>{{ slot.final_text or slot.generated_text or 'Chờ đọc bài để sinh nội dung' }}</td>
+                  <td><span class="tag {{ 'ok' if slot.status=='GENERATED' else '' }}">{{ slot.status }}</span></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}<div class="empty-state">Campaign cũ chưa có task slots.</div>{% endif %}
+  </section>
+</div>
+{% endif %}
+
+<div class="grid2 section-heading--spaced">
+  <section class="card panel">
+    <div class="panel-header"><h2>Cấu hình nâng cao</h2>{% if selected %}<span class="tag {{ 'ok' if selected.status=='ACTIVE' else 'bad' }}">{{ selected.status }}</span>{% endif %}</div>
+    {% if campaigns %}
+      <form method="get" action="/seeding" class="stack-form">
+        <label>Chọn nhiệm vụ / campaign
+          <select name="campaign_id" onchange="this.form.submit()">
+          {% for c in campaigns %}<option value="{{ c.id }}" {{ 'selected' if selected and c.id==selected.id }}>{{ c.name }}</option>{% endfor %}
+          </select>
+        </label>
+      </form>
+    {% endif %}
+
+    {% if selected %}
+    <form method="post" action="/seeding/campaign/{{ selected.id }}/config" class="stack-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label>Tên<input name="name" value="{{ selected.name }}" required></label>
+      <label>Brand<input name="brand" value="{{ selected.brand or '' }}"></label>
+      <label>Brief<textarea name="brief" rows="4" required>{{ selected.brief }}</textarea></label>
+      <label>Allowed claims · mỗi dòng một claim<textarea name="allowed_claims" rows="4">{{ selected.allowed_claims_text }}</textarea></label>
+      <label>Prohibited topics · mỗi dòng một mục<textarea name="prohibited_topics" rows="3">{{ selected.prohibited_topics_text }}</textarea></label>
+      <label>Disclosure / promotion policy<input name="disclosure_policy" value="{{ selected.disclosure_policy or '' }}" placeholder="promotional"></label>
+      <label>Trạng thái
+        <select name="status">
+          {% for value in ['ACTIVE','PAUSED','ARCHIVED'] %}<option value="{{ value }}" {{ 'selected' if selected.status==value }}>{{ value }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>confidence_threshold
+        <input type="number" name="confidence_threshold" min="0.85" max="1" step="0.01" value="{{ '%.2f'|format(selected.confidence_threshold) }}">
+      </label>
+      <label class="checkbox-row"><input type="checkbox" name="auto_submit" value="1" {{ 'checked' if selected.auto_submit }}> Cho phép auto-submit khi toàn bộ gate đều pass</label>
+      <button class="btn btn--primary" type="submit">Lưu campaign</button>
+    </form>
+    {% else %}
+    <div class="empty-state">Tạo nhiệm vụ bằng form phía trên.</div>
+    {% endif %}
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Shift</h2>{% if active_shift %}<span class="tag {{ 'ok' if active_shift.status=='ACTIVE' else '' }}">{{ active_shift.status }}</span>{% endif %}</div>
+    {% if selected %}
+      <div class="kpi-grid kpi-grid--4">
+        <div class="kpi-card"><div class="kpi-label">READY</div><div class="kpi-value">{{ counts.get('READY',0) }}</div></div>
+        <div class="kpi-card"><div class="kpi-label">POSTED</div><div class="kpi-value">{{ counts.get('POSTED',0) }}</div></div>
+        <div class="kpi-card"><div class="kpi-label">REVIEW</div><div class="kpi-value">{{ counts.get('REVIEW_REQUIRED',0) }}</div></div>
+        <div class="kpi-card"><div class="kpi-label">UNKNOWN</div><div class="kpi-value">{{ counts.get('UNKNOWN',0) }}</div></div>
+      </div>
+      {% if active_shift %}
+        <p class="note">Shift <code>{{ active_shift.id }}</code> · target lúc bắt đầu: {{ active_shift.target_count }} · posted: {{ active_shift.posted_count }} · review: {{ active_shift.review_count }}</p>
+        <div class="button-row">
+          {% if active_shift.status=='ACTIVE' %}<form method="post" action="/seeding/shift/{{ active_shift.id }}/pause"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn" type="submit">Pause shift</button></form>{% else %}<form method="post" action="/seeding/campaign/{{ selected.id }}/shift/start"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--primary" type="submit">Resume shift</button></form>{% endif %}
+          <form method="post" action="/seeding/shift/{{ active_shift.id }}/end"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--danger" type="submit">End shift</button></form>
+        </div>
+      {% else %}
+        <form method="post" action="/seeding/campaign/{{ selected.id }}/shift/start"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--primary" type="submit">Start shift</button></form>
+      {% endif %}
+    {% else %}<div class="empty-state">Tạo nhiệm vụ trước.</div>{% endif %}
+  </section>
+</div>
+
+{% if selected %}
+<div class="grid2 section-heading--spaced">
+  <section class="card panel">
+    <div class="panel-header"><h2>Template</h2><span class="tag">{{ templates|length }}</span></div>
+    <form method="post" action="/seeding/campaign/{{ selected.id }}/templates" class="stack-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label>Intent<select name="intent"><option>recommendation_request</option><option>price_question</option><option>service_question</option><option>generic</option></select></label>
+      <label>Nội dung mẫu<textarea name="source_text" rows="3" required></textarea></label>
+      <label>Claims template dùng · mỗi dòng một claim<textarea name="template_claims" rows="2"></textarea></label>
+      <button class="btn" type="submit">Thêm template</button>
+    </form>
+    {% if templates %}<div class="table-card"><table class="data-table"><thead><tr><th>Intent</th><th>Template</th></tr></thead><tbody>{% for t in templates %}<tr><td><code>{{ t.intent }}</code></td><td>{{ t.source_text }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </section>
+
+  <section class="card panel">
+    <div class="panel-header"><h2>Import target URL</h2><span class="tag">{{ targets|length }}</span></div>
+    <form method="post" action="/seeding/campaign/{{ selected.id }}/targets/import" class="stack-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label>Mỗi dòng một Facebook URL<textarea name="target_urls" rows="9" placeholder="https://www.facebook.com/groups/.../posts/.../" required></textarea></label>
+      <button class="btn" type="submit">Import queue</button>
+    </form>
+  </section>
+</div>
+
+<div class="section-heading section-heading--spaced"><div><h2>Target queue</h2><p class="note">Chỉ những URL đã import mới được extension xử lý.</p></div></div>
+{% if targets %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>#</th><th>URL</th><th>Trạng thái</th><th>Risk</th><th>Confidence</th></tr></thead><tbody>{% for t in targets %}<tr><td class="n dim">{{ t.position + 1 }}</td><td><a href="{{ t.url }}" target="_blank" rel="noopener">{{ t.url[:90] }}</a></td><td><span class="tag {{ 'ok' if t.status=='POSTED' else ('bad' if t.status in ['UNKNOWN','UNAVAILABLE'] else '') }}">{{ t.status }}</span></td><td>{{ t.risk_level or '—' }}</td><td class="n">{{ '%.2f'|format(t.confidence) if t.confidence is not none else '—' }}</td></tr>{% endfor %}</tbody></table></div></div>{% else %}<div class="empty-state">Queue chưa có target.</div>{% endif %}
+
+<div class="section-heading section-heading--spaced"><div><h2>Activity gần đây</h2><p class="note">Prepare/result được lưu để audit và tính KPI.</p></div></div>
+{% if activities %}<div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Thời điểm</th><th>Action</th><th>Result</th><th>Mode</th><th>Nội dung</th></tr></thead><tbody>{% for a in activities %}<tr><td class="dim mono">{{ a.created_at[5:16]|replace('T',' ') }}</td><td>{{ a.action }}</td><td>{{ a.result or '—' }}</td><td>{{ a.mode or '—' }}</td><td>{{ (a.final_text or a.generated_text or '')[:100] }}</td></tr>{% endfor %}</tbody></table></div></div>{% else %}<div class="empty-state">Chưa có activity.</div>{% endif %}
+{% endif %}
+{% endblock %}
