@@ -341,8 +341,7 @@ class ThreadsOAuthClient:
     def fetch_profile(self, token: str):
         response = self.http.get(
             PROFILE_URL,
-            params={"fields": "id,username"},
-            headers={"Authorization": f"Bearer {token}"},
+            params={"fields": "id,username", "access_token": token},
             timeout=20,
         )
         return self._json_or_error(response, "Không xác minh được Threads account")
