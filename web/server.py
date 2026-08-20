@@ -12,9 +12,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
@@ -55,6 +57,7 @@ class ProductUserError(Exception):
         super().__init__(user_message)
 
 PLATFORM_LABELS = {"threads": "Threads", "facebook": "Facebook", "instagram": "Instagram"}
+_SLOT_RE = re.compile(r"^\d{2}:\d{2}$")
 
 
 def _fmt_vnd(v):
@@ -84,6 +87,61 @@ def _safe_external_url(value):
             parsed.username is not None or parsed.password is not None):
         return None
     return text
+
+
+def validate_channel_automation_config(payload) -> dict:
+    auto_schedule_enabled = 1 if str(payload.get("auto_schedule_enabled", "")).strip() in ("1", "true", "on") else 0
+
+    try:
+        daily_post_target = int(str(payload.get("daily_post_target", "")).strip())
+        daily_post_cap = int(str(payload.get("daily_post_cap", "")).strip())
+    except ValueError:
+        return {"ok": False, "error": "Target và cap phải là số nguyên"}
+
+    if not (1 <= daily_post_target <= daily_post_cap <= 3):
+        return {"ok": False, "error": "Cấu hình Auto phải thỏa 1 <= target <= cap <= 3"}
+
+    posting_timezone = str(payload.get("posting_timezone", "")).strip() or "Asia/Bangkok"
+    try:
+        ZoneInfo(posting_timezone)
+    except ZoneInfoNotFoundError:
+        return {"ok": False, "error": "Múi giờ không hợp lệ"}
+
+    raw_slots = payload.get("posting_slots", [])
+    if isinstance(raw_slots, str):
+        raw_slots = [raw_slots]
+    expanded_slots = []
+    for raw_slot in raw_slots:
+        for part in str(raw_slot).replace(",", "\n").splitlines():
+            slot = part.strip()
+            if slot:
+                expanded_slots.append(slot)
+    posting_slots = []
+    seen = set()
+    for slot in expanded_slots:
+        if not _SLOT_RE.match(slot):
+            return {"ok": False, "error": "Slot phải theo định dạng HH:MM"}
+        hour, minute = (int(part) for part in slot.split(":", 1))
+        if hour > 23 or minute > 59:
+            return {"ok": False, "error": "Slot phải theo định dạng HH:MM"}
+        if slot in seen:
+            return {"ok": False, "error": "Slot bị trùng"}
+        seen.add(slot)
+        posting_slots.append(slot)
+
+    if not (2 <= len(posting_slots) <= 3):
+        return {"ok": False, "error": "Cần từ 2 đến 3 slot mỗi ngày"}
+
+    return {
+        "ok": True,
+        "values": {
+            "auto_schedule_enabled": auto_schedule_enabled,
+            "daily_post_target": daily_post_target,
+            "daily_post_cap": daily_post_cap,
+            "posting_timezone": posting_timezone,
+            "posting_slots": json.dumps(posting_slots, ensure_ascii=False),
+        },
+    }
 
 
 def create_app():
@@ -672,15 +730,54 @@ def create_app():
         from ..core import niche as niche_mod
         conn = connect()
         saved = None
+        err = None
         if request.method == "POST":
             cid = request.form.get("channel_id", "")
-            applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
-            row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
-            saved = row["handle"] if row else cid
+            channel = conn.execute("SELECT * FROM channel WHERE id=?", (cid,)).fetchone()
+            if not channel:
+                err = "Kênh không tồn tại"
+            else:
+                values = None
+                if channel["platform"] == "threads":
+                    automation = validate_channel_automation_config({
+                        "auto_schedule_enabled": request.form.get("auto_schedule_enabled", ""),
+                        "daily_post_target": request.form.get("daily_post_target", ""),
+                        "daily_post_cap": request.form.get("daily_post_cap", ""),
+                        "posting_timezone": request.form.get("posting_timezone", ""),
+                        "posting_slots": request.form.getlist("posting_slots"),
+                    })
+                    if not automation["ok"]:
+                        err = automation["error"]
+                    else:
+                        values = automation["values"]
+                if not err:
+                    applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
+                    row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
+                    saved = row["handle"] if row else cid
+                    if values:
+                        audit_detail = dict(values)
+                        audit_detail["posting_slots"] = json.loads(values["posting_slots"])
+                        conn.execute("""
+                            UPDATE channel
+                            SET auto_schedule_enabled=?, daily_post_target=?, daily_post_cap=?,
+                                posting_timezone=?, posting_slots=?
+                            WHERE id=?
+                        """, (values["auto_schedule_enabled"], values["daily_post_target"],
+                              values["daily_post_cap"], values["posting_timezone"],
+                              values["posting_slots"], cid))
+                        pipeline.audit(conn, "channel", cid, "updated_automation",
+                                       actor="operator", detail=audit_detail)
         rows = []
         for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
-            rows.append(dict(ch, niches=nl,
+            posting_slots = []
+            if ch["platform"] == "threads":
+                try:
+                    posting_slots = json.loads(ch["posting_slots"] or "[]")
+                except (TypeError, ValueError):
+                    posting_slots = []
+            rows.append(dict(ch, niches=nl, posting_slots_list=posting_slots,
+                             posting_slots_text="\n".join(posting_slots),
                              pool=len(scoring.score_candidates(conn, limit=9999, niches=nl)),
                              published=conn.execute(
                                  "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED'",
@@ -701,7 +798,7 @@ def create_app():
         return render_template("channels.html", page="kenh", by_platform=by_platform,
                                all_niches=niche_mod.NICHES, saved=saved, pending_review=pending,
                                has_meta_connection=has_meta_connection,
-                               summary=request.args.get("summary"),
+                               summary=request.args.get("summary"), err=err or request.args.get("err"),
                                all_active_channels=all_active_channels,
                                account_groups=account_groups, platform_labels=PLATFORM_LABELS)
 
