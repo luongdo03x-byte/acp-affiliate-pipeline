@@ -32,7 +32,8 @@ from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, Worker
 _INSTAGRAM_PACKAGE = "com.instagram.android"
 _THREADS_PACKAGE = "com.instagram.barcelona"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_AVATAR_DEVICE_PATH = "/sdcard/Pictures/ACP/avatar.jpg"
+_AVATAR_DEVICE_DIR = "/sdcard/Pictures/ACP"
+_AVATAR_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 _APPROVED_PROFILE_KEYS = (
     "username",
     "display_name",
@@ -235,7 +236,10 @@ class WorkerAgent:
             raise ValueError("invalid profile field: avatar_file") from exc
         if not source.is_file():
             raise ValueError("invalid profile field: avatar_file")
-        self.adb_client.push_file(source, _AVATAR_DEVICE_PATH)
+        suffix = source.suffix.lower()
+        if suffix not in _AVATAR_EXTENSIONS:
+            raise ValueError("invalid profile field: avatar_file")
+        self.adb_client.push_file(source, f"{_AVATAR_DEVICE_DIR}/avatar{suffix}")
 
     def _flow_response(self, flow_name: str, result) -> dict:
         screen = _safe_text(getattr(result, "screen", None)) or "UNKNOWN"
