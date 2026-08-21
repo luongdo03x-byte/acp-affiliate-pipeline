@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Shopee Affiliate</div>
     <h1>Shopee Product Pool</h1>
-    <p class="lede">Bổ sung ảnh cho sản phẩm đã import từ CSV: public HTML trước, Chrome Helper khi cần.</p>
+    <p class="lede">Import CSV một lần; ACP tự enrich ảnh và đưa sản phẩm READY vào Threads Auto khi đủ điều kiện.</p>
   </div>
   <a class="btn btn--ghost" href="/sanpham/shopee-import">Import CSV</a>
 </div>
@@ -15,10 +15,13 @@
 
 <section class="catalog-summary" aria-label="Tổng quan Shopee Product Pool">
   <div class="catalog-stat"><span>Tổng sản phẩm</span><strong>{{ summary.total|num }}</strong></div>
-  <div class="catalog-stat"><span>Đã có ảnh</span><strong>{{ summary.ready|num }}</strong></div>
-  <div class="catalog-stat"><span>Thiếu ảnh</span><strong>{{ summary.missing|num }}</strong></div>
+  <div class="catalog-stat"><span>Ảnh READY</span><strong>{{ summary.ready|num }}</strong></div>
+  <div class="catalog-stat"><span>Auto eligible</span><strong>{{ summary.auto_eligible|num }}</strong></div>
+  <div class="catalog-stat"><span>Đã lên lịch</span><strong>{{ summary.auto_scheduled|num }}</strong></div>
+  <div class="catalog-stat"><span>Chờ duyệt</span><strong>{{ summary.auto_review|num }}</strong></div>
+  <div class="catalog-stat"><span>CSV quá hạn</span><strong>{{ summary.auto_stale|num }}</strong></div>
   <div class="catalog-stat"><span>Cần Helper</span><strong>{{ summary.needs_helper|num }}</strong></div>
-  <div class="catalog-stat"><span>Lỗi</span><strong>{{ summary.failed|num }}</strong></div>
+  <div class="catalog-stat"><span>Lỗi ảnh</span><strong>{{ summary.failed|num }}</strong></div>
 </section>
 
 <div class="tabs" role="navigation" aria-label="Lọc trạng thái enrich ảnh">
@@ -32,19 +35,19 @@
 <section class="card card--elevated" style="margin-bottom:16px">
   <div class="section-heading">
     <div>
-      <h2>Enrichment hàng loạt</h2>
-      <p class="note">Mỗi lượt tối đa 20 sản phẩm, xử lý tuần tự. Không tự chạy batch kế tiếp.</p>
+      <h2>Auto pipeline</h2>
+      <p class="note">READY products tự tham gia Threads Auto khi đủ niche, cooldown, quota và slot. Các nút dưới đây chỉ dùng để retry/recovery thủ công; mỗi lượt vẫn giới hạn 20 sản phẩm.</p>
     </div>
     <div class="form-actions">
       <form method="post" action="{{ url_for('shopee_image_enrichment.backfill') }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
         <input type="hidden" name="status" value="{{ status_filter }}">
-        <button class="btn btn--ghost" type="submit">Quét sản phẩm thiếu ảnh</button>
+        <button class="btn btn--ghost" type="submit">Recovery: quét thiếu ảnh</button>
       </form>
       <form method="post" action="{{ url_for('shopee_image_enrichment.run_enrichment_batch') }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
         <input type="hidden" name="status" value="{{ status_filter }}">
-        <button class="btn btn--primary" type="submit">Enrich 20 sản phẩm thiếu ảnh</button>
+        <button class="btn btn--primary" type="submit">Recovery: enrich 20</button>
       </form>
     </div>
   </div>
@@ -61,12 +64,14 @@
         <th>Đã bán</th>
         <th>Hoa hồng</th>
         <th>Trạng thái ảnh</th>
+        <th>Auto</th>
         <th>Hành động</th>
       </tr>
     </thead>
     <tbody>
     {% for item in items %}
       {% set state = item.enrichment_status or 'PENDING' %}
+      {% set auto = item.auto_state or 'WAITING_IMAGE' %}
       <tr>
         <td style="width:88px">
           {% if item.main_image_url %}
@@ -92,6 +97,17 @@
           {% if item.last_error %}<div class="note" title="{{ item.last_error_code or '' }}">{{ item.last_error }}</div>{% endif %}
         </td>
         <td>
+          <span class="status-badge">{{ auto }}</span>
+          {% if auto == 'SCHEDULED' %}
+            <div class="note">{{ item.auto_channel_handle or 'Threads' }}</div>
+            {% if item.auto_scheduled_at %}<div class="note">{{ item.auto_scheduled_at }}</div>{% endif %}
+          {% elif auto == 'STALE' %}
+            <div class="note">Import lại CSV mới để Auto dùng sản phẩm.</div>
+          {% elif auto == 'REVIEW' %}
+            <div class="note">Kiểm tra tại Chờ duyệt.</div>
+          {% endif %}
+        </td>
+        <td>
           <div class="form-actions" style="align-items:flex-start;flex-wrap:wrap">
             {% if state in ('PENDING', 'PUBLIC_FETCH', 'DOWNLOADING') %}
             <form method="post" action="{{ url_for('shopee_image_enrichment.enrich_one', product_id=item.id) }}">
@@ -115,7 +131,7 @@
             </button>
             <div class="note js-helper-note" data-product-id="{{ item.id }}"></div>
             {% else %}
-              <span class="note">Đã sẵn sàng</span>
+              <span class="note">Ảnh đã sẵn sàng</span>
             {% endif %}
           </div>
         </td>
