@@ -190,6 +190,7 @@ class WorkerAgent:
         self.last_safe_step = None
         self.oauth_browser_account_id = None
         self.oauth_browser_package = _OAUTH_BROWSER_PACKAGE
+        self.threads_account_id = None
 
         if instagram_flow is None:
             instagram_flow = InstagramFlow(
@@ -382,6 +383,12 @@ class WorkerAgent:
                     self.instagram_flow.run(profile, account_id=command.account_id),
                 )
             if action == "AUTOMATE_THREADS":
+                account_id = str(command.account_id or "").strip()
+                if not account_id:
+                    raise ValueError("account binding is required for Threads automation")
+                if self.threads_account_id != account_id:
+                    self.avd.reset_app_session(self.serial, _THREADS_PACKAGE)
+                    self.threads_account_id = account_id
                 self.threads_flow.driver.open_package(_THREADS_PACKAGE)
                 return self._flow_response(
                     "threads",
