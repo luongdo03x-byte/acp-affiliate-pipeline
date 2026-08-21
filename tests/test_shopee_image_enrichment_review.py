@@ -66,6 +66,11 @@ class ContentTypeFailingHttp:
         raise SafeHttpError("Content-Type không phù hợp")
 
 
+class OversizedFailingHttp:
+    def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+        raise SafeHttpError("Response vượt giới hạn kích thước")
+
+
 class ShopeeImageEnrichmentReviewTests(unittest.TestCase):
     def setUp(self):
         from acp.core import db
@@ -129,6 +134,18 @@ class ShopeeImageEnrichmentReviewTests(unittest.TestCase):
             )
 
         self.assertEqual(captured.exception.code, "IMAGE_INVALID_CONTENT")
+
+    def test_oversized_response_is_classified_separately(self):
+        with self.assertRaises(ShopeeImageEnrichmentError) as captured:
+            materialize_product_image(
+                "https://shopee.vn/product/123/456",
+                "https://down-vn.img.susercontent.com/file/too-large",
+                self.media_dir,
+                FakeStorage(),
+                http_client=OversizedFailingHttp(),
+            )
+
+        self.assertEqual(captured.exception.code, "IMAGE_TOO_LARGE")
 
     def test_public_retry_waits_between_attempts(self):
         self._insert_product("p1", "1")
