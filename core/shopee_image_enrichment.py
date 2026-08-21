@@ -9,13 +9,18 @@ from __future__ import annotations
 import glob
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from PIL import Image
 
 from ..adapters.safe_http import SafeHttpClient, SafeHttpError
-from ..adapters.shopee_affiliate import ProductMetadata
+from ..adapters.shopee_affiliate import (
+    AffiliateImportError,
+    ProductMetadata,
+    ProductMetadataResolver,
+)
 from .db import now
 from .shopee_helper import ShopeeHelperError, sanitize_helper_metadata
 from .shopee_products import ShopeeProductError, identity_from_url
@@ -276,10 +281,7 @@ def materialize_product_image(
     except SafeHttpError as exc:
         message = str(exc)
         code = "IMAGE_TOO_LARGE" if "giới hạn kích thước" in message else "IMAGE_DOWNLOAD_FAILED"
-        raise ShopeeImageEnrichmentError(
-            code,
-            "Không thể tải ảnh sản phẩm an toàn.",
-        ) from exc
+        raise ShopeeImageEnrichmentError(code, "Không thể tải ảnh sản phẩm an toàn.") from exc
     except OSError as exc:
         raise ShopeeImageEnrichmentError(
             "IMAGE_DOWNLOAD_FAILED",
@@ -305,7 +307,6 @@ def materialize_product_image(
         ) as fh:
             temp_path = fh.name
             fh.write(response.content)
-        # Verify the exact bytes written before replacing the deterministic target.
         if not _valid_existing_image(temp_path):
             raise ShopeeImageEnrichmentError(
                 "IMAGE_DECODE_FAILED",
@@ -367,3 +368,352 @@ def merge_metadata_into_product(
         "UPDATE product SET " + ", ".join(f"{column}=?" for column in columns) + " WHERE id=?",
         tuple(values[column] for column in columns) + (product_id,),
     )
+
+
+def _set_job(
+    conn,
+    product_id: str,
+    status: str,
+    *,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    public_attempt_delta: int = 0,
+    download_attempt_delta: int = 0,
+) -> dict:
+    if status not in STATUSES:
+        raise ValueError("Invalid Shopee enrichment status")
+    timestamp = now()
+    conn.execute(
+        """UPDATE shopee_image_enrichment_job
+           SET status=?,
+               attempt_count=attempt_count+?,
+               download_attempt_count=download_attempt_count+?,
+               last_error_code=?, last_error=?, last_attempt_at=?, updated_at=?
+           WHERE product_id=?""",
+        (
+            status,
+            int(public_attempt_delta),
+            int(download_attempt_delta),
+            error_code,
+            error_message,
+            timestamp,
+            timestamp,
+            product_id,
+        ),
+    )
+    return get_job(conn, product_id)
+
+
+def _result(conn, product_id: str) -> dict:
+    job = get_job(conn, product_id) or {}
+    return {
+        "product_id": product_id,
+        "status": job.get("status"),
+        "attempt_count": int(job.get("attempt_count", 0) or 0),
+        "download_attempt_count": int(job.get("download_attempt_count", 0) or 0),
+        "error_code": job.get("last_error_code"),
+        "error": job.get("last_error"),
+    }
+
+
+def reset_for_retry(conn, product_id: str) -> str | None:
+    product = _product(conn, product_id)
+    if product is None or str(product["provider"] or "") != PROVIDER:
+        return None
+    _eligible_identity(product)
+    enqueue_product(conn, product_id)
+    if _has_product_image(product):
+        _set_job(conn, product_id, READY)
+        return READY
+    timestamp = now()
+    conn.execute(
+        """UPDATE shopee_image_enrichment_job
+           SET status=?, attempt_count=0, download_attempt_count=0,
+               last_error_code=NULL, last_error=NULL, last_attempt_at=NULL, updated_at=?
+           WHERE product_id=?""",
+        (PENDING, timestamp, product_id),
+    )
+    return PENDING
+
+
+def _resolve_public(metadata_resolver, product_url: str) -> ProductMetadata:
+    resolver = getattr(metadata_resolver, "resolve_public", None)
+    if not callable(resolver):
+        raise ShopeeImageEnrichmentError(
+            "PUBLIC_BLOCKED",
+            "Bộ đọc metadata Shopee không hỗ trợ public HTML.",
+        )
+    return resolver(product_url)
+
+
+def _download_with_budget(
+    conn,
+    product,
+    product_id: str,
+    metadata: ProductMetadata,
+    *,
+    media_dir: str,
+    storage_backend,
+    image_http=None,
+) -> dict:
+    job = get_job(conn, product_id)
+    remaining = max(0, MAX_DOWNLOAD_ATTEMPTS - int(job["download_attempt_count"] or 0))
+    last_error = None
+    for _ in range(remaining):
+        _set_job(conn, product_id, DOWNLOADING, download_attempt_delta=1)
+        try:
+            materialized = materialize_product_image(
+                product["product_url"],
+                metadata.image_url,
+                media_dir,
+                storage_backend,
+                http_client=image_http,
+            )
+        except ShopeeImageEnrichmentError as exc:
+            last_error = exc
+            continue
+        merge_metadata_into_product(conn, product_id, metadata, materialized)
+        _set_job(conn, product_id, READY)
+        return _result(conn, product_id)
+
+    if last_error is None:
+        last_error = ShopeeImageEnrichmentError(
+            "IMAGE_DOWNLOAD_FAILED",
+            "Đã hết số lần thử tải ảnh tự động.",
+        )
+    _set_job(
+        conn,
+        product_id,
+        FAILED,
+        error_code=last_error.code,
+        error_message=last_error.user_message,
+    )
+    return _result(conn, product_id)
+
+
+def enrich_product(
+    conn,
+    product_id: str,
+    *,
+    metadata_resolver,
+    media_dir: str,
+    storage_backend,
+    image_http=None,
+) -> dict:
+    """Run one bounded public-HTML enrichment cycle for a Product."""
+    product = _product(conn, product_id)
+    if product is None or str(product["provider"] or "") != PROVIDER:
+        raise ShopeeImageEnrichmentError(
+            "PRODUCT_IDENTITY_INVALID",
+            "Product không thuộc Shopee Affiliate.",
+        )
+    _eligible_identity(product)
+    enqueue_product(conn, product_id)
+    if _has_product_image(product):
+        _set_job(conn, product_id, READY)
+        return _result(conn, product_id)
+
+    job = get_job(conn, product_id)
+    if job["status"] == FAILED:
+        return _result(conn, product_id)
+    if job["status"] == NEEDS_HELPER:
+        return _result(conn, product_id)
+
+    remaining = max(0, MAX_PUBLIC_ATTEMPTS - int(job["attempt_count"] or 0))
+    metadata = None
+    last_public_error = None
+    for _ in range(remaining):
+        _set_job(conn, product_id, PUBLIC_FETCH, public_attempt_delta=1)
+        try:
+            metadata = _resolve_public(metadata_resolver, product["product_url"])
+        except (AffiliateImportError, ShopeeImageEnrichmentError, OSError) as exc:
+            last_public_error = exc
+            continue
+        if not getattr(metadata, "image_url", None):
+            _set_job(
+                conn,
+                product_id,
+                NEEDS_HELPER,
+                error_code="PUBLIC_NO_IMAGE",
+                error_message="Trang Shopee công khai không cung cấp ảnh sản phẩm.",
+            )
+            return _result(conn, product_id)
+        break
+
+    if metadata is None or not getattr(metadata, "image_url", None):
+        _set_job(
+            conn,
+            product_id,
+            NEEDS_HELPER,
+            error_code="PUBLIC_BLOCKED",
+            error_message="Không đọc được ảnh từ trang Shopee công khai; cần Chrome Helper.",
+        )
+        return _result(conn, product_id)
+
+    return _download_with_budget(
+        conn,
+        product,
+        product_id,
+        metadata,
+        media_dir=media_dir,
+        storage_backend=storage_backend,
+        image_http=image_http,
+    )
+
+
+def complete_from_helper(
+    conn,
+    product_id: str,
+    metadata: dict,
+    *,
+    media_dir: str,
+    storage_backend,
+    image_http=None,
+) -> dict:
+    """Complete a NEEDS_HELPER job after existing pairing validation succeeded."""
+    product = _product(conn, product_id)
+    if product is None or str(product["provider"] or "") != PROVIDER:
+        raise ShopeeImageEnrichmentError(
+            "PRODUCT_IDENTITY_INVALID",
+            "Product không thuộc Shopee Affiliate.",
+        )
+    _eligible_identity(product)
+    enqueue_product(conn, product_id)
+    try:
+        clean = sanitize_helper_metadata(metadata)
+    except ShopeeHelperError as exc:
+        _set_job(
+            conn,
+            product_id,
+            NEEDS_HELPER,
+            error_code="HELPER_REQUIRED",
+            error_message="Metadata Chrome Helper không hợp lệ.",
+        )
+        raise ShopeeImageEnrichmentError(
+            "HELPER_REQUIRED",
+            "Metadata Chrome Helper không hợp lệ.",
+        ) from exc
+    if not clean.get("image_url"):
+        _set_job(
+            conn,
+            product_id,
+            NEEDS_HELPER,
+            error_code="HELPER_REQUIRED",
+            error_message="Chrome Helper chưa trả ảnh sản phẩm.",
+        )
+        return _result(conn, product_id)
+
+    helper_metadata = ProductMetadata(
+        name=clean.get("name"),
+        current_price=clean.get("current_price"),
+        original_price=clean.get("original_price"),
+        image_url=clean.get("image_url"),
+        shop=clean.get("shop"),
+    )
+    return _download_with_budget(
+        conn,
+        product,
+        product_id,
+        helper_metadata,
+        media_dir=media_dir,
+        storage_backend=storage_backend,
+        image_http=image_http,
+    )
+
+
+def _default_media_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var", "media")
+
+
+def run_batch(
+    connection_factory,
+    *,
+    limit: int = MAX_BATCH_SIZE,
+    delay_seconds: float = DEFAULT_DELAY_SECONDS,
+    metadata_resolver_factory=None,
+    image_http_factory=None,
+    media_dir: str | None = None,
+    storage_backend=None,
+    sleep_fn=time.sleep,
+) -> dict:
+    """Process a deterministic operator-triggered batch, never more than 20."""
+    from . import storage
+
+    safe_limit = min(MAX_BATCH_SIZE, max(0, int(limit)))
+    media_root = media_dir or _default_media_dir()
+    backend = storage_backend or storage.get_storage()
+    selector = connection_factory()
+    try:
+        recover_stale_jobs(selector)
+        rows = selector.execute(
+            """SELECT product_id FROM shopee_image_enrichment_job
+               WHERE status=? ORDER BY created_at, product_id LIMIT ?""",
+            (PENDING, safe_limit),
+        ).fetchall()
+        product_ids = [row["product_id"] for row in rows]
+    finally:
+        selector.close()
+
+    summary = {
+        "processed": 0,
+        "ready": 0,
+        "needs_helper": 0,
+        "failed": 0,
+        "pending": 0,
+    }
+    for index, product_id in enumerate(product_ids):
+        conn = connection_factory()
+        try:
+            resolver = metadata_resolver_factory() if metadata_resolver_factory else ProductMetadataResolver()
+            image_http = image_http_factory() if image_http_factory else SafeHttpClient(max_bytes=MAX_IMAGE_BYTES)
+            result = enrich_product(
+                conn,
+                product_id,
+                metadata_resolver=resolver,
+                media_dir=media_root,
+                storage_backend=backend,
+                image_http=image_http,
+            )
+        finally:
+            conn.close()
+        summary["processed"] += 1
+        if result["status"] == READY:
+            summary["ready"] += 1
+        elif result["status"] == NEEDS_HELPER:
+            summary["needs_helper"] += 1
+        elif result["status"] == FAILED:
+            summary["failed"] += 1
+        else:
+            summary["pending"] += 1
+        if index < len(product_ids) - 1:
+            sleep_fn(max(0.0, float(delay_seconds)))
+    return summary
+
+
+def list_products(conn, status: str | None = None, limit: int = 100) -> list[dict]:
+    """Return Shopee Affiliate Products plus current enrichment status for UI."""
+    safe_limit = min(500, max(1, int(limit)))
+    rows = conn.execute(
+        """SELECT p.*, j.status AS enrichment_status, j.last_error_code,
+                  j.last_error, j.attempt_count, j.download_attempt_count
+           FROM product p
+           LEFT JOIN shopee_image_enrichment_job j ON j.product_id=p.id
+           WHERE p.provider=?
+           ORDER BY p.updated_at DESC, p.id DESC
+           LIMIT ?""",
+        (PROVIDER, safe_limit),
+    ).fetchall()
+    result = [dict(row) for row in rows]
+    normalized = str(status or "all").strip().lower()
+    if normalized in ("", "all"):
+        return result
+    if normalized == "missing":
+        return [row for row in result if row.get("enrichment_status") != READY]
+    mapping = {
+        "ready": READY,
+        "needs_helper": NEEDS_HELPER,
+        "failed": FAILED,
+        "pending": PENDING,
+    }
+    desired = mapping.get(normalized)
+    return [row for row in result if row.get("enrichment_status") == desired] if desired else result
