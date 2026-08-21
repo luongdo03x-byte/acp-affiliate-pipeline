@@ -21,6 +21,7 @@ from ..core.shopee_image_enrichment import (
     reset_for_retry,
     run_batch,
 )
+from .shopee_auto_state import auto_summary, derive_auto_state
 
 
 bp = Blueprint("shopee_image_enrichment", __name__)
@@ -114,7 +115,13 @@ def page():
     conn = connect()
     try:
         rows = list_products(conn, status=status, limit=200)
+        for item in rows:
+            auto = derive_auto_state(conn, item)
+            item["auto_state"] = auto["state"]
+            item["auto_channel_handle"] = auto.get("channel_handle")
+            item["auto_scheduled_at"] = auto.get("scheduled_at")
         summary = _summary_counts(conn)
+        summary.update(auto_summary(rows))
     finally:
         conn.close()
     return render_template(

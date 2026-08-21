@@ -1192,41 +1192,35 @@ def test_shopee_metadata():
     check("OpenGraph fallback giá", og.current_price == 199000, og.current_price)
     check("metadata thiếu shop không bịa", og.shop is None, og.shop)
 
-    class _HtmlThenApi:
+    class _HtmlOnly:
         def __init__(self):
             self.calls = []
 
         def get(self, url, allowed_hosts=None, expected_content_prefix=None):
             self.calls.append((url, expected_content_prefix))
-            if "/api/v4/pdp/get_pc?" in url:
-                body = json.dumps({
-                    "error": None,
-                    "data": {
-                        "item": {
-                            "title": "Váy tự lấy từ Shopee",
-                            "image": "abc123imagehash",
-                        },
-                        "product_price": {
-                            "price": {"single_value": 28900000000},
-                            "price_before_discount": {"single_value": 45900000000},
-                        },
-                        "shop_detailed": {"name": "Shop tự động"},
-                    }
-                }).encode("utf-8")
-                return SafeHttpResponse(url, body, "application/json")
-            return SafeHttpResponse(url, b"<html><body></body></html>", "text/html")
+            return SafeHttpResponse(
+                url,
+                b"<html><body></body></html>",
+                "text/html",
+            )
 
-    auto_http = _HtmlThenApi()
+    auto_http = _HtmlOnly()
     auto = ProductMetadataResolver(auto_http).resolve(
-        "https://shopee.vn/product/252198883/269450640062")
-    check("metadata thiếu trong HTML thì thử JSON public",
-          any("/api/v4/pdp/get_pc?" in call[0] for call in auto_http.calls), auto_http.calls)
-    check("JSON public tự lấy tên", auto.name == "Váy tự lấy từ Shopee", auto.name)
-    check("JSON public chuẩn hoá giá Shopee", auto.current_price == 289000, auto.current_price)
-    check("JSON public đọc giá gốc", auto.original_price == 459000, auto.original_price)
-    check("JSON public dựng URL ảnh CDN",
-          auto.image_url == "https://down-vn.img.susercontent.com/file/abc123imagehash", auto.image_url)
-    check("JSON public đọc shop", auto.shop == "Shop tự động", auto.shop)
+        "https://shopee.vn/product/252198883/269450640062"
+    )
+
+    check(
+        "metadata thiếu trong HTML không gọi API private",
+        len(auto_http.calls) == 1
+        and all("/api/" not in call[0] for call in auto_http.calls),
+        auto_http.calls,
+    )
+    check("HTML trống không bịa tên", auto.name is None, auto.name)
+    check("HTML trống không bịa giá", auto.current_price is None, auto.current_price)
+    check("HTML trống không bịa giá gốc",
+          auto.original_price is None, auto.original_price)
+    check("HTML trống không bịa ảnh", auto.image_url is None, auto.image_url)
+    check("HTML trống không bịa shop", auto.shop is None, auto.shop)
 
     confirmed = ConfirmedProductInput(
         affiliate_url="https://s.shopee.vn/abc",
