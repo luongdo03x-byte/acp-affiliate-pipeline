@@ -13,6 +13,7 @@ from io import StringIO
 from urllib.parse import urlsplit
 
 from .db import now, transaction, ulid
+from .shopee_image_enrichment import enqueue_product
 from .shopee_products import ShopeeProductError, identity_from_url
 
 
@@ -496,12 +497,17 @@ def import_rows(conn, row_results: list[ShopeeCsvRowResult]) -> dict:
                 summary["error"] += 1
                 continue
             if state == "NEW":
-                _insert_product(conn, result.row)
+                product_id = _insert_product(conn, result.row)
+                enqueue_product(conn, product_id)
                 summary["new"] += 1
             elif state == "UPDATED":
                 existing = _find_matching_product(conn, result.row)
-                _update_product(conn, existing, result.row)
+                product_id = _update_product(conn, existing, result.row)
+                enqueue_product(conn, product_id)
                 summary["updated"] += 1
             else:
+                existing = _find_matching_product(conn, result.row)
+                if existing is not None:
+                    enqueue_product(conn, existing["id"])
                 summary["unchanged"] += 1
     return summary

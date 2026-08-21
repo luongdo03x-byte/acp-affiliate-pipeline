@@ -4,6 +4,8 @@ Only canonical product identity and a small allowlist of diagnostic fields may
 reach `audit_log`. Full affiliate URLs, pairing tokens, cookies, raw provider
 responses and browser/session data are deliberately not accepted.
 """
+import sqlite3
+
 from .db import audit
 from .shopee_products import ShopeeProductError, identity_from_url
 
@@ -78,11 +80,17 @@ def record_shopee_event(conn, product_url: str, action: str, *, detail=None,
     except ShopeeProductError as exc:
         raise ShopeeObservabilityError("Không nhận diện được Shopee product cho audit.") from exc
 
-    audit(
-        conn,
-        "shopee_product",
-        f"{identity.shop_id}:{identity.item_id}",
-        action,
-        actor=_short_text(actor) or "system",
-        detail=_sanitize_detail(detail),
-    )
+    try:
+        audit(
+            conn,
+            "shopee_product",
+            f"{identity.shop_id}:{identity.item_id}",
+            action,
+            actor=_short_text(actor) or "system",
+            detail=_sanitize_detail(detail),
+        )
+    except sqlite3.DatabaseError:
+        # Observability is best-effort. A missing/corrupt/temporarily unavailable
+        # audit table must never turn an otherwise successful Shopee workflow
+        # into a request failure. Input/action validation above remains strict.
+        return
