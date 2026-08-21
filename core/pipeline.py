@@ -16,8 +16,8 @@ import sqlite3
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
-from . import attribution, content, content_engine, imaging, niche, playbook, scoring, storage, system_settings, valuepost
-from .db import audit, now, ulid
+from . import attribution, auto_scheduler, content, content_engine, imaging, niche, playbook, scoring, storage, system_settings, valuepost
+from .db import audit, now, transaction, ulid
 from .jobs import enqueue, handler
 from .products import (PROVIDER as CATALOG_PROVIDER, CatalogImageError,
                        ProductService, materialize_catalog_image)
@@ -109,6 +109,388 @@ def plan_content(conn, campaign_code: str, limit: int = 10, rng=None) -> list:
             if job_id:
                 created.append(job_id)
     return created
+
+
+def _tracking_link_from_result(result) -> str:
+    return getattr(result, "short_url", None) or getattr(result, "full_url", None) or result
+
+
+def _catalog_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> list:
+    """Provider-aware Auto candidates for synced ACCESSTRADE TikTok catalog rows.
+
+    This intentionally does not loosen the legacy scorer's provider safeguard.
+    Catalog rows use their own hard quality fields while retaining shared
+    channel niche, blocked category, cooldown, and active-post filters. The
+    category/day cap is enforced after route selection against the slot's local
+    day.
+    """
+    nl = channel_niches(conn, channel["id"])
+    if not nl:
+        return []
+    _, filters = scoring.active_config(conn)
+    filters = dict(filters, niches=nl)
+    cooldown_days = filters.get("cooldown_days", scoring.DEFAULT_FILTERS["cooldown_days"])
+    cutoff = (now_utc - timedelta(days=cooldown_days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM product
+        WHERE provider = ?
+          AND is_available = 1
+          AND has_inventory = 1
+          AND detail_link IS NOT NULL AND detail_link <> ''
+          AND external_product_id IS NOT NULL AND external_product_id <> ''
+          AND COALESCE(affiliate_link_status, '') <> 'UNAVAILABLE'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM post
+              WHERE post.product_id = product.id
+                AND post.post_type = 'SALES'
+                AND (
+                    post.status IN ('DRAFT','PENDING_REVIEW','APPROVED','SCHEDULED')
+                    OR post.published_at >= ?
+                )
+          )
+        ORDER BY COALESCE(score, 0) DESC, last_seen_at DESC
+        LIMIT ?
+        """,
+        (CATALOG_PROVIDER, cutoff, max(0, int(limit))),
+    ).fetchall()
+    candidates = []
+    for row in rows:
+        if scoring._reasons(row, filters):
+            continue
+        candidates.append({
+            "product": row,
+            "score": float(row["score"] or 0.0) / 100.0,
+            "rejected": [],
+            "breakdown": {"catalog_score": row["score"] or 0.0},
+        })
+    return candidates
+
+
+def _prepare_auto_sales_post_artifacts(conn, ctx, product, campaign, channel, template,
+                                       variant_code: str, score: float = None) -> dict:
+    post_id = ulid()
+    attribution_payload = None
+    if product["provider"] == CATALOG_PROVIDER:
+        link_result = ctx["product_client"].create_product_link(
+            product["detail_link"],
+            post_id=post_id,
+            external_product_id=product["external_product_id"],
+        )
+        link = _tracking_link_from_result(link_result)
+        if not link:
+            return {"ok": False, "error": "Không tạo được tracking link"}
+        full_url = getattr(link_result, "full_url", None) or link
+        short_url = getattr(link_result, "short_url", None)
+        linked_at = now()
+        conn.execute("""UPDATE product
+                        SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='READY',
+                            affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
+                        WHERE id=? AND provider=?""",
+                     (full_url, short_url, linked_at, linked_at, product["id"], CATALOG_PROVIDER))
+        try:
+            image_path_local = materialize_catalog_image(
+                conn, product, MEDIA_DIR, http=ctx.get("catalog_image_http"))
+        except CatalogImageError as error:
+            return {"ok": False, "error": str(error)}
+        product = dict(product)
+        product["image_path_local"] = image_path_local
+        attribution_payload = {
+            "provider": "accesstrade_product",
+            "link_mode": "post_specific",
+            "sub1": post_id,
+            "external_product_id": product["external_product_id"],
+        }
+    else:
+        subs = attribution.encode_sub_ids(post_id, campaign["code"], variant_code, channel["code"])
+        link = _tracking_link_from_result(ctx["source"].create_tracking_link(product["product_url"], subs))
+        attribution_payload = subs
+    if not link:
+        return {"ok": False, "error": "Không tạo được tracking link"}
+
+    discount = scoring.real_discount_depth(conn, product["id"], product["current_price"])
+    image_path = imaging.compose(product, MEDIA_DIR, discount_pct=discount, handle=channel["handle"])
+    image_url = ctx.get("storage", storage.get_storage()).put(image_path)
+    caption = content.generate(product, template["code"], link, discount_pct=discount,
+                               hook_code=variant_code)
+    problems = content.validate(caption, niches=channel_niches(conn, channel["id"]))
+    status = "PENDING_REVIEW" if not problems else "DRAFT"
+    return {
+        "ok": True,
+        "post_id": post_id,
+        "variant_code": variant_code,
+        "caption": caption,
+        "image_url": image_url,
+        "affiliate_link": link,
+        "sub_id_payload": json.dumps(attribution_payload, ensure_ascii=False, sort_keys=True),
+        "score": score,
+        "status": status,
+        "problems": problems,
+    }
+
+
+def _insert_prepared_auto_sales_post(conn, product, campaign, channel, template,
+                                     prepared, actor: str = "auto_scheduler") -> dict:
+    post_id = prepared["post_id"]
+
+    conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, caption_template_id,
+                    variant_code, caption_body, disclosure_text, caption_final, image_url_composited,
+                    affiliate_link, sub_id_payload, score, status, reject_reason, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (post_id, product["id"], channel["id"], campaign["id"], template["id"],
+                  prepared["variant_code"], prepared["caption"], content.DISCLOSURE_DEFAULT,
+                  prepared["caption"], prepared["image_url"], prepared["affiliate_link"],
+                  prepared["sub_id_payload"], prepared["score"], prepared["status"],
+                  "; ".join(prepared["problems"]) if prepared["problems"] else None, now(), now()))
+    _save_channel_selection(conn, post_id, [channel["id"]])
+    audit(conn, "post", post_id, "auto_generated", actor=actor,
+          detail={"template": template["code"], "problems": prepared["problems"],
+                  "channel_id": channel["id"], "product_id": product["id"]})
+    return {"ok": True, "post_id": post_id, "status": prepared["status"], "problems": prepared["problems"]}
+
+
+def _active_review_count_for_channel(conn, channel_id: str) -> int:
+    return conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM post
+        WHERE channel_id = ?
+          AND status IN ('DRAFT', 'PENDING_REVIEW')
+        """,
+        (channel_id,),
+    ).fetchone()[0]
+
+
+def _candidate_products_for_channel(conn, channel, limit: int, now_utc=None) -> list:
+    nl = channel_niches(conn, channel["id"])
+    if not nl:
+        return []
+    now_utc = now_utc or datetime.now(timezone.utc)
+    legacy = [
+        item for item in scoring.score_candidates(
+            conn,
+            limit=limit,
+            niches=nl,
+            enforce_category_day_cap=False,
+        )
+        if int(item["product"]["has_inventory"] or 0) == 1
+    ]
+    catalog = _catalog_auto_candidates(conn, channel, limit, now_utc)
+    combined = legacy + catalog
+    combined.sort(key=lambda item: -float(item.get("score") or 0.0))
+    return combined[:limit]
+
+
+def _category_count_for_channel_local_day(
+    conn, channel, category_code: str, now_utc: datetime, *, exclude_post_id: str = None, slot_at: str = None
+) -> int:
+    tz_name = channel["posting_timezone"]
+    reference = now_utc
+    if slot_at:
+        parsed = auto_scheduler._parse_iso_datetime(slot_at)
+        if parsed:
+            reference = parsed
+    local_day = reference.astimezone(auto_scheduler._parse_timezone(tz_name)).date().isoformat()
+    count = 0
+    rows = conn.execute(
+        """
+        SELECT p.published_at, p.scheduled_at, p.created_at
+        FROM post p
+        JOIN product pr ON pr.id = p.product_id
+        WHERE p.channel_id = ?
+          AND (? IS NULL OR p.id <> ?)
+          AND pr.category_code = ?
+          AND p.status IN ('PUBLISHED','SCHEDULED','APPROVED','PENDING_REVIEW')
+        """,
+        (channel["id"], exclude_post_id, exclude_post_id, category_code),
+    ).fetchall()
+    for row in rows:
+        iso_value = row["published_at"] or row["scheduled_at"] or row["created_at"]
+        if auto_scheduler._local_date_key(iso_value, tz_name) == local_day:
+            count += 1
+    return count
+
+
+def current_auto_product_eligibility(
+    conn,
+    product,
+    channel,
+    now_utc: datetime,
+    *,
+    require_auto_schedule: bool = True,
+    exclude_post_id: str = None,
+    slot_at: str = None,
+) -> tuple[bool, str]:
+    """Recheck mutable Auto eligibility under the caller's current DB snapshot."""
+    if not product:
+        return False, "product_missing"
+    if not channel or not channel["enabled"] or channel["status"] != "ACTIVE":
+        return False, "channel_ineligible"
+    if require_auto_schedule and not channel["auto_schedule_enabled"]:
+        return False, "channel_auto_disabled"
+    if not product["is_available"]:
+        return False, "product_unavailable"
+
+    _, filters = scoring.active_config(conn)
+    if product["category_code"] in set(filters.get("blocked_categories") or []):
+        return False, "blocked_category"
+
+    niches = channel_niches(conn, channel["id"])
+    if not niches or niche.match_reasons(product, niches):
+        return False, "product_no_longer_matches_channel"
+    filters = dict(filters, niches=niches)
+
+    max_per_category = int(filters.get(
+        "max_per_category_per_day",
+        scoring.DEFAULT_FILTERS["max_per_category_per_day"],
+    ) or 0)
+    if _category_count_for_channel_local_day(
+        conn, channel, product["category_code"], now_utc, exclude_post_id=exclude_post_id, slot_at=slot_at
+    ) >= max_per_category:
+        return False, "category_day_cap_full"
+
+    if product["provider"] == CATALOG_PROVIDER:
+        rejected = scoring._reasons(product, filters)
+        if rejected:
+            return False, "product_quality_filter"
+        if not (product["has_inventory"] and product["detail_link"] and product["external_product_id"]):
+            return False, "catalog_product_ineligible"
+        if product["affiliate_link_status"] == "UNAVAILABLE":
+            return False, "affiliate_link_unavailable"
+    else:
+        rejected = scoring._reasons(product, filters)
+        if rejected:
+            return False, "product_quality_filter"
+        if int(product["has_inventory"] or 0) != 1:
+            return False, "product_inventory_empty"
+
+    if auto_scheduler._queued_or_recently_published_product_exists(
+        conn, product["id"], now_utc, exclude_post_id=exclude_post_id
+    ):
+        return False, "product_already_routed"
+    return True, "ok"
+
+
+def fill_auto_schedule(conn, campaign_code: str, now_utc=None, *, ctx=None) -> dict:
+    """Fill the short rolling Threads schedule without running the publish worker."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    campaign = conn.execute("SELECT * FROM campaign WHERE code=?", (campaign_code,)).fetchone()
+    template = conn.execute("SELECT * FROM caption_template WHERE is_active=1 ORDER BY code LIMIT 1").fetchone()
+    if not campaign or not template:
+        return {"scheduled": 0, "review": 0, "skipped": 0, "cancelled": 0}
+
+    if ctx is None:
+        from ..adapters import factory
+        ctx = factory.build_context()
+    hooks = playbook.hook_codes()
+    stats = {"scheduled": 0, "review": 0, "skipped": 0, "cancelled": 0}
+    channels = conn.execute(
+        """
+        SELECT *
+        FROM channel
+        WHERE platform='threads'
+          AND status='ACTIVE'
+          AND COALESCE(enabled, 1)=1
+        ORDER BY code
+        """
+    ).fetchall()
+
+    for channel in channels:
+        if channel["auto_schedule_enabled"]:
+            missing = len(auto_scheduler.available_slots(conn, channel, now_utc))
+        else:
+            missing = max(
+                0,
+                auto_scheduler._core_daily_target(channel) - _active_review_count_for_channel(conn, channel["id"]),
+            )
+        if missing <= 0:
+            continue
+
+        candidates = _candidate_products_for_channel(conn, channel, limit=max(20, missing * 5), now_utc=now_utc)
+        if not candidates:
+            stats["skipped"] += missing
+            continue
+
+        for item in candidates:
+            if missing <= 0:
+                break
+            product = item["product"]
+            if auto_scheduler._queued_or_recently_published_product_exists(conn, product["id"], now_utc):
+                stats["skipped"] += 1
+                continue
+
+            if channel["auto_schedule_enabled"]:
+                route = auto_scheduler.route_product(conn, product, now_utc)
+                if route and route.get("channel_id") == channel["id"]:
+                    slot = route["slot"]
+                elif route and route.get("reason") == "no_candidate_channels":
+                    slots = auto_scheduler.available_slots(conn, channel, now_utc)
+                    if not slots:
+                        stats["skipped"] += 1
+                        continue
+                    slot = slots[0]["slot"]
+                else:
+                    stats["skipped"] += 1
+                    continue
+            else:
+                slot = None
+
+            variant = hooks[(stats["scheduled"] + stats["review"]) % len(hooks)]
+            try:
+                prepared = _prepare_auto_sales_post_artifacts(
+                    conn, ctx, product, campaign, channel, template,
+                    variant, score=item["score"])
+            except Exception:
+                stats["skipped"] += 1
+                continue
+            if not prepared["ok"]:
+                stats["skipped"] += 1
+                continue
+
+            try:
+                with transaction(conn):
+                    fresh_product = conn.execute("SELECT * FROM product WHERE id=?", (product["id"],)).fetchone()
+                    fresh_channel = conn.execute("SELECT * FROM channel WHERE id=?", (channel["id"],)).fetchone()
+                    fresh_auto_enabled = bool(fresh_channel and fresh_channel["auto_schedule_enabled"])
+                    eligible, _reason = current_auto_product_eligibility(
+                        conn,
+                        fresh_product,
+                        fresh_channel,
+                        now_utc,
+                        require_auto_schedule=fresh_auto_enabled,
+                        slot_at=slot,
+                    )
+                    if not eligible:
+                        stats["skipped"] += 1
+                        continue
+                    if fresh_auto_enabled and auto_scheduler.live_slot_occupied(conn, fresh_channel["id"], slot):
+                        stats["skipped"] += 1
+                        continue
+                    post = _insert_prepared_auto_sales_post(
+                        conn, fresh_product, campaign, fresh_channel, template,
+                        prepared, actor="auto_scheduler")
+                    if not post["ok"]:
+                        stats["skipped"] += 1
+                        continue
+                    if fresh_auto_enabled and post["status"] == "PENDING_REVIEW":
+                        approved = approve_post(
+                            conn, post["post_id"], actor="auto_scheduler",
+                            scheduled_at=slot, auto_scheduled=True)
+                        if approved["ok"]:
+                            stats["scheduled"] += 1
+                            missing -= 1
+                        else:
+                            stats["review"] += 1
+                            missing -= 1
+                    else:
+                        stats["review"] += 1
+                        missing -= 1
+            except Exception:
+                stats["skipped"] += 1
+
+    return stats
 
 
 def channel_niches(conn, channel_id: str) -> list:
@@ -864,14 +1246,21 @@ def _resolve_caption(post, target, channel) -> str:
     return post["caption_final"]
 
 
+def _utc_iso(value: str) -> str:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
                   channel_ids: list = None, caption_facebook: str = None,
                   caption_instagram: str = None, caption_overrides: dict = None,
-                  scheduled_at: str = None) -> dict:
+                  scheduled_at: str = None, auto_scheduled: bool = False) -> dict:
     """scheduled_at: giờ đăng do operator tự chọn (ISO 8601, có timezone). Bỏ
-    trống thì mỗi kênh tự tính slot riêng (_next_slot()). Không tự quy đổi
-    timezone ở đây -- gọi từ web/server.py đã quy đổi giờ địa phương của
-    operator sang UTC trước khi truyền vào."""
+    trống thì mỗi kênh tự tính slot riêng (_next_slot()). Mọi giá trị được
+    chấp nhận đều lưu UTC ISO để job_queue so sánh chuỗi với now() UTC đúng
+    thời điểm."""
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
@@ -921,12 +1310,12 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
     # sort/hiển thị, không còn là giờ đăng chính xác khi có từ 2 kênh trở lên.
     if scheduled_at:
         try:
-            datetime.fromisoformat(scheduled_at)
+            scheduled_at = _utc_iso(scheduled_at)
         except ValueError:
             return {"ok": False, "error": "Giờ đăng không hợp lệ"}
         slots = {ch["id"]: scheduled_at for ch in channels}
     else:
-        slots = {ch["id"]: _next_slot(conn, ch["id"]) for ch in channels}
+        slots = {ch["id"]: _utc_iso(_next_slot(conn, ch["id"])) for ch in channels}
     earliest = min(slots.values())
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
@@ -944,8 +1333,10 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
         slot = slots[ch["id"]]
         override = (caption_overrides or {}).get(ch["id"])
         conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
-                        caption_override, created_at, updated_at) VALUES (?,?,?,'SCHEDULED',?,?,?,?)""",
-                     (target_id, post_id, ch["id"], slot, override, now(), now()))
+                        caption_override, auto_scheduled, created_at, updated_at)
+                        VALUES (?,?,?,'SCHEDULED',?,?,?,?,?)""",
+                     (target_id, post_id, ch["id"], slot, override,
+                      1 if auto_scheduled else 0, now(), now()))
         # post_id/channel_id ở lại payload để jobs.py xử lý AuthError/ContentViolationError
         # (đánh dấu kênh NEEDS_REAUTH, đẩy bài về PENDING_REVIEW) không phải sửa.
         enqueue(conn, "PUBLISH_POST",
@@ -1042,6 +1433,17 @@ def _cancel_target_stale_post(conn, target_id: str, post_status: str) -> None:
                   now(), target_id))
 
 
+def _cancel_auto_stale_target(conn, target_id: str, post_id: str, reason: str) -> None:
+    conn.execute("""UPDATE publish_target SET status='CANCELLED', last_error=?, updated_at=?
+                    WHERE id=?""",
+                 (reason[:500], now(), target_id))
+    conn.execute("""UPDATE post SET status='PENDING_REVIEW', scheduled_at=NULL,
+                    reject_reason=?, updated_at=? WHERE id=?""",
+                 (reason[:500], now(), post_id))
+    audit(conn, "publish_target", target_id, "auto_stale_cancelled",
+          actor="auto_scheduler", detail={"reason": reason})
+
+
 def _find_or_create_legacy_target(conn, post_id: str, channel_id: str) -> str:
     """Tương thích ngược: job PUBLISH_POST được enqueue bởi bản trước khi có
     publish_target (payload chỉ {post_id, channel_id}) có thể còn nằm trong
@@ -1112,6 +1514,8 @@ def publish_post(conn, payload, ctx):
         _cancel_target_stale_post(conn, target["id"], post["status"])
         return
 
+    now_utc = datetime.now(timezone.utc)
+
     if channel["status"] != "ACTIVE":
         from ..adapters.base import AuthError
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đang ở trạng thái {channel['status']}")
@@ -1135,7 +1539,20 @@ def publish_post(conn, payload, ctx):
         _mark_target_failed(conn, target["id"], f"Kênh {channel['code']} đã bị tắt (disabled)")
         raise ContentViolationError(f"Kênh {channel['code']} đã bị tắt (disabled)")
 
-    if _published_today(conn, channel["id"]) >= channel["daily_post_cap"]:
+    if target["auto_scheduled"]:
+        ok, reason = auto_scheduler.preflight_auto_target(
+            conn,
+            target,
+            post,
+            channel,
+            now_utc=now_utc,
+            eligibility_checker=current_auto_product_eligibility,
+        )
+        if not ok:
+            _cancel_auto_stale_target(conn, target["id"], post["id"], reason)
+            return
+
+    if _published_today(conn, channel["id"], now_utc=now_utc, posting_timezone=channel["posting_timezone"]) >= channel["daily_post_cap"]:
         from ..adapters.base import RateLimitError
         raise RateLimitError(f"Kênh {channel['code']} đã đạt trần {channel['daily_post_cap']} bài trong ngày")
 
@@ -1186,12 +1603,35 @@ def publish_post(conn, payload, ctx):
             idempotency_key=f"ins:{target['id']}")
 
 
-def _published_today(conn, channel_id: str) -> int:
-    """Đếm theo publish_target -- cùng lý do đã ghi ở _next_slot."""
-    today = datetime.now(timezone.utc).date().isoformat()
-    return conn.execute(
-        "SELECT COUNT(*) FROM publish_target WHERE channel_id=? AND status='SUCCESS' AND substr(updated_at,1,10)=?",
-        (channel_id, today)).fetchone()[0]
+def _published_today(conn, channel_id: str, *, now_utc=None, posting_timezone: str = None) -> int:
+    """Đếm theo publish_target và ngày local của kênh."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    if not posting_timezone:
+        row = conn.execute("SELECT posting_timezone FROM channel WHERE id=?", (channel_id,)).fetchone()
+        posting_timezone = row["posting_timezone"] if row else "Asia/Bangkok"
+    tzinfo = auto_scheduler._parse_timezone(posting_timezone)
+    local_today = now_utc.astimezone(tzinfo).date()
+    count = 0
+    for row in conn.execute(
+        """
+        SELECT updated_at, scheduled_at
+        FROM publish_target
+        WHERE channel_id=? AND status='SUCCESS'
+        """,
+        (channel_id,),
+    ).fetchall():
+        iso_value = row["updated_at"] or row["scheduled_at"]
+        try:
+            published_at = datetime.fromisoformat(iso_value)
+        except (TypeError, ValueError):
+            continue
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        if published_at.astimezone(tzinfo).date() == local_today:
+            count += 1
+    return count
 
 
 @handler("FETCH_INSIGHTS")

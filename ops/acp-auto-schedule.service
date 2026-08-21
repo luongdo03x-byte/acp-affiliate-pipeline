@@ -1,0 +1,15 @@
+[Unit]
+Description=ACP rolling Threads Auto scheduler (safe fill only)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/Downloads/ACP/acp/.env.local
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Downloads/ACP/acp
+ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" product-sync'
+# Explicit command contract for docs/tests: run.py auto-schedule
+ExecStart=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" auto-schedule'
+ExecStartPost=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" worker-once'
+TimeoutStartSec=55s
+NoNewPrivileges=true

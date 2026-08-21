@@ -103,6 +103,7 @@ class AccountFactoryCoreTests(unittest.TestCase):
         row = self.conn.execute("SELECT * FROM channel WHERE external_user_id='uid-new'").fetchone()
         self.assertIsNotNone(row)
         self.assertEqual("@new.account", row["handle"])
+        self.assertEqual(3, row["daily_post_cap"])
         self.assertEqual("long-secret", crypto.decrypt(row["token_encrypted"]))
 
     def test_account_mismatch_never_creates_or_updates_channel(self):

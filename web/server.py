@@ -12,9 +12,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
@@ -27,7 +29,7 @@ from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
-from ..core import attribution, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
+from ..core import attribution, auto_scheduler, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
 from ..core import connections
 from ..core import content_checker, content_engine, content_facts, content_hook, content_platform, content_scoring, content_variant
 from ..core.db import connect, now
@@ -55,6 +57,8 @@ class ProductUserError(Exception):
         super().__init__(user_message)
 
 PLATFORM_LABELS = {"threads": "Threads", "facebook": "Facebook", "instagram": "Instagram"}
+_SLOT_RE = re.compile(r"^\d{2}:\d{2}$")
+_AUTO_LIVE_STATUSES = ("SCHEDULED", "PENDING", "RUNNING")
 
 
 def _fmt_vnd(v):
@@ -84,6 +88,154 @@ def _safe_external_url(value):
             parsed.username is not None or parsed.password is not None):
         return None
     return text
+
+
+def validate_channel_automation_config(payload) -> dict:
+    auto_schedule_enabled = 1 if str(payload.get("auto_schedule_enabled", "")).strip() in ("1", "true", "on") else 0
+
+    try:
+        daily_post_target = int(str(payload.get("daily_post_target", "")).strip())
+        daily_post_cap = int(str(payload.get("daily_post_cap", "")).strip())
+    except ValueError:
+        return {"ok": False, "error": "Target và cap phải là số nguyên"}
+
+    existing_cap = None
+    try:
+        if str(payload.get("existing_daily_post_cap", "")).strip():
+            existing_cap = int(str(payload.get("existing_daily_post_cap", "")).strip())
+    except ValueError:
+        existing_cap = None
+    cap_is_existing_legacy = existing_cap is not None and existing_cap > 3 and daily_post_cap == existing_cap
+
+    if not (1 <= daily_post_target <= min(daily_post_cap, 3)):
+        return {"ok": False, "error": "Cấu hình Auto phải thỏa 1 <= target <= min(cap, 3)"}
+    if daily_post_cap > 3 and not cap_is_existing_legacy:
+        return {"ok": False, "error": "Cap Auto mới tối đa là 3; cap legacy hiện có được giữ nguyên"}
+
+    posting_timezone = str(payload.get("posting_timezone", "")).strip() or "Asia/Bangkok"
+    try:
+        ZoneInfo(posting_timezone)
+    except ZoneInfoNotFoundError:
+        return {"ok": False, "error": "Múi giờ không hợp lệ"}
+
+    raw_slots = payload.get("posting_slots", [])
+    if isinstance(raw_slots, str):
+        raw_slots = [raw_slots]
+    expanded_slots = []
+    for raw_slot in raw_slots:
+        for part in str(raw_slot).replace(",", "\n").splitlines():
+            slot = part.strip()
+            if slot:
+                expanded_slots.append(slot)
+    posting_slots = []
+    seen = set()
+    for slot in expanded_slots:
+        if not _SLOT_RE.match(slot):
+            return {"ok": False, "error": "Slot phải theo định dạng HH:MM"}
+        hour, minute = (int(part) for part in slot.split(":", 1))
+        if hour > 23 or minute > 59:
+            return {"ok": False, "error": "Slot phải theo định dạng HH:MM"}
+        if slot in seen:
+            return {"ok": False, "error": "Slot bị trùng"}
+        seen.add(slot)
+        posting_slots.append(slot)
+
+    if not (2 <= len(posting_slots) <= 3):
+        return {"ok": False, "error": "Cần từ 2 đến 3 slot mỗi ngày"}
+
+    return {
+        "ok": True,
+        "values": {
+            "auto_schedule_enabled": auto_schedule_enabled,
+            "daily_post_target": daily_post_target,
+            "daily_post_cap": daily_post_cap,
+            "posting_timezone": posting_timezone,
+            "posting_slots": json.dumps(posting_slots, ensure_ascii=False),
+        },
+    }
+
+
+def _parse_ops_now_utc(raw_value: str | None):
+    text = str(raw_value or "").strip().replace(" ", "+")
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_auto_ops_summary(conn, now_utc: datetime) -> dict:
+    horizon_utc = now_utc + timedelta(hours=48)
+    auto_channels = [dict(row) for row in conn.execute(
+        """
+        SELECT *
+        FROM channel
+        WHERE platform='threads'
+          AND status='ACTIVE'
+          AND COALESCE(enabled, 1)=1
+          AND COALESCE(auto_schedule_enabled, 0)=1
+        ORDER BY code
+        """
+    ).fetchall()]
+    open_slots = sum(len(auto_scheduler.available_slots(conn, channel, now_utc)) for channel in auto_channels)
+
+    placeholders = ",".join("?" for _ in _AUTO_LIVE_STATUSES)
+    upcoming = []
+    for row in conn.execute(
+        f"""
+        SELECT pt.channel_id, pt.status, pt.scheduled_at, ch.handle AS channel_handle, ch.code AS channel_code
+        FROM publish_target pt
+        JOIN channel ch ON ch.id = pt.channel_id
+        WHERE pt.auto_scheduled = 1
+          AND pt.scheduled_at IS NOT NULL
+          AND pt.status IN ({placeholders})
+        ORDER BY pt.scheduled_at ASC, ch.code ASC
+        """,
+        _AUTO_LIVE_STATUSES,
+    ).fetchall():
+        try:
+            scheduled_at = datetime.fromisoformat(row["scheduled_at"]).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if not (now_utc <= scheduled_at < horizon_utc):
+            continue
+        item = dict(row)
+        item.pop("channel_code", None)
+        upcoming.append(item)
+        if len(upcoming) >= 12:
+            break
+
+    stale_reason_counts = {}
+    for row in conn.execute(
+        """
+        SELECT detail
+        FROM audit_log
+        WHERE action='auto_stale_cancelled'
+        ORDER BY id DESC
+        LIMIT 50
+        """
+    ).fetchall():
+        try:
+            detail = json.loads(row["detail"] or "{}")
+        except (TypeError, ValueError):
+            detail = {}
+        reason = str(detail.get("reason") or "unknown").strip() or "unknown"
+        stale_reason_counts[reason] = stale_reason_counts.get(reason, 0) + 1
+
+    return {
+        "enabled_channels": len(auto_channels),
+        "open_slots": open_slots,
+        "upcoming_count": len(upcoming),
+        "upcoming": upcoming,
+        "stale_reasons": [
+            {"reason": reason, "count": stale_reason_counts[reason]}
+            for reason in sorted(stale_reason_counts)
+        ],
+    }
 
 
 def create_app():
@@ -672,15 +824,71 @@ def create_app():
         from ..core import niche as niche_mod
         conn = connect()
         saved = None
+        err = None
         if request.method == "POST":
             cid = request.form.get("channel_id", "")
-            applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
-            row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
-            saved = row["handle"] if row else cid
+            channel = conn.execute("SELECT * FROM channel WHERE id=?", (cid,)).fetchone()
+            if not channel:
+                err = "Kênh không tồn tại"
+            else:
+                values = None
+                if channel["platform"] == "threads":
+                    automation = validate_channel_automation_config({
+                        "auto_schedule_enabled": request.form.get("auto_schedule_enabled", ""),
+                        "daily_post_target": request.form.get("daily_post_target", ""),
+                        "daily_post_cap": request.form.get("daily_post_cap", ""),
+                        "existing_daily_post_cap": channel["daily_post_cap"],
+                        "posting_timezone": request.form.get("posting_timezone", ""),
+                        "posting_slots": request.form.getlist("posting_slots"),
+                    })
+                    if not automation["ok"]:
+                        err = automation["error"]
+                    else:
+                        values = automation["values"]
+                if not err:
+                    applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
+                    row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
+                    saved = row["handle"] if row else cid
+                    if values:
+                        try:
+                            current_slots = json.loads(channel["posting_slots"] or "[]")
+                        except (TypeError, ValueError):
+                            current_slots = []
+                        new_slots = json.loads(values["posting_slots"])
+                        automation_changed = any([
+                            channel["auto_schedule_enabled"] != values["auto_schedule_enabled"],
+                            channel["daily_post_target"] != values["daily_post_target"],
+                            channel["daily_post_cap"] != values["daily_post_cap"],
+                            channel["posting_timezone"] != values["posting_timezone"],
+                            current_slots != new_slots,
+                        ])
+                        if not automation_changed:
+                            values = None
+                    if values:
+                        audit_detail = dict(values)
+                        audit_detail["posting_slots"] = json.loads(values["posting_slots"])
+                        conn.execute("""
+                            UPDATE channel
+                            SET auto_schedule_enabled=?, daily_post_target=?, daily_post_cap=?,
+                                posting_timezone=?, posting_slots=?
+                            WHERE id=?
+                        """, (values["auto_schedule_enabled"], values["daily_post_target"],
+                              values["daily_post_cap"], values["posting_timezone"],
+                              values["posting_slots"], cid))
+                        pipeline.audit(conn, "channel", cid, "updated_automation",
+                                       actor="operator", detail=audit_detail)
         rows = []
         for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
-            rows.append(dict(ch, niches=nl,
+            posting_slots = []
+            if ch["platform"] == "threads":
+                try:
+                    posting_slots = json.loads(ch["posting_slots"] or "[]")
+                except (TypeError, ValueError):
+                    posting_slots = []
+            rows.append(dict(ch, niches=nl, posting_slots_list=posting_slots,
+                             posting_slots_text="\n".join(posting_slots),
+                             daily_post_cap_input_max=max(3, int(ch["daily_post_cap"] or 3)),
                              pool=len(scoring.score_candidates(conn, limit=9999, niches=nl)),
                              published=conn.execute(
                                  "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED'",
@@ -701,7 +909,7 @@ def create_app():
         return render_template("channels.html", page="kenh", by_platform=by_platform,
                                all_niches=niche_mod.NICHES, saved=saved, pending_review=pending,
                                has_meta_connection=has_meta_connection,
-                               summary=request.args.get("summary"),
+                               summary=request.args.get("summary"), err=err or request.args.get("err"),
                                all_active_channels=all_active_channels,
                                account_groups=account_groups, platform_labels=PLATFORM_LABELS)
 
@@ -925,11 +1133,13 @@ def create_app():
     @app.route("/vanhanh")
     def ops():
         conn = connect()
+        now_utc = _parse_ops_now_utc(request.args.get("now")) or datetime.now(timezone.utc)
         worker_row = conn.execute(
             "SELECT value, updated_at FROM system_setting WHERE key=?", (PUBLISH_WORKER_ENABLED,)).fetchone()
         data = dict(
             worker_enabled=publish_worker_enabled(conn),
             worker_updated_at=worker_row["updated_at"] if worker_row else None,
+            auto_ops=_build_auto_ops_summary(conn, now_utc),
             queue=jobs.queue_summary(conn),
             failed=[dict(r) for r in conn.execute(
                 "SELECT * FROM job_queue WHERE status='FAILED' ORDER BY updated_at DESC LIMIT 10").fetchall()],
@@ -940,7 +1150,7 @@ def create_app():
                 SELECT c.*, (SELECT COUNT(*) FROM post p WHERE p.channel_id=c.id AND p.status='PUBLISHED'
                              AND substr(p.published_at,1,10)=substr(?,1,10)) AS today,
                        (SELECT COUNT(*) FROM post p WHERE p.channel_id=c.id AND p.status='SCHEDULED') AS queued
-                FROM channel c""", (now(),)).fetchall()],
+                FROM channel c""", (now_utc.isoformat(timespec="seconds"),)).fetchall()],
             posts_by_status=[dict(r) for r in conn.execute(
                 "SELECT status, COUNT(*) AS n FROM post GROUP BY status ORDER BY n DESC").fetchall()],
             publish_targets=[dict(r) for r in conn.execute("""
