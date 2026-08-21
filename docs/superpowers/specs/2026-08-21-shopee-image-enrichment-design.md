@@ -2,7 +2,7 @@
 
 Date: 2026-08-21
 Branch: `feat/shopee-image-enrichment`
-Status: approved in chat, awaiting written-spec review
+Status: self-reviewed, awaiting written-spec approval
 
 ## 1. Goal
 
@@ -63,18 +63,15 @@ PUBLIC_FETCH
           +--> public HTML contains usable image --> DOWNLOADING
           |                                      |
           |                                      +--> valid image --> READY
-          |                                      +--> bad/download error --> NEEDS_HELPER or FAILED
+          |                                      +--> download/validation failure --> retry -> FAILED
           |
-          +--> blocked/incomplete HTML ----------> NEEDS_HELPER
+          +--> blocked/incomplete/no image ------> NEEDS_HELPER
                                                      |
                                                      v
                                              Chrome Helper
                                                      |
-                                                     v
-                                                DOWNLOADING
-                                                     |
-                                                     v
-                                                   READY
+                                                     +--> returns usable image URL --> DOWNLOADING --> READY/FAILED
+                                                     +--> invalid/wrong product -----> remain NEEDS_HELPER
 ```
 
 Processing is operator-triggered in bounded batches. Importing creates/enqueues missing-image work, but it does not automatically crawl hundreds or thousands of product pages in the background.
@@ -84,8 +81,8 @@ Default batch controls:
 - batch size: 20 products;
 - concurrency: 1;
 - inter-request delay: configurable, default 1.5 seconds;
-- automatic public-fetch attempts per product: maximum 2;
-- image-download attempts per product: maximum 2.
+- automatic public-fetch attempts per product per operator run: maximum 2;
+- image-download attempts per product per operator run: maximum 2.
 
 This keeps the feature useful for hundreds of imported products while avoiding an unbounded crawler.
 
@@ -114,7 +111,7 @@ No JavaScript execution is required server-side.
 
 `ProductMetadataResolver.resolve()` must no longer call `_api_metadata()` or request `/api/v4/pdp/get_pc`, `/api/v4/item/get`, or equivalent private/internal Shopee endpoints.
 
-The existing parser helpers may remain if another test fixture needs them temporarily, but no production Shopee metadata flow may invoke them. Prefer deleting dead private-endpoint code if removal does not create unnecessary migration risk.
+The existing private-endpoint parser code should be deleted when practical. If temporary parser helpers must remain for migration/test reasons, no production metadata flow may invoke them.
 
 A regression test must prove that resolving metadata never sends a request to a URL containing `/api/v4/`.
 
@@ -140,15 +137,15 @@ Proposed table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS shopee_image_enrichment_job (
-    product_id        TEXT PRIMARY KEY REFERENCES product(id),
-    status            TEXT NOT NULL,
-    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    product_id             TEXT PRIMARY KEY REFERENCES product(id),
+    status                 TEXT NOT NULL,
+    attempt_count          INTEGER NOT NULL DEFAULT 0,
     download_attempt_count INTEGER NOT NULL DEFAULT 0,
-    last_error_code   TEXT,
-    last_error        TEXT,
-    last_attempt_at   TEXT,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+    last_error_code        TEXT,
+    last_error             TEXT,
+    last_attempt_at        TEXT,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
 );
 ```
 
@@ -161,7 +158,7 @@ Allowed statuses:
 - `READY`
 - `FAILED`
 
-The service layer, not database callers, owns state transitions.
+The service layer, not route/database callers, owns state transitions.
 
 ### 5.1 Enqueue rules
 
@@ -177,9 +174,15 @@ The UI must also provide an idempotent scan/backfill action so products imported
 
 If a Product already has a valid local/main image, its job is `READY` or no new work is created.
 
-### 5.2 Crash recovery
+### 5.2 Retry counters
 
-`PUBLIC_FETCH` and `DOWNLOADING` are transient states. If one is older than 10 minutes when the next batch starts, the service may return it to `PENDING` unless the Product already has a usable image, in which case it becomes `READY`.
+`attempt_count` and `download_attempt_count` are counters for the current automatic attempt cycle. An explicit operator `Retry` resets the relevant counters to zero, clears the previous bounded error, and starts a new finite cycle.
+
+No automatic path resets these counters or loops indefinitely.
+
+### 5.3 Crash recovery
+
+`PUBLIC_FETCH` and `DOWNLOADING` are transient states. If one is older than 10 minutes when the next operator batch starts, the service returns it to `PENDING` unless the Product already has a usable image, in which case it becomes `READY`.
 
 This prevents a process restart from leaving work permanently stuck.
 
@@ -203,17 +206,17 @@ HTML, JSON, corrupt bytes or oversized responses are rejected.
 
 ### 6.2 Local materialization
 
-Store a deterministic Shopee-owned local copy under a Shopee media namespace, conceptually:
+Use a deterministic flat filename under the existing ACP media root so it remains compatible with the current `LocalStorage.put()` implementation and `/media/<path:name>` route:
 
 ```text
-var/media/shopee/<shop_id>/<item_id>.<verified-ext>
+var/media/shopee_<shop_id>_<item_id>.<verified-ext>
 ```
 
 The extension comes from the decoded image format, never from untrusted URL text.
 
-A valid existing local file for the same canonical product is reused rather than downloaded again.
+A valid existing file for the same canonical product is reused rather than downloaded again.
 
-Use atomic write semantics: download and verify bytes first, write a temporary file, then replace/move to the deterministic target.
+Use atomic write semantics: download and verify bytes first, write a temporary file inside the media root, then atomically replace/move to the deterministic target.
 
 ### 6.3 Product fields
 
@@ -221,15 +224,17 @@ On successful materialization:
 
 - `image_url_original` = original Shopee image URL;
 - `image_path_local` = deterministic ACP local file path;
-- `main_image_url` = URL returned/derived from the configured ACP storage backend for that local file.
+- `main_image_url` = URL returned by the configured ACP storage backend for that local file.
 
-For local storage this must remain compatible with ACP's `/media/...` serving route. For S3/R2 storage, call the existing storage abstraction instead of constructing public URLs manually.
+For local storage, `storage.get_storage().put(local_path)` produces a URL compatible with the existing `/media/<filename>` route. For S3/R2, the same storage abstraction uploads and returns the public URL. Do not construct S3/R2 URLs manually.
 
 If storage publication fails after local validation, keep the verified local file but do not mark the job `READY` until Product fields are internally consistent.
 
 ## 7. Chrome Helper fallback
 
-When public HTML is blocked, times out, returns no useful image, or image download cannot be completed after the automatic retry budget, move the Product to `NEEDS_HELPER` unless the error is a permanent local validation/configuration failure that should be `FAILED`.
+Move a Product to `NEEDS_HELPER` when public product HTML is blocked, times out, is incomplete, or contains no usable image after the public-fetch retry budget.
+
+A Product that already yielded an image URL but fails image download/validation/storage follows its image retry budget and then becomes `FAILED`; it is not automatically sent to Helper because Helper cannot repair a local download/storage failure. The operator may still explicitly choose Helper if they want to obtain a different rendered image URL.
 
 Reuse the existing Helper security model:
 
@@ -248,7 +253,7 @@ A wrong product tab must remain rejected without consuming a still-valid pairing
 
 Expose a Shopee Affiliate area under the `/sanpham` namespace without mixing Shopee rows into the existing ACCESSTRADE-only query implementation.
 
-Recommended route:
+Recommended routes:
 
 ```text
 GET  /sanpham/shopee
@@ -299,18 +304,20 @@ The UI must not expose internal stack traces, raw HTML, pairing tokens, cookies 
 
 ## 9. Batch execution behavior
 
-Phase 1 uses synchronous operator-triggered batches rather than introducing a background worker subsystem.
+Phase 1 uses synchronous operator-triggered bounded batches rather than introducing a background worker subsystem.
 
 For each batch:
 
 1. select up to 20 eligible `PENDING`/retryable jobs in deterministic order;
 2. process one Product at a time;
-3. commit state/Product updates per product so one failure does not roll back the whole batch;
-4. sleep for the configured delay between public product-page requests;
+3. persist state/Product updates per product so one failure does not roll back the whole batch;
+4. wait for the configured delay between public product-page requests;
 5. stop after the selected batch; do not automatically start another batch;
 6. return an aggregate summary to the UI.
 
-A product-level action uses the same service function as batch execution; there must not be separate enrichment logic in route handlers.
+A product-level action uses the same service function as batch execution; route handlers must not contain a second enrichment implementation.
+
+If observed request duration becomes unsuitable for the deployed reverse proxy, the implementation may use a small browser-side sequential coordinator while keeping the exact same server-side product-level service and 20-item bound. It must not introduce an autonomous background crawler as part of this phase.
 
 ## 10. Error handling
 
@@ -338,7 +345,7 @@ Do not persist:
 - helper pairing tokens;
 - stack traces.
 
-`attempt_count` and `download_attempt_count` must never exceed configured automatic limits. Operator `Retry` starts a new bounded attempt cycle rather than creating an infinite retry loop.
+Automatic processing respects the per-cycle attempt limits. Only an explicit operator `Retry` starts another finite attempt cycle.
 
 ## 11. Security and policy boundaries
 
@@ -388,7 +395,7 @@ Add focused tests for at least:
 - oversized response -> rejected;
 - wrong content type / HTML masquerading as image -> rejected;
 - corrupt image -> rejected;
-- deterministic path uses canonical shop/item only;
+- deterministic filename uses canonical shop/item only;
 - existing valid local file -> no duplicate download;
 - atomic write leaves no partial target on failure;
 - storage backend failure does not mark job `READY`.
@@ -396,11 +403,13 @@ Add focused tests for at least:
 ### Job state machine
 
 - enqueue is idempotent;
-- imported existing missing-image Product is backfilled;
+- already imported missing-image Product is backfilled;
 - automatic attempts respect limits;
+- explicit retry resets only the current attempt cycle;
 - stale transient jobs recover;
 - successful public fetch -> `READY`;
 - incomplete public fetch -> `NEEDS_HELPER`;
+- image materialization failure after retry -> `FAILED`;
 - permanent validation/config error -> `FAILED`;
 - retry uses the same service path.
 
