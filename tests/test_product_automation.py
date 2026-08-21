@@ -1741,6 +1741,61 @@ def test_product_sync_uses_seed_catalog_in_mock_mode():
                     os.environ[name] = value
 
 
+def test_auto_schedule_cli_injects_mock_catalog_context_in_mock_mode():
+    """Mock product-sync followed by auto-schedule must keep using the mock catalog link client."""
+    from acp import run
+
+    class _Session:
+        def __enter__(self):
+            return "connection"
+
+        def __exit__(self, *_):
+            return False
+
+    class _LiveClient:
+        def create_product_link(self, *_args, **_kwargs):
+            raise AssertionError("auto-schedule must not use the live catalog client in mock mode")
+
+    class _Pipeline:
+        seen = []
+
+        @classmethod
+        def fill_auto_schedule(cls, conn, campaign_code, *, ctx=None):
+            link = ctx["product_client"].create_product_link(
+                "https://example.test/product",
+                post_id="post-1",
+                external_product_id="mock-product",
+            )
+            cls.seen.append((conn, campaign_code, link.full_url))
+            return {"scheduled": 1, "review": 0, "skipped": 0, "cancelled": 0}
+
+    original = {name: getattr(run, name, None) for name in ("db", "factory", "pipeline")}
+    old_values = {name: os.environ.get(name) for name in ("ACP_ADAPTER", "ACP_SOURCE")}
+    try:
+        os.environ.update({"ACP_ADAPTER": "mock", "ACP_SOURCE": "mock"})
+        run.db = type("_Db", (), {"init_db": staticmethod(lambda: None),
+                                    "session": staticmethod(lambda: _Session())})
+        run.factory = type("_Factory", (), {"build_context": staticmethod(
+            lambda: {"product_client": _LiveClient()})})
+        run.pipeline = _Pipeline
+
+        assert run.cmd_auto_schedule() == 0
+        assert _Pipeline.seen == [
+            ("connection", run.CAMPAIGN_CODE, "https://mock.acp/product/mock-product?post_id=post-1")
+        ]
+    finally:
+        for name, value in old_values.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        for name, value in original.items():
+            if value is None:
+                delattr(run, name)
+            else:
+                setattr(run, name, value)
+
+
 def test_product_sync_initializes_its_catalog_schema_before_syncing():
     """A fresh cron database must receive the catalog migration before acquiring its sync lock."""
     from acp import run
@@ -2021,6 +2076,36 @@ def test_user_worker_units_use_active_env_without_embedded_secrets():
     for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
         assert secret_name not in service
         assert secret_name not in timer
+
+
+def test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate():
+    """Docs and timer examples must sequence sync -> auto-schedule -> worker without implying auto publish."""
+    readme = Path(ACP_ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = Path(ACP_ROOT / "docs" / "ACP_RUNBOOK.md").read_text(encoding="utf-8")
+    worker_service = Path(ACP_ROOT / "ops" / "acp-worker.service").read_text(encoding="utf-8")
+    auto_service = Path(ACP_ROOT / "ops" / "acp-auto-schedule.service").read_text(encoding="utf-8")
+    auto_timer = Path(ACP_ROOT / "ops" / "acp-auto-schedule.timer").read_text(encoding="utf-8")
+    help_text = Path(ACP_ROOT / "run.py").read_text(encoding="utf-8")
+
+    combined = "\n".join((readme, runbook, worker_service, auto_service, auto_timer, help_text))
+
+    assert "python3 run.py auto-schedule" in help_text
+    assert "sync catalog -> auto-schedule -> worker-once" in combined
+    assert "không bật worker" in combined or "không bật publish worker" in combined
+    assert "không bật ACP_ADAPTER=live" in combined or "không bật live adapter" in combined
+    assert "run.py\" worker-once" in worker_service
+    assert "product-sync" not in worker_service
+    assert "auto-schedule" not in worker_service
+    assert auto_service.index("run.py\" product-sync") < auto_service.index("run.py\" auto-schedule")
+    assert auto_service.index("run.py\" auto-schedule") < auto_service.index("run.py\" worker-once")
+    assert "ExecStartPre=" in auto_service
+    assert "ExecStartPost=" in auto_service
+    assert "run.py auto-schedule" in auto_service
+    assert "OnUnitActiveSec=60min" in auto_timer
+    for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
+        assert secret_name not in worker_service
+        assert secret_name not in auto_service
+        assert secret_name not in auto_timer
 
 
 @contextlib.contextmanager
@@ -2824,13 +2909,15 @@ def main():
                       test_product_sync_skip_and_errors_have_cron_safe_exit_codes,
                       test_product_sync_returns_nonzero_without_leaking_provider_errors,
                       test_product_sync_uses_seed_catalog_in_mock_mode,
+                      test_auto_schedule_cli_injects_mock_catalog_context_in_mock_mode,
                       test_product_sync_initializes_its_catalog_schema_before_syncing,
                       test_mock_auto_prepare_uses_mock_client_and_keeps_post_pending_review,
                       test_auto_prepare_failure_is_redacted_and_returns_nonzero,
                       test_worker_once_uses_context_and_respects_persisted_publish_switch,
                       test_worker_status_prints_only_switch_and_queue_counts,
                       test_worker_once_returns_safe_nonzero_on_operational_failure,
-                      test_user_worker_units_use_active_env_without_embedded_secrets],
+                      test_user_worker_units_use_active_env_without_embedded_secrets,
+                      test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate],
               "web": [test_products_page_is_local_and_renders_filters,
                       test_catalog_routes_require_csrf_and_hide_api_errors,
                       test_catalog_publish_error_is_redacted_from_redirect_and_page,

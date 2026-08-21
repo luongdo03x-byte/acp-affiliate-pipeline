@@ -9,7 +9,7 @@
     <form method="get" action="/oauth/meta/start"><button class="btn btn--ghost" type="submit">Kết nối Meta</button></form>
   </div>
 </div>
-{% if request.args.get('err') %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
 {% if summary %}<div class="alert alert--success"><strong>Đã đồng bộ.</strong><span>{{ summary }}</span></div>{% endif %}
 {% if saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>Đã cập nhật nhóm sản phẩm cho {{ saved }}.</span></div>{% endif %}
 
@@ -38,6 +38,16 @@
       <label class="niche-tile"><input type="checkbox" name="niches" value="{{ code }}" {{ 'checked' if code in c.niches }}><span>{{ n.name }}{% if n.extra_banned_phrases %}<small>nhóm có điều kiện · +{{ n.extra_banned_phrases|length }} cụm cấm</small>{% endif %}</span></label>
     {% endfor %}
     </div>
+    {% if c.platform == 'threads' %}
+    <div class="section-heading section-heading--spaced"><div><h3>Tự duyệt + lên lịch</h3><p class="note">Auto chỉ áp dụng cho Threads. Công tắc worker toàn hệ thống vẫn nằm riêng ở /vanhanh.</p></div></div>
+    <div class="field"><label><input type="checkbox" name="auto_schedule_enabled" value="1" {{ 'checked' if c.auto_schedule_enabled }}> Bật Auto cho account này</label></div>
+    <div class="niche-grid">
+      <label class="niche-tile"><span>Mục tiêu/ngày<small>1 đến cap, mặc định 2</small><input type="number" name="daily_post_target" min="1" max="3" value="{{ c.daily_post_target }}"></span></label>
+      <label class="niche-tile"><span>Trần/ngày<small>target <= cap <= 3; cap legacy hiện có vẫn gửi lại được</small><input type="number" name="daily_post_cap" min="1" max="{{ c.daily_post_cap_input_max }}" value="{{ c.daily_post_cap }}"></span></label>
+      <label class="niche-tile"><span>Múi giờ<small>IANA timezone</small><input type="text" name="posting_timezone" value="{{ c.posting_timezone }}"></span></label>
+    </div>
+    <div class="field"><label for="posting-slots-{{ c.id }}">Posting slots</label><textarea id="posting-slots-{{ c.id }}" name="posting_slots" rows="3" placeholder="09:30&#10;12:30&#10;20:30">{{ c.posting_slots_text }}</textarea><small class="note">Mỗi dòng một slot HH:MM, từ 2 đến 3 slot, không trùng.</small></div>
+    {% endif %}
     <div class="channel-card__foot"><span class="note">Không chọn ô nào = kênh nhận mọi danh mục.</span><button class="btn btn--primary" type="submit">Lưu cho {{ c.handle }}</button></div>
   </form>
 </section>

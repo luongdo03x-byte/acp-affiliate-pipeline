@@ -334,6 +334,12 @@ acp-product-sync.timer`. Khóa database của catalog chặn sync chồng nhau; 
 nhận thông báo đồng bộ đang chạy, đợi job hiện tại hoàn tất thay vì chạy lại song
 song.
 
+Luồng timer an toàn là `sync catalog -> auto-schedule -> worker-once`. `product-sync`
+chỉ cập nhật catalog cục bộ; `auto-schedule` chỉ tạo, duyệt và xếp lịch Auto
+trong 48 giờ tới; `worker-once` mới là bước có thể publish nếu operator đã bật
+công tắc worker toàn hệ thống. Không timer nào tự bật worker hoặc tự chuyển ACP
+sang live adapter.
+
 ### Thao tác hàng loạt trên catalog
 
 `/sanpham` cho chọn nhiều sản phẩm cùng lúc (checkbox trên từng thẻ, có nút chọn
@@ -358,6 +364,8 @@ Worker là process riêng chạy một lượt mỗi phút; Flask dashboard khô
 hàng đợi. Công tắc publish worker được lưu trong database và mặc định **tắt**.
 Vì vậy cài hoặc bật timer không làm ACP tự đăng bài. Khi công tắc tắt, các job
 `PUBLISH_POST` đến hạn vẫn giữ `READY`; các job khác vẫn có thể được xử lý.
+`acp-worker.service` chỉ chạy `worker-once`, nên worker timer là fallback để quét
+publish queue an toàn, không phải thêm một vòng sync catalog.
 
 Kiểm tra trạng thái trước khi cài:
 
@@ -387,6 +395,24 @@ journalctl --user -u acp-worker.service -n 100
 Timer gọi `run.py worker-once` mỗi phút và service sẽ thử lại khi lỗi vận hành.
 Không dùng `run.py work` trong timer vì lệnh đó drain toàn bộ hàng đợi. Dừng lịch
 nhưng không đổi công tắc bằng `systemctl --user disable --now acp-worker.timer`.
+
+Để duy trì rolling schedule cho Threads Auto, cài thêm timer:
+
+```bash
+cp ops/acp-auto-schedule.service ops/acp-auto-schedule.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now acp-auto-schedule.timer
+systemctl --user status acp-auto-schedule.timer
+```
+
+`acp-auto-schedule.service` source đúng `.env.local` của release active rồi chạy
+chuỗi `product-sync` -> `run.py auto-schedule` -> `run.py worker-once`. Timer này
+không bật publish worker và không bật `ACP_ADAPTER=live`; nó sync catalog, lấp
+lịch target Auto, rồi mới quét publish queue. `worker-once` ở cuối vẫn tôn trọng
+công tắc worker toàn hệ thống, nên khi worker đang tắt thì bước publish chỉ
+no-op an toàn. `acp-worker.timer` giữ vai trò fallback để quét publish queue,
+không phải một vòng sync catalog thứ hai.
+Nói ngắn gọn: timer này không bật live adapter.
 
 ### Xử lý sự cố
 

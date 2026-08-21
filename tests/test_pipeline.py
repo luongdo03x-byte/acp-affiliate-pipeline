@@ -7,7 +7,9 @@ import os
 import random
 import sys
 import tempfile
-from datetime import datetime, timedelta
+import contextlib
+import io
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -2167,6 +2169,72 @@ def test_approve_post_custom_schedule():
     conn.close()
 
 
+def test_approve_post_normalizes_timezone_schedule_for_job_claim():
+    print("\nduyệt giờ có timezone địa phương lưu UTC để worker claim đúng hạn")
+    conn = connect()
+    ids = pipeline.plan_content(conn, "test", limit=3, rng=random.Random(2026))
+    check("có bài để test giờ +07", len(ids) > 0)
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "channel": MockThreads(seed=2026)})
+    post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+    check("có bài chờ duyệt để test giờ +07", post is not None)
+
+    local_slot = "2026-08-20T09:30:00+07:00"
+    expected_utc = "2026-08-20T02:30:00+00:00"
+    res = pipeline.approve_post(conn, post["id"], scheduled_at=local_slot)
+    check("duyệt với giờ +07 thành công", res["ok"], res.get("error"))
+    check("response trả giờ UTC", res["scheduled_at"] == expected_utc, res.get("scheduled_at"))
+
+    row = conn.execute("SELECT scheduled_at FROM post WHERE id=?", (post["id"],)).fetchone()
+    check("post lưu scheduled_at UTC", row["scheduled_at"] == expected_utc, row["scheduled_at"])
+    target = conn.execute("SELECT scheduled_at FROM publish_target WHERE id=?",
+                          (res["publish_target_id"],)).fetchone()
+    check("publish_target lưu scheduled_at UTC", target["scheduled_at"] == expected_utc,
+          target["scheduled_at"])
+    job = conn.execute("SELECT id, run_after FROM job_queue WHERE idempotency_key=?",
+                       (f"pub:{res['publish_target_id']}",)).fetchone()
+    check("job publish enqueue run_after UTC", job is not None and job["run_after"] == expected_utc,
+          dict(job) if job else None)
+
+    original_now = jobs.now
+    try:
+        jobs.now = lambda: expected_utc
+        claimed = jobs.claim(conn, limit=1)
+    finally:
+        jobs.now = original_now
+    check("job claim được đúng lúc UTC tương ứng", len(claimed) == 1 and claimed[0]["id"] == job["id"],
+          claimed)
+    conn.close()
+
+
+def test_auto_schedule_cli_prints_only_aggregate_counts():
+    print("\nauto-schedule CLI in aggregate, không lộ payload job")
+    from acp import run
+
+    original_fill = getattr(run.pipeline, "fill_auto_schedule", None)
+    had_fill = hasattr(run.pipeline, "fill_auto_schedule")
+
+    def fake_fill(conn, campaign_code, *, ctx=None):
+        return {"scheduled": 2, "review": 1, "skipped": 3, "cancelled": 0}
+
+    run.pipeline.fill_auto_schedule = fake_fill
+    stream = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stream):
+            rc = run.cmd_auto_schedule()
+    finally:
+        if had_fill:
+            run.pipeline.fill_auto_schedule = original_fill
+        else:
+            delattr(run.pipeline, "fill_auto_schedule")
+
+    body = stream.getvalue()
+    check("CLI trả exit code 0", rc == 0, rc)
+    check("CLI in đủ aggregate scheduled/review/skipped/cancelled",
+          "scheduled=2" in body and "review=1" in body and "skipped=3" in body and "cancelled=0" in body,
+          body)
+    check("CLI không in payload chi tiết hoặc token", "payload" not in body.lower() and "token" not in body.lower(), body)
+
+
 def test_daily_cap():
     print("\nTrần đăng bài theo ngày")
     conn = connect()
@@ -2238,6 +2306,43 @@ def test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target():
         check("_published_today KHÔNG đếm nhầm sang kênh facebook", pipeline._published_today(conn, fb_id) == 0)
     finally:
         conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fb_id,))
+        conn.close()
+
+
+def test_published_today_counts_channel_local_date_at_midnight_boundary():
+    print("\n_published_today tính theo ngày local của posting_timezone, không theo UTC")
+    conn = connect()
+    channel_id = ulid()
+    product = conn.execute("SELECT id FROM product LIMIT 1").fetchone()
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    conn.execute("""INSERT INTO channel (id, code, platform, handle, status, enabled,
+                    daily_post_cap, min_gap_minutes, posting_timezone, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (channel_id, "tz_quota_test", "threads", "@tz_quota", "ACTIVE", 1,
+                  12, 90, "Asia/Bangkok", now()))
+    try:
+        post_id = ulid()
+        conn.execute("""INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                        caption_body, disclosure_text, caption_final, created_at, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (post_id, product["id"], channel_id, campaign["id"], "A",
+                      "thân bài", "nhãn tiếp thị", "thân bài",
+                      "2026-08-19T17:30:00+00:00", "2026-08-19T17:30:00+00:00"))
+        target_id = ulid()
+        conn.execute("""INSERT INTO publish_target (id, post_id, channel_id, status,
+                        created_at, updated_at) VALUES (?,?,?,'SUCCESS',?,?)""",
+                     (target_id, post_id, channel_id,
+                      "2026-08-19T17:30:00+00:00", "2026-08-19T17:30:00+00:00"))
+
+        counted = pipeline._published_today(
+            conn,
+            channel_id,
+            now_utc=datetime(2026, 8, 19, 18, 0, tzinfo=timezone.utc),
+            posting_timezone="Asia/Bangkok",
+        )
+        check("target 00:30 ngày 20 Bangkok được tính vào quota ngày 20 local", counted == 1, counted)
+    finally:
+        conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (channel_id,))
         conn.close()
 
 
@@ -2336,6 +2441,285 @@ def test_retry_publish_target():
 
     n_targets = conn.execute("SELECT COUNT(*) FROM publish_target WHERE post_id=?", (post["id"],)).fetchone()[0]
     check("retry không tạo publish_target mới", n_targets == 1, n_targets)
+    conn.close()
+
+
+def _insert_publish_preflight_fixture(conn, suffix: str, *, auto_scheduled: int, product_available: int):
+    campaign = conn.execute("SELECT id FROM campaign WHERE code='test'").fetchone()
+    channel = conn.execute("SELECT id FROM channel WHERE code='ch1'").fetchone()
+    conn.execute(
+        "UPDATE channel SET daily_post_cap=999, enabled=1, status='ACTIVE', auto_schedule_enabled=1 WHERE id=?",
+        (channel["id"],),
+    )
+    ts = now()
+    product_id = f"preflight-product-{suffix}"
+    post_id = f"preflight-post-{suffix}"
+    target_id = f"preflight-target-{suffix}"
+    conn.execute(
+        """
+        INSERT INTO product (
+            id, source, merchant, external_product_id, name, description,
+            current_price, original_price, commission_value, commission_rate,
+            category_code, rating, review_count, sold_count, image_url_original,
+            image_path_local, product_url, is_available, has_inventory, last_seen_at,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            product_id,
+            "mock",
+            "Fixture Shop",
+            product_id,
+            "Serum dưỡng ẩm fixture",
+            "",
+            100000,
+            150000,
+            20000,
+            0.1,
+            "my-pham",
+            4.8,
+            100,
+            200,
+            "https://img.test/preflight.jpg",
+            None,
+            f"https://example.test/{product_id}",
+            product_available,
+            1,
+            ts,
+            ts,
+            ts,
+        ),
+    )
+    caption = f"Ưu đãi hôm nay\n\nhttps://go.isclix.com/x?sub1={post_id}\n\n{content.DISCLOSURE_DEFAULT}"
+    conn.execute(
+        """
+        INSERT INTO post (
+            id, product_id, channel_id, campaign_id, variant_code, caption_body,
+            disclosure_text, caption_final, affiliate_link, status, scheduled_at,
+            reviewed_by, reviewed_at, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            post_id,
+            product_id,
+            channel["id"],
+            campaign["id"],
+            "A",
+            caption,
+            content.DISCLOSURE_DEFAULT,
+            caption,
+            f"https://go.isclix.com/x?sub1={post_id}",
+            "SCHEDULED",
+            ts,
+            "test",
+            ts,
+            ts,
+            ts,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO publish_target (
+            id, post_id, channel_id, status, scheduled_at, auto_scheduled,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (target_id, post_id, channel["id"], "SCHEDULED", ts, auto_scheduled, ts, ts),
+    )
+    jobs.enqueue(
+        conn,
+        "PUBLISH_POST",
+        {"publish_target_id": target_id, "post_id": post_id, "channel_id": channel["id"]},
+        run_after=ts,
+        idempotency_key=f"pub:{target_id}",
+    )
+    return {"product_id": product_id, "post_id": post_id, "target_id": target_id, "channel_id": channel["id"]}
+
+
+def test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job():
+    print("\npublish_post: stale auto target CANCELLED before publisher call, post returns to review")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-unavailable", auto_scheduled=1, product_available=0)
+    publisher = MockThreads(seed=211)
+
+    before_jobs = conn.execute(
+        "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST' AND payload LIKE ?",
+        (f"%{fixture['post_id']}%",),
+    ).fetchone()[0]
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+    audit_row = conn.execute(
+        """
+        SELECT action, actor, detail
+        FROM audit_log
+        WHERE entity='publish_target' AND entity_id=?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (fixture["target_id"],),
+    ).fetchone()
+    after_jobs = conn.execute(
+        "SELECT COUNT(*) FROM job_queue WHERE job_type='PUBLISH_POST' AND payload LIKE ?",
+        (f"%{fixture['post_id']}%",),
+    ).fetchone()[0]
+
+    check("publisher không được gọi cho auto target stale", publisher.published == [], publisher.published)
+    check("target bị CANCELLED an toàn", target["status"] == "CANCELLED", dict(target))
+    check("post quay về PENDING_REVIEW", post["status"] == "PENDING_REVIEW", dict(post))
+    check("reason đã sanitize thành mã ngắn", target["last_error"] == "product_unavailable", target["last_error"])
+    check("post reject_reason lưu cùng mã ngắn", post["reject_reason"] == "product_unavailable", post["reject_reason"])
+    check("audit auto_stale_cancelled", audit_row is not None and audit_row["action"] == "auto_stale_cancelled",
+          dict(audit_row) if audit_row else None)
+    check("audit do auto_scheduler ghi", audit_row is not None and audit_row["actor"] == "auto_scheduler",
+          dict(audit_row) if audit_row else None)
+    check("audit không chứa link hoặc token thô",
+          audit_row is not None and "https://" not in audit_row["detail"] and "secret" not in audit_row["detail"].lower(),
+          audit_row["detail"] if audit_row else None)
+    check("publish handler không enqueue replacement job", before_jobs == 1 and after_jobs == 1,
+          (before_jobs, after_jobs))
+    conn.close()
+
+
+def test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics():
+    print("\npublish_post: auto target giữ AuthError/FAILED khi kênh NEEDS_REAUTH")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-needs-reauth", auto_scheduled=1, product_available=0)
+    conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE id=?", (fixture["channel_id"],))
+    publisher = MockThreads(seed=215)
+
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi kênh cần xác thực lại", publisher.published == [], publisher.published)
+        check("auto target NEEDS_REAUTH giữ FAILED, không CANCELLED", target["status"] == "FAILED", dict(target))
+        check("last_error giữ lỗi trạng thái kênh", "NEEDS_REAUTH" in (target["last_error"] or ""), target["last_error"])
+        check("post không bị đưa về review bởi freshness preflight", post["status"] == "SCHEDULED", dict(post))
+        check("reject_reason không bị ghi product stale", post["reject_reason"] is None, post["reject_reason"])
+    finally:
+        conn.execute("UPDATE channel SET status='ACTIVE' WHERE id=?", (fixture["channel_id"],))
+        conn.close()
+
+
+def test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics():
+    print("\npublish_post: auto target giữ FAILED khi kênh enabled=0")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-disabled-channel", auto_scheduled=1, product_available=0)
+    conn.execute("UPDATE channel SET enabled=0 WHERE id=?", (fixture["channel_id"],))
+    publisher = MockThreads(seed=216)
+
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        channel = conn.execute(
+            "SELECT status, enabled FROM channel WHERE id=?", (fixture["channel_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi kênh bị tắt", publisher.published == [], publisher.published)
+        check("auto target disabled giữ FAILED, không CANCELLED", target["status"] == "FAILED", dict(target))
+        check("last_error giữ lỗi kênh bị tắt", "tắt" in (target["last_error"] or "").lower(), target["last_error"])
+        check("channel.status không bị đổi sang NEEDS_REAUTH", channel["status"] == "ACTIVE" and channel["enabled"] == 0,
+              dict(channel))
+        check("post theo nhánh disabled hiện có quay về review", post["status"] == "PENDING_REVIEW", dict(post))
+        check("reject_reason giữ lỗi disabled, không ghi product stale",
+              "tắt" in (post["reject_reason"] or "").lower() and "product_unavailable" not in (post["reject_reason"] or ""),
+              post["reject_reason"])
+    finally:
+        conn.execute("UPDATE channel SET enabled=1 WHERE id=?", (fixture["channel_id"],))
+        conn.close()
+
+
+def test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold():
+    print("\npublish_post: auto target bị huỷ nếu product tụt quality sau khi đã schedule")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-low-rating", auto_scheduled=1, product_available=1)
+    conn.execute("UPDATE channel SET niches=? WHERE id=?", (json.dumps(["my-pham"]), fixture["channel_id"]))
+    conn.execute("UPDATE product SET category_code='my-pham', rating=3.0 WHERE id=?", (fixture["product_id"],))
+    publisher = MockThreads(seed=213)
+
+    try:
+        jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+        target = conn.execute(
+            "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+        ).fetchone()
+        post = conn.execute(
+            "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+        ).fetchone()
+        check("publisher không được gọi khi quality không còn đạt", publisher.published == [], publisher.published)
+        check("auto target low-rating bị CANCELLED", target["status"] == "CANCELLED", dict(target))
+        check("reason quality được sanitize", target["last_error"] == "product_quality_filter", target["last_error"])
+        check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "product_quality_filter",
+              dict(post))
+    finally:
+        conn.execute("UPDATE channel SET niches='[]' WHERE id=?", (fixture["channel_id"],))
+        conn.close()
+
+
+def test_publish_post_cancels_auto_target_when_product_category_becomes_blocked():
+    print("\npublish_post: auto target bị huỷ nếu category bị block sau khi đã schedule")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "auto-blocked-category", auto_scheduled=1, product_available=1)
+    conn.execute("UPDATE product SET category_code='duoc-pham' WHERE id=?", (fixture["product_id"],))
+    publisher = MockThreads(seed=214)
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, last_error FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, reject_reason FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+    check("publisher không được gọi khi category đã bị block", publisher.published == [], publisher.published)
+    check("auto target blocked-category bị CANCELLED", target["status"] == "CANCELLED", dict(target))
+    check("reason blocked-category được sanitize", target["last_error"] == "blocked_category", target["last_error"])
+    check("post quay về review với cùng reason", post["status"] == "PENDING_REVIEW" and post["reject_reason"] == "blocked_category",
+          dict(post))
+    conn.close()
+
+
+def test_publish_post_keeps_manual_target_behavior_without_freshness_preflight():
+    print("\npublish_post: manual target không chạy freshness preflight")
+    conn = connect()
+    fixture = _insert_publish_preflight_fixture(
+        conn, "manual-unavailable", auto_scheduled=0, product_available=0)
+    publisher = MockThreads(seed=212)
+
+    jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": publisher}})
+
+    target = conn.execute(
+        "SELECT status, external_post_id FROM publish_target WHERE id=?", (fixture["target_id"],)
+    ).fetchone()
+    post = conn.execute(
+        "SELECT status, thread_id FROM post WHERE id=?", (fixture["post_id"],)
+    ).fetchone()
+
+    check("manual target vẫn gọi publisher dù product stale", len(publisher.published) == 1, publisher.published)
+    check("manual target giữ hành vi publish thành công", target["status"] == "SUCCESS" and target["external_post_id"],
+          dict(target))
+    check("post manual chuyển PUBLISHED như trước", post["status"] == "PUBLISHED" and post["thread_id"], dict(post))
     conn.close()
 
 
@@ -2445,8 +2829,24 @@ def test_sibling_target_not_cancelled_after_first_target_publishes():
     try:
         ids = pipeline.plan_content(conn, "test", limit=1, rng=random.Random(81))
         check("có job sinh nội dung", len(ids) > 0)
+        generated_job = conn.execute("SELECT payload FROM job_queue WHERE id=?", (ids[0],)).fetchone()
+        generated_payload = json.loads(generated_job["payload"])
         jobs.drain(conn, ctx={"source": MockAccessTrade(), "publishers": {"threads": MockThreads(seed=81)}})
-        post = conn.execute("SELECT * FROM post WHERE status='PENDING_REVIEW' LIMIT 1").fetchone()
+        post = conn.execute(
+            """
+            SELECT *
+            FROM post
+            WHERE product_id=? AND channel_id=? AND variant_code=? AND status='PENDING_REVIEW'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (
+                generated_payload["product_id"],
+                generated_payload["channel_id"],
+                generated_payload["variant_code"],
+            ),
+        ).fetchone()
+        check("chọn đúng post vừa sinh cho sibling target", post is not None, generated_payload)
         ch1_id = post["channel_id"]
 
         # approve_post() 1-kênh như hiện tại -- tạo target A trên ch1.
@@ -4508,11 +4908,20 @@ if __name__ == "__main__":
     test_job_retry_semantics()
     test_idempotency_and_double_post()
     test_approve_post_custom_schedule()
+    test_approve_post_normalizes_timezone_schedule_for_job_claim()
+    test_auto_schedule_cli_prints_only_aggregate_counts()
     test_daily_cap()
     test_next_slot_and_daily_cap_scoped_per_channel_via_publish_target()
+    test_published_today_counts_channel_local_date_at_midnight_boundary()
     test_publish_target_failure_semantics()
     test_publish_post_authorror_marks_channel()
     test_retry_publish_target()
+    test_publish_post_cancels_stale_auto_target_without_publisher_or_replacement_job()
+    test_publish_post_auto_target_needs_reauth_keeps_auth_failure_semantics()
+    test_publish_post_auto_target_disabled_channel_keeps_disabled_failure_semantics()
+    test_publish_post_cancels_auto_target_when_product_drops_below_quality_threshold()
+    test_publish_post_cancels_auto_target_when_product_category_becomes_blocked()
+    test_publish_post_keeps_manual_target_behavior_without_freshness_preflight()
     test_publish_post_legacy_payload_compat()
     test_publish_post_malformed_payload_raises()
     test_publish_target_cancelled_on_stale_post_status()

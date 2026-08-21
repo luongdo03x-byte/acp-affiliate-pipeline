@@ -120,7 +120,13 @@ def _reasons(p, filters) -> list:
     return out
 
 
-def score_candidates(conn, limit: int = 20, explain: bool = False, niches=None):
+def score_candidates(
+    conn,
+    limit: int = 20,
+    explain: bool = False,
+    niches=None,
+    enforce_category_day_cap: bool = True,
+):
     """Chấm điểm toàn bộ sản phẩm khả dụng, trả về top-K.
 
     niches: chủ đề của MỘT kênh cụ thể. Truyền vào thì ghi đè cấu hình chung --
@@ -165,7 +171,7 @@ def score_candidates(conn, limit: int = 20, explain: bool = False, niches=None):
         rejected = _reasons(p, filters)
         if p["id"] in recent:
             rejected.append(f"đã đăng trong {filters['cooldown_days']} ngày gần đây")
-        if cat_today.get(p["category_code"], 0) >= filters["max_per_category_per_day"]:
+        if enforce_category_day_cap and cat_today.get(p["category_code"], 0) >= filters["max_per_category_per_day"]:
             rejected.append("đủ hạn mức danh mục trong ngày")
         if rejected and not explain:
             continue
