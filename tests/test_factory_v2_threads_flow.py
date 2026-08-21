@@ -10,7 +10,7 @@ class FakeDriver:
     def __init__(
         self,
         screens,
-        available=("display_name", "bio", "continue", "join_threads"),
+        available=("display_name", "bio", "continue", "continue_with_instagram"),
         *,
         tap_statuses=None,
         set_statuses=None,
@@ -58,6 +58,13 @@ class ThreadsFlowTests(unittest.TestCase):
         self.assertEqual("waiting_human", result.status)
         self.assertEqual([], driver.mutations)
 
+    def test_legal_consent_stops_before_mutation(self):
+        driver = FakeDriver([DetectedScreen("THREADS_LEGAL_CONSENT", 0.99, ("terms",), True)])
+        result = ThreadsFlow(driver).run(self.profile)
+        self.assertEqual("waiting_human", result.status)
+        self.assertEqual("THREADS_LEGAL_CONSENT", result.observed_state)
+        self.assertEqual([], driver.mutations)
+
     def test_profile_setup_sets_only_display_name_and_bio(self):
         driver = FakeDriver([DetectedScreen("THREADS_PROFILE_SETUP", 0.96, ("profile",), False)])
         result = ThreadsFlow(driver).run(self.profile)
@@ -70,21 +77,21 @@ class ThreadsFlowTests(unittest.TestCase):
         ThreadsFlow(driver).run(self.profile)
         self.assertFalse(any(semantic == "publish" for _, semantic in driver.mutations))
 
-    def test_onboarding_taps_known_join_control(self):
-        driver = FakeDriver([DetectedScreen("THREADS_ONBOARDING", 0.94, ("join",), False)])
+    def test_onboarding_taps_safe_continue_with_instagram_control(self):
+        driver = FakeDriver([DetectedScreen("THREADS_ONBOARDING", 0.94, ("continue",), False)])
         result = ThreadsFlow(driver).run(self.profile)
         self.assertEqual("running", result.status)
-        self.assertEqual([("tap", "join_threads")], driver.mutations)
+        self.assertEqual([("tap", "continue_with_instagram")], driver.mutations)
 
     def test_onboarding_stops_after_three_failed_attempts(self):
         driver = FakeDriver(
-            [DetectedScreen("THREADS_ONBOARDING", 0.94, ("join",), False)],
+            [DetectedScreen("THREADS_ONBOARDING", 0.94, ("continue",), False)],
             tap_statuses=["postcondition_failed", "postcondition_failed", "postcondition_failed", "completed"],
         )
         result = ThreadsFlow(driver).run(self.profile)
         self.assertEqual("needs_confirmation", result.status)
         self.assertEqual("UI_CHANGED", result.reason)
-        self.assertEqual(3, driver.mutations.count(("tap", "join_threads")))
+        self.assertEqual(3, driver.mutations.count(("tap", "continue_with_instagram")))
 
     def test_lost_ack_on_home_does_not_replay_onboarding(self):
         driver = FakeDriver([DetectedScreen("THREADS_HOME", 0.96, ("home",), False)])
