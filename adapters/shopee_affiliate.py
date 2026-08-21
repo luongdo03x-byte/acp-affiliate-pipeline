@@ -188,50 +188,6 @@ def _offers(node):
     return offers if isinstance(offers, dict) else {}
 
 
-def _api_price(value):
-    """Convert Shopee API fixed-point price (1 VND == 100000 units) to VND."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, dict):
-        value = value.get("single_value")
-        if value in (None, -1):
-            return None
-    try:
-        raw = Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    if raw < 0:
-        return None
-    return int(raw / Decimal("100000"))
-
-
-def _api_image(value):
-    if isinstance(value, list):
-        value = next((x for x in value if x), None)
-    if isinstance(value, dict):
-        value = value.get("url") or value.get("image")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    value = value.strip()
-    if value.startswith(("http://", "https://")):
-        return value
-    return "https://down-vn.img.susercontent.com/file/" + value
-
-
-def _merge_metadata(primary: ProductMetadata, fallback: ProductMetadata) -> ProductMetadata:
-    return ProductMetadata(
-        name=primary.name or fallback.name,
-        current_price=primary.current_price or fallback.current_price,
-        original_price=primary.original_price or fallback.original_price,
-        image_url=primary.image_url or fallback.image_url,
-        shop=primary.shop or fallback.shop,
-    )
-
-
-def _has_core_metadata(meta: ProductMetadata) -> bool:
-    return bool(meta.name and meta.current_price and meta.image_url)
-
-
 # Bốn cột mốc bàn giao ở docs/... roadmap. BROWSER_HELPER_REQUIRED và
 # MANUAL_REQUIRED không tách bằng lý do lỗi (CAPTCHA vs mạng) vì UI xử lý như
 # nhau ở cả hai trường hợp -- người vận hành luôn có thể bấm nút mở Chrome
@@ -252,6 +208,13 @@ def metadata_state(meta: ProductMetadata) -> str:
 
 
 class ProductMetadataResolver:
+    """Resolve metadata from the public Shopee product HTML only.
+
+    Shopee can block server-side requests.  ACP deliberately does not fall back
+    to private/internal Shopee API endpoints; callers use the existing
+    operator-assisted Chrome Helper when public HTML is incomplete or blocked.
+    """
+
     def __init__(self, http=None):
         self.http = http or SafeHttpClient()
 
@@ -305,105 +268,15 @@ class ProductMetadataResolver:
             shop=shop,
         )
 
-    def _api_metadata(self, product_url: str) -> ProductMetadata:
-        shop_id, item_id = _product_ids_from_url(product_url)
-        if not shop_id or not item_id:
-            return ProductMetadata()
-
-        candidates = [
-            "https://shopee.vn/api/v4/pdp/get_pc?" + urlencode({
-                "shop_id": shop_id,
-                "item_id": item_id,
-            }),
-            "https://shopee.vn/api/v4/item/get?" + urlencode({
-                "shopid": shop_id,
-                "itemid": item_id,
-            }),
-        ]
-
-        for api_url in candidates:
-            try:
-                response = self.http.get(
-                    api_url,
-                    allowed_hosts=SHOPEE_HOSTS,
-                    expected_content_prefix="application/json",
-                )
-            except (SafeHttpError, OSError):
-                continue
-            if not (response.content_type or "").startswith("application/json"):
-                continue
-            try:
-                payload = json.loads(response.content.decode("utf-8", errors="replace"))
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
-                continue
-
-            data = payload["data"]
-            item = data.get("item") if isinstance(data.get("item"), dict) else data
-            product_price = data.get("product_price") if isinstance(data.get("product_price"), dict) else {}
-            shop_detail = data.get("shop_detailed") if isinstance(data.get("shop_detailed"), dict) else {}
-
-            name = item.get("title") or item.get("name")
-            image = item.get("image") or data.get("image")
-
-            current_raw = None
-            original_raw = None
-            price_block = product_price.get("price")
-            if isinstance(price_block, dict):
-                current_raw = price_block.get("single_value")
-                if current_raw in (None, -1):
-                    candidates_price = [price_block.get("range_min"), price_block.get("range_max")]
-                    current_raw = next((x for x in candidates_price if x not in (None, -1)), None)
-            else:
-                current_raw = item.get("price") or item.get("price_min")
-
-            before = product_price.get("price_before_discount")
-            if isinstance(before, dict):
-                original_raw = before.get("single_value")
-                if original_raw in (None, -1):
-                    original_raw = next((x for x in (before.get("range_min"), before.get("range_max"))
-                                         if x not in (None, -1)), None)
-            else:
-                original_raw = item.get("price_before_discount") or item.get("price_min_before_discount")
-
-            current = _api_price(current_raw)
-            original = _api_price(original_raw)
-            if original and current and original <= current:
-                original = None
-
-            shop = (shop_detail.get("name") or item.get("shop_name") or data.get("shop_name"))
-            meta = ProductMetadata(
-                name=str(name).strip() if isinstance(name, str) and name.strip() else None,
-                current_price=current,
-                original_price=original,
-                image_url=_api_image(image),
-                shop=str(shop).strip() if isinstance(shop, str) and shop.strip() else None,
-            )
-            if any((meta.name, meta.current_price, meta.image_url, meta.shop)):
-                return meta
-        return ProductMetadata()
+    def resolve_public(self, product_url: str) -> ProductMetadata:
+        product_url = canonical_product_url(product_url)
+        try:
+            return self._html_metadata(product_url)
+        except (SafeHttpError, OSError) as exc:
+            raise AffiliateImportError("Không thể tải thông tin sản phẩm Shopee.") from exc
 
     def resolve(self, product_url: str) -> ProductMetadata:
-        product_url = canonical_product_url(product_url)
-        html_meta = ProductMetadata()
-        html_error = None
-        try:
-            html_meta = self._html_metadata(product_url)
-        except (SafeHttpError, OSError) as exc:
-            html_error = exc
-
-        if _has_core_metadata(html_meta):
-            return html_meta
-
-        api_meta = self._api_metadata(product_url)
-        merged = _merge_metadata(html_meta, api_meta)
-        if any((merged.name, merged.current_price, merged.image_url, merged.shop)):
-            return merged
-
-        if html_error is not None:
-            raise AffiliateImportError("Không thể tải thông tin sản phẩm Shopee.") from html_error
-        return merged
+        return self.resolve_public(product_url)
 
 
 def _product_ids_from_url(url: str):
