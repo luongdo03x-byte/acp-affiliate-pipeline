@@ -110,12 +110,15 @@ class AvdManager:
     def stop(self, serial: str) -> None:
         self._checked([self.adb, "-s", serial, "emu", "kill"], timeout=20)
 
-    def reset_browser_session(self, serial: str, browser_package: str) -> None:
-        package = _validate_browser_package(browser_package)
+    def reset_app_session(self, serial: str, app_package: str) -> None:
+        package = _validate_browser_package(app_package)
         self._checked(
             [self.adb, "-s", serial, "shell", "pm", "clear", package],
             timeout=20,
         )
+
+    def reset_browser_session(self, serial: str, browser_package: str) -> None:
+        self.reset_app_session(serial, browser_package)
 
     def open_url(
         self,
