@@ -62,7 +62,7 @@ class ThreadsFlowTests(unittest.TestCase):
         driver = FakeDriver([DetectedScreen("THREADS_LEGAL_CONSENT", 0.99, ("terms",), True)])
         result = ThreadsFlow(driver).run(self.profile)
         self.assertEqual("waiting_human", result.status)
-        self.assertEqual("THREADS_LEGAL_CONSENT", result.observed_state)
+        self.assertEqual("THREADS_LEGAL_CONSENT", result.screen)
         self.assertEqual([], driver.mutations)
 
     def test_profile_setup_sets_only_display_name_and_bio(self):
