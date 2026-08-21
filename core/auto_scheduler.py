@@ -225,7 +225,10 @@ def live_slot_occupied(conn, channel_id: str, scheduled_at: str) -> bool:
     try:
         slot_utc = datetime.fromisoformat(scheduled_at).astimezone(timezone.utc).isoformat(timespec="seconds")
     except (TypeError, ValueError):
-        return False
+        # Fail closed: automated approval must never proceed without a concrete,
+        # parseable slot. This also protects the Auto OFF -> ON race where the
+        # current fill iteration did not route a slot before the state changed.
+        return True
     rows = conn.execute(
         f"""
         SELECT scheduled_at
