@@ -1,0 +1,36 @@
+name: Apply Shopee Auto Pipeline Patch
+
+on:
+  push:
+    branches: ["feat/shopee-auto-pipeline"]
+    paths:
+      - "tools/apply_shopee_auto_pipeline.py"
+      - ".github/workflows/shopee-auto-apply.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/shopee-auto-pipeline
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/apply_shopee_auto_pipeline.py
+      - run: git diff --check
+      - name: Commit deterministic patch
+        run: |
+          if git diff --quiet; then
+            echo "No patch changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add run.py core/pipeline.py core/auto_scheduler.py web/shopee_image_enrichment.py web/templates/shopee_image_enrichment.html ops/acp-auto-schedule.service docs/SHOPEE_IMAGE_ENRICHMENT.md 2>/dev/null || true
+          git commit -m "feat: implement Shopee auto pipeline stage"
+          git push origin HEAD:feat/shopee-auto-pipeline
