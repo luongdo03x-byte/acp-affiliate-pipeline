@@ -75,6 +75,8 @@ def submit(token: str, observed_product_url: str, metadata: dict) -> bool:
         if submission.product_id != entry["product_id"]:
             return False
         entry["metadata"] = submission.metadata
+        # "consumed" here means the extension can no longer submit/replay this
+        # token.  Dashboard poll/consume may still read the validated metadata.
         entry["consumed"] = True
         return True
 
@@ -90,6 +92,31 @@ def poll(token: str):
         if entry["metadata"] is None:
             return {"status": "pending"}
         return {"status": "ready", "metadata": dict(entry["metadata"])}
+
+
+def consume_ready_for_product(token: str, product_url: str):
+    """Atomically take ready metadata only when the token is bound to product_url.
+
+    This is the server-side completion primitive for workflows that persist
+    Helper metadata.  A wrong Product cannot reuse another Product's ready token,
+    and a successful consume removes the token so completion cannot be replayed.
+    """
+    try:
+        canonical_url, product_id = canonical_helper_product(product_url)
+    except ShopeeHelperError:
+        return None
+
+    current = time.monotonic()
+    with _lock:
+        _gc(current)
+        entry = _tokens.get(token)
+        if not entry or entry["metadata"] is None:
+            return None
+        if entry["product_url"] != canonical_url or entry["product_id"] != product_id:
+            return None
+        metadata = dict(entry["metadata"])
+        _tokens.pop(token, None)
+        return metadata
 
 
 def reset() -> None:

@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}Shopee Product Pool — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">Shopee Affiliate</div>
+    <h1>Shopee Product Pool</h1>
+    <p class="lede">Bổ sung ảnh cho sản phẩm đã import từ CSV: public HTML trước, Chrome Helper khi cần.</p>
+  </div>
+  <a class="btn btn--ghost" href="/sanpham/shopee-import">Import CSV</a>
+</div>
+
+{% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
+{% if message %}<div class="alert alert--success"><strong>✓</strong><span>{{ message }}</span></div>{% endif %}
+
+<section class="catalog-summary" aria-label="Tổng quan Shopee Product Pool">
+  <div class="catalog-stat"><span>Tổng sản phẩm</span><strong>{{ summary.total|num }}</strong></div>
+  <div class="catalog-stat"><span>Đã có ảnh</span><strong>{{ summary.ready|num }}</strong></div>
+  <div class="catalog-stat"><span>Thiếu ảnh</span><strong>{{ summary.missing|num }}</strong></div>
+  <div class="catalog-stat"><span>Cần Helper</span><strong>{{ summary.needs_helper|num }}</strong></div>
+  <div class="catalog-stat"><span>Lỗi</span><strong>{{ summary.failed|num }}</strong></div>
+</section>
+
+<div class="tabs" role="navigation" aria-label="Lọc trạng thái enrich ảnh">
+  <a class="tab {{ 'tab--active' if status_filter == 'all' }}" href="{{ url_for('shopee_image_enrichment.page', status='all') }}">Tất cả</a>
+  <a class="tab {{ 'tab--active' if status_filter == 'missing' }}" href="{{ url_for('shopee_image_enrichment.page', status='missing') }}">Thiếu ảnh</a>
+  <a class="tab {{ 'tab--active' if status_filter == 'ready' }}" href="{{ url_for('shopee_image_enrichment.page', status='ready') }}">Đã có ảnh</a>
+  <a class="tab {{ 'tab--active' if status_filter == 'needs_helper' }}" href="{{ url_for('shopee_image_enrichment.page', status='needs_helper') }}">Cần Helper</a>
+  <a class="tab {{ 'tab--active' if status_filter == 'failed' }}" href="{{ url_for('shopee_image_enrichment.page', status='failed') }}">Lỗi</a>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="section-heading">
+    <div>
+      <h2>Enrichment hàng loạt</h2>
+      <p class="note">Mỗi lượt tối đa 20 sản phẩm, xử lý tuần tự. Không tự chạy batch kế tiếp.</p>
+    </div>
+    <div class="form-actions">
+      <form method="post" action="{{ url_for('shopee_image_enrichment.backfill') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <button class="btn btn--ghost" type="submit">Quét sản phẩm thiếu ảnh</button>
+      </form>
+      <form method="post" action="{{ url_for('shopee_image_enrichment.run_enrichment_batch') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <button class="btn btn--primary" type="submit">Enrich 20 sản phẩm thiếu ảnh</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+{% if items %}
+<div class="card" style="overflow:auto">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Ảnh</th>
+        <th>Sản phẩm</th>
+        <th>Giá</th>
+        <th>Đã bán</th>
+        <th>Hoa hồng</th>
+        <th>Trạng thái ảnh</th>
+        <th>Hành động</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for item in items %}
+      {% set state = item.enrichment_status or 'PENDING' %}
+      <tr>
+        <td style="width:88px">
+          {% if item.main_image_url %}
+            <img src="{{ item.main_image_url }}" alt="Ảnh {{ item.name }}" loading="lazy"
+                 style="width:72px;height:72px;object-fit:cover;border-radius:10px">
+          {% else %}
+            <div class="image-placeholder" style="width:72px;height:72px">Chưa có ảnh</div>
+          {% endif %}
+        </td>
+        <td>
+          <strong>{{ item.name }}</strong>
+          <div class="note">{{ item.shop_name or '—' }}</div>
+          <div class="link-readout"><a href="{{ item.product_url }}" target="_blank" rel="noopener noreferrer">Mở Shopee</a></div>
+        </td>
+        <td>{{ item.current_price|vnd }}</td>
+        <td>{{ item.sold_count|num }}</td>
+        <td>
+          {% if item.commission_rate_percent is not none %}{{ item.commission_rate_percent }}%{% else %}—{% endif %}
+          <div class="note">{% if item.commission_amount is not none %}{{ item.commission_amount|vnd }}{% endif %}</div>
+        </td>
+        <td>
+          <span class="status-badge">{{ state }}</span>
+          {% if item.last_error %}<div class="note" title="{{ item.last_error_code or '' }}">{{ item.last_error }}</div>{% endif %}
+        </td>
+        <td>
+          <div class="form-actions" style="align-items:flex-start;flex-wrap:wrap">
+            {% if state in ('PENDING', 'PUBLIC_FETCH', 'DOWNLOADING') %}
+            <form method="post" action="{{ url_for('shopee_image_enrichment.enrich_one', product_id=item.id) }}">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="status" value="{{ status_filter }}">
+              <button class="btn btn--small btn--primary" type="submit">Enrich ảnh</button>
+            </form>
+            {% elif state == 'FAILED' %}
+            <form method="post" action="{{ url_for('shopee_image_enrichment.retry_one', product_id=item.id) }}">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="status" value="{{ status_filter }}">
+              <button class="btn btn--small btn--ghost" type="submit">Retry</button>
+            </form>
+            {% elif state == 'NEEDS_HELPER' %}
+            <button class="btn btn--small btn--primary js-helper-start"
+                    type="button"
+                    data-product-id="{{ item.id }}"
+                    data-token-url="{{ url_for('shopee_image_enrichment.helper_token', product_id=item.id) }}"
+                    data-complete-url="{{ url_for('shopee_image_enrichment.helper_complete', product_id=item.id) }}">
+              Mở Shopee &amp; dùng Helper
+            </button>
+            <div class="note js-helper-note" data-product-id="{{ item.id }}"></div>
+            {% else %}
+              <span class="note">Đã sẵn sàng</span>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<section class="card"><p class="note">Không có sản phẩm phù hợp bộ lọc này.</p></section>
+{% endif %}
+
+<script>
+(function () {
+  var csrf = {{ csrf_token|tojson }};
+
+  function formBody(values) {
+    var params = new URLSearchParams();
+    Object.keys(values).forEach(function (key) { params.set(key, values[key]); });
+    return params.toString();
+  }
+
+  function setPairingMeta(token, productUrl) {
+    var meta = document.querySelector('meta[name="acp-helper-pairing"]');
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.name = "acp-helper-pairing";
+      document.head.appendChild(meta);
+    }
+    meta.content = JSON.stringify({ token: token, product_url: productUrl });
+    window.dispatchEvent(new CustomEvent("acp:helper-token"));
+  }
+
+  document.querySelectorAll(".js-helper-start").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var productId = button.dataset.productId;
+      var note = document.querySelector('.js-helper-note[data-product-id="' + productId + '"]');
+      button.disabled = true;
+      if (note) note.textContent = "Đang tạo phiên Helper...";
+
+      fetch(button.dataset.tokenUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formBody({ _csrf: csrf })
+      }).then(function (response) {
+        if (!response.ok) throw new Error("token");
+        return response.json();
+      }).then(function (issued) {
+        window.open(issued.product_url, "_blank", "noopener");
+        setPairingMeta(issued.token, issued.product_url);
+        if (note) note.textContent = "Đã mở Shopee. Bấm ACP Shopee Helper trong tab sản phẩm; ACP đang chờ...";
+
+        var deadline = Date.now() + issued.expires_in * 1000;
+        var timer = setInterval(function () {
+          if (Date.now() > deadline) {
+            clearInterval(timer);
+            if (note) note.textContent = "Phiên Helper đã hết hạn. Bấm lại để thử tiếp.";
+            button.disabled = false;
+            return;
+          }
+          fetch("/sanpham/affiliate/helper/status?token=" + encodeURIComponent(issued.token))
+            .then(function (response) {
+              return response.ok ? response.json() : { status: "expired" };
+            })
+            .then(function (state) {
+              if (state.status === "ready") {
+                clearInterval(timer);
+                if (note) note.textContent = "Đã nhận metadata. Đang tải và xác thực ảnh...";
+                return fetch(button.dataset.completeUrl, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  body: formBody({ _csrf: csrf, token: issued.token })
+                }).then(function (response) {
+                  if (!response.ok) throw new Error("complete");
+                  window.location.reload();
+                });
+              }
+              if (state.status === "expired") {
+                clearInterval(timer);
+                if (note) note.textContent = "Phiên Helper đã hết hạn. Bấm lại để thử tiếp.";
+                button.disabled = false;
+              }
+            }).catch(function () {
+              clearInterval(timer);
+              if (note) note.textContent = "Không hoàn tất được Helper. Có thể thử lại.";
+              button.disabled = false;
+            });
+        }, 1500);
+      }).catch(function () {
+        if (note) note.textContent = "Không tạo được phiên Helper. Hãy thử lại.";
+        button.disabled = false;
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

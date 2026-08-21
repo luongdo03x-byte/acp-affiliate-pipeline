@@ -8,6 +8,7 @@ from . import server as _server
 from .shopee_bulk import register_shopee_bulk_routes
 from .shopee_csv_import import register_shopee_csv_import_routes
 from .shopee_helper import register_shopee_helper_hardening
+from .shopee_image_enrichment import register_shopee_image_enrichment_routes
 from .shopee_product_intel import register_shopee_product_intel
 from .shopee_polish import register_shopee_polish
 
@@ -25,6 +26,7 @@ def create_app():
     register_shopee_polish(app)
     register_shopee_bulk_routes(app)
     register_shopee_csv_import_routes(app)
+    register_shopee_image_enrichment_routes(app)
     return app
 
 
