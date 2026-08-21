@@ -28,8 +28,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Baseline scheduler tests
-        run: python -m unittest tests.test_auto_scheduler tests.test_auto_scheduler_safety -v
+      - name: Shopee auto pipeline tests
+        run: python -m unittest tests.test_shopee_auto_pipeline tests.test_auto_scheduler tests.test_auto_scheduler_safety -v
       - name: Compile Python surfaces
         run: python -m compileall core web tests adapters run.py
       - name: Whitespace check
