@@ -1,0 +1,41 @@
+name: Threads Auto Scheduler CI
+
+on:
+  push:
+    branches: ["feat/threads-auto-routing-scheduler"]
+  pull_request:
+    paths:
+      - "core/auto_scheduler.py"
+      - "core/db.py"
+      - "core/pipeline.py"
+      - "core/scoring.py"
+      - "run.py"
+      - "web/server.py"
+      - "web/templates/channels.html"
+      - "web/templates/ops.html"
+      - "ops/acp-auto-schedule.*"
+      - "tests/test_auto_scheduler.py"
+      - "tests/test_auto_scheduler_safety.py"
+      - "tests/test_pipeline.py"
+      - "tests/test_product_automation.py"
+      - ".github/workflows/threads-auto-scheduler-ci.yml"
+
+jobs:
+  scheduler:
+    runs-on: ubuntu-latest
+    env:
+      ACP_ADAPTER: mock
+      ACP_SOURCE: mock
+      ACP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Auto scheduler tests
+        run: python -m unittest tests.test_auto_scheduler tests.test_auto_scheduler_safety -v
+      - name: Compile changed Python surfaces
+        run: python -m compileall core web tests adapters run.py
+      - name: Whitespace check
+        run: git diff --check HEAD^
