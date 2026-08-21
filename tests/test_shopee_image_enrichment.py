@@ -2,17 +2,60 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
+from PIL import Image
+
+from acp.adapters.safe_http import SafeHttpResponse
+from acp.adapters.shopee_affiliate import ProductMetadata
 from acp.core.shopee_image_enrichment import (
     DOWNLOADING,
     PENDING,
     PUBLIC_FETCH,
     READY,
+    ShopeeImageEnrichmentError,
     backfill_missing,
     enqueue_product,
     get_job,
+    materialize_product_image,
+    merge_metadata_into_product,
     recover_stale_jobs,
 )
+
+
+class FakeImageHttp:
+    def __init__(self, content: bytes, content_type="image/jpeg"):
+        self.content = content
+        self.content_type = content_type
+        self.calls = []
+
+    def get(self, url, allowed_hosts=None, expected_content_prefix=None):
+        self.calls.append(url)
+        return SafeHttpResponse(
+            final_url=url,
+            content=self.content,
+            content_type=self.content_type,
+        )
+
+
+class FakeStorage:
+    def __init__(self):
+        self.paths = []
+
+    def put(self, local_path):
+        self.paths.append(local_path)
+        return "https://media.example/" + os.path.basename(local_path)
+
+
+class FailingStorage:
+    def put(self, local_path):
+        raise RuntimeError("storage unavailable")
+
+
+def image_bytes(fmt="JPEG"):
+    output = BytesIO()
+    Image.new("RGB", (8, 8), (255, 255, 255)).save(output, format=fmt)
+    return output.getvalue()
 
 
 class ShopeeImageEnrichmentJobTests(unittest.TestCase):
@@ -151,6 +194,106 @@ class ShopeeImageEnrichmentJobTests(unittest.TestCase):
         self.assertEqual(recovered, 2)
         self.assertEqual(get_job(self.conn, "fetch")["status"], PENDING)
         self.assertEqual(get_job(self.conn, "download")["status"], PENDING)
+
+    def test_materialize_product_image_writes_deterministic_verified_file(self):
+        http = FakeImageHttp(image_bytes("JPEG"))
+        storage = FakeStorage()
+        media_dir = os.path.join(self.tmp.name, "media")
+
+        result = materialize_product_image(
+            "https://shopee.vn/product/123/456",
+            "https://down-vn.img.susercontent.com/file/example",
+            media_dir,
+            storage,
+            http_client=http,
+        )
+
+        self.assertEqual(os.path.basename(result["image_path_local"]), "shopee_123_456.jpg")
+        self.assertTrue(os.path.isfile(result["image_path_local"]))
+        self.assertEqual(
+            result["image_url_original"],
+            "https://down-vn.img.susercontent.com/file/example",
+        )
+        self.assertEqual(result["main_image_url"], "https://media.example/shopee_123_456.jpg")
+        self.assertEqual(len(http.calls), 1)
+
+    def test_existing_valid_deterministic_file_is_reused_without_download(self):
+        media_dir = os.path.join(self.tmp.name, "media")
+        os.makedirs(media_dir, exist_ok=True)
+        existing = os.path.join(media_dir, "shopee_123_456.jpg")
+        with open(existing, "wb") as fh:
+            fh.write(image_bytes("JPEG"))
+        http = FakeImageHttp(b"not-used")
+        storage = FakeStorage()
+
+        result = materialize_product_image(
+            "https://shopee.vn/product/123/456",
+            "https://down-vn.img.susercontent.com/file/example",
+            media_dir,
+            storage,
+            http_client=http,
+        )
+
+        self.assertEqual(result["image_path_local"], existing)
+        self.assertEqual(http.calls, [])
+        self.assertEqual(storage.paths, [existing])
+
+    def test_corrupt_image_never_creates_final_target(self):
+        media_dir = os.path.join(self.tmp.name, "media")
+        http = FakeImageHttp(b"this-is-not-an-image")
+
+        with self.assertRaises(ShopeeImageEnrichmentError) as captured:
+            materialize_product_image(
+                "https://shopee.vn/product/123/456",
+                "https://down-vn.img.susercontent.com/file/bad",
+                media_dir,
+                FakeStorage(),
+                http_client=http,
+            )
+
+        self.assertEqual(captured.exception.code, "IMAGE_DECODE_FAILED")
+        self.assertFalse(os.path.exists(os.path.join(media_dir, "shopee_123_456.jpg")))
+
+    def test_storage_failure_keeps_verified_local_file_but_returns_error(self):
+        media_dir = os.path.join(self.tmp.name, "media")
+
+        with self.assertRaises(ShopeeImageEnrichmentError) as captured:
+            materialize_product_image(
+                "https://shopee.vn/product/123/456",
+                "https://down-vn.img.susercontent.com/file/example",
+                media_dir,
+                FailingStorage(),
+                http_client=FakeImageHttp(image_bytes("PNG"), "image/png"),
+            )
+
+        self.assertEqual(captured.exception.code, "STORAGE_FAILED")
+        self.assertTrue(os.path.isfile(os.path.join(media_dir, "shopee_123_456.png")))
+
+    def test_metadata_merge_is_additive_and_preserves_csv_owned_values(self):
+        self._insert_product()
+        materialized = {
+            "image_url_original": "https://down-vn.img.susercontent.com/file/example",
+            "image_path_local": os.path.join(self.tmp.name, "shopee_123_456.jpg"),
+            "main_image_url": "https://media.example/shopee_123_456.jpg",
+        }
+        metadata = ProductMetadata(
+            name="Tên HTML không được ghi đè",
+            current_price=1,
+            original_price=150_000,
+            image_url=materialized["image_url_original"],
+            shop="Shop từ HTML",
+        )
+
+        merge_metadata_into_product(self.conn, "p1", metadata, materialized)
+
+        row = self.conn.execute("SELECT * FROM product WHERE id='p1'").fetchone()
+        self.assertEqual(row["name"], "Sản phẩm test")
+        self.assertEqual(row["current_price"], 100_000)
+        self.assertEqual(row["original_price"], 150_000)
+        self.assertEqual(row["shop_name"], "Shop từ HTML")
+        self.assertEqual(row["image_url_original"], materialized["image_url_original"])
+        self.assertEqual(row["image_path_local"], materialized["image_path_local"])
+        self.assertEqual(row["main_image_url"], materialized["main_image_url"])
 
 
 if __name__ == "__main__":
