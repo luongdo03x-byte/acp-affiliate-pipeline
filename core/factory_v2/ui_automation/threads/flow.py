@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from ..flow_result import FlowResult
 from .screens import PACKAGE
-from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, JOIN_THREADS
+from .selectors import BIO_INPUT, CONTINUE, CONTINUE_WITH_INSTAGRAM, DISPLAY_NAME_INPUT
 
 _SUCCESS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
 _CHECKPOINT_RESUMABLE = frozenset({"THREADS_ONBOARDING", "THREADS_PROFILE_SETUP"})
 _THREADS_PROTECTED = (
     "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
+    "THREADS_LEGAL_CONSENT",
     "EMAIL_OR_PHONE_VERIFICATION", "SELFIE_OR_IDENTITY_CHECK",
     "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY", "CONSENT_WITH_SECURITY_IMPACT",
 )
@@ -69,7 +70,11 @@ class ThreadsFlow:
             self.driver.open_package(PACKAGE)
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
         if detected.kind == "THREADS_ONBOARDING":
-            selector = JOIN_THREADS if self.driver.find(JOIN_THREADS) is not None else CONTINUE
+            selector = (
+                CONTINUE_WITH_INSTAGRAM
+                if self.driver.find(CONTINUE_WITH_INSTAGRAM) is not None
+                else CONTINUE
+            )
             action = self._attempt(
                 lambda: self.driver.tap(
                     selector,
