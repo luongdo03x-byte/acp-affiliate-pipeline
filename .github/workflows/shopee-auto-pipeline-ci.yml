@@ -1,0 +1,36 @@
+name: Shopee Auto Pipeline CI
+
+on:
+  push:
+    branches: ["feat/shopee-auto-pipeline"]
+  pull_request:
+    paths:
+      - "core/auto_scheduler.py"
+      - "core/pipeline.py"
+      - "run.py"
+      - "web/shopee_image_enrichment.py"
+      - "web/templates/shopee_image_enrichment.html"
+      - "ops/acp-auto-schedule.service"
+      - "tests/test_shopee_auto_pipeline.py"
+      - "tests/test_shopee_image_enrichment_web.py"
+      - ".github/workflows/shopee-auto-pipeline-ci.yml"
+
+jobs:
+  shopee-auto:
+    runs-on: ubuntu-latest
+    env:
+      ACP_ADAPTER: mock
+      ACP_SOURCE: mock
+      ACP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Baseline scheduler tests
+        run: python -m unittest tests.test_auto_scheduler tests.test_auto_scheduler_safety -v
+      - name: Compile Python surfaces
+        run: python -m compileall core web tests adapters run.py
+      - name: Whitespace check
+        run: git diff --check HEAD^
