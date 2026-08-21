@@ -232,10 +232,16 @@ def create_app():
         conn = connect()
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        # D1: đa nền tảng -- bỏ lọc platform='threads', chỉ còn lọc kênh đang
+        # dùng được (ACTIVE + enabled). Thêm enabled=1 (thiếu ở bản cũ) vì kênh
+        # bị tắt ở /kenh thì không nên chọn được để tạo bài mới.
         channels = [dict(r) for r in conn.execute(
             "SELECT code, platform, handle FROM channel WHERE status='ACTIVE' AND enabled=1 "
             "ORDER BY platform, code").fetchall()]
         media_assets = media_library.list_media_assets(conn)
+        # D4-A: nhóm chỉ dùng channel_codes (đủ so khớp checkbox), không cần
+        # object channel đầy đủ ở đây -- khác /kenh nơi cần hiển thị chi
+        # tiết từng thành viên.
         account_groups = [{"id": g["id"], "name": g["name"], "channel_codes": g["channel_codes"]}
                           for g in pipeline.list_account_groups(conn)]
         conn.close()
@@ -271,6 +277,7 @@ def create_app():
                 f"{getattr(result, 'failed', 0)} lỗi).")
 
     def _log_catalog_failure(operation, error, *, product_id=None, status=None):
+        """Log allowlisted diagnostics only; provider exception text may contain credentials."""
         fields = [f"operation={operation}", f"error_type={type(error).__name__}"]
         if product_id:
             fields.append(f"product_id={product_id}")
@@ -286,6 +293,7 @@ def create_app():
         return "Không thể tiếp tục. Vui lòng thử lại."
 
     def _safe_catalog_items(rows):
+        """Drop unsafe external URLs before catalog records reach the template."""
         items = []
         for row in rows:
             item = dict(row)
@@ -302,6 +310,8 @@ def create_app():
             values["synced"] = synced
         return redirect(url_for("products", **values))
 
+    # Tên trùng với các field GET của form lọc trong products.html --
+    # ProductFilters.from_request() đọc lại đúng các tên này.
     _CATALOG_FILTER_FIELDS = ("q", "shop", "inventory", "min_commission_rate", "min_commission_amount",
                               "min_price", "max_price", "min_units_sold", "affiliate_status",
                               "post_state", "sort")
@@ -320,6 +330,12 @@ def create_app():
 
     @app.route("/sanpham")
     def products():
+        """Mặc định (mode=catalog): catalog ACCESSTRADE cục bộ, đồng bộ trước, lọc
+        nhanh không gọi mạng mỗi lần tìm -- nhưng CHƯA nối đa kênh/ảnh thêm/nhóm
+        nhanh (D1/D3/D4-A), chỉ chọn được đúng 1 kênh mỗi lần tạo bài.
+        mode=search: tìm trực tiếp qua nguồn (ACCESSTRADE/TikTokShop/mock), giữ lại
+        từ trước khi có catalog cục bộ -- ĐÃ nối đủ đa kênh/ảnh thêm/nhóm nhanh.
+        mode=affiliate: dán link Shopee thủ công, chung cho cả 2 chế độ trên."""
         mode = request.args.get("mode", "catalog")
         if mode == "affiliate":
             return _render_affiliate(affiliate_url=request.args.get("affiliate_url", ""))
@@ -514,6 +530,7 @@ def create_app():
             text = str(value or "").strip().replace(" ", "")
             if not text:
                 return None
+            # Form is VND integer. Dots/commas are accepted as grouping separators.
             text = text.replace(".", "").replace(",", "")
             try:
                 value = int(text)
@@ -545,6 +562,9 @@ def create_app():
                 err="Thiếu hoặc không hợp lệ: " + ", ".join(missing), status=400)
 
         conn = connect()
+        # Validate từng kênh nằm ở _create_post_from_raw_product (chung cho
+        # web lẫn mọi caller khác) -- không lặp lại logic ở đây nữa.
+
         try:
             source.validate_confirmed_urls(affiliate_url, product_url)
             confirmed = ConfirmedProductInput(
@@ -552,6 +572,7 @@ def create_app():
                 current_price=price, original_price=original_price,
                 image_url=image_url, shop=shop)
             raw = source.prepare_product(confirmed, pipeline.MEDIA_DIR)
+            # Important provider boundary: do not call factory.build_context() here.
             res = pipeline.create_post_from_manual_affiliate_product(
                 conn, {"storage": storage.get_storage()}, source, raw,
                 affiliate_url=affiliate_url,
@@ -575,8 +596,13 @@ def create_app():
                 selected_channels=channel_codes, err=res.get("error") or "Không thể tạo bài nháp.", status=400)
         return redirect(url_for("review"))
 
+    # --------------------------------------------- ACP Shopee Helper (Chrome)
+
     @app.route("/sanpham/affiliate/helper/token", methods=["POST"])
     def helper_issue_token():
+        """Gọi từ trang /sanpham (đã đăng nhập, có CSRF) khi bấm
+        'Mở Shopee & lấy thông tin'. Token gắn với ĐÚNG product_url đang xác
+        nhận -- xem core/helper_pairing.py."""
         product_url = request.form.get("product_url", "").strip()
         if not product_url:
             abort(400)
@@ -584,6 +610,7 @@ def create_app():
 
     @app.route("/sanpham/affiliate/helper/status")
     def helper_status():
+        """Trang /sanpham poll định kỳ để lấy dữ liệu extension vừa gửi."""
         token = request.args.get("token", "")
         result = helper_pairing.poll(token)
         if result is None:
@@ -592,6 +619,14 @@ def create_app():
 
     @app.route("/api/helper/shopee-product", methods=["POST"])
     def helper_submit():
+        """ACP Shopee Helper (Chrome extension) gọi sau khi đọc DOM trang Shopee
+        đã render trong tab của người dùng. KHÔNG đăng nhập (extension không có
+        session của người vận hành) -- tự bảo vệ bằng:
+          1. Chỉ nhận request từ loopback (127.0.0.1/::1).
+          2. Token một lần dùng, gắn đúng product_url, hết hạn sau 5 phút.
+          3. Route này KHÔNG bật CORS nên một trang web bất kỳ không tự POST
+             tới đây được qua fetch() của trình duyệt.
+        """
         if request.remote_addr not in ("127.0.0.1", "::1"):
             abort(403)
         payload = request.get_json(silent=True) or {}
@@ -600,21 +635,26 @@ def create_app():
         metadata = payload.get("metadata") or {}
         if not token or not product_url or not isinstance(metadata, dict):
             abort(400)
+        # Chỉ giữ lại đúng 5 trường được phép -- extension không được nhồi
+        # thêm trường lạ (vd cookie/token) vào payload.
         clean = {k: metadata.get(k) for k in ("name", "current_price", "original_price",
                                                "image_url", "shop")}
         ok = helper_pairing.submit(token, product_url, clean)
         if not ok:
-            abort(410)
+            abort(410)  # token sai/hết hạn/đã dùng/product_url không khớp
         return jsonify(ok=True)
+
+    # ------------------------------------------------------------- kênh
 
     @app.route("/kenh", methods=["GET", "POST"])
     def channels():
+        """Mỗi kênh một ngách. Đổi bất cứ lúc nào, không ảnh hưởng bài đã đăng."""
         from ..core import niche as niche_mod
         conn = connect()
         saved = None
         if request.method == "POST":
             cid = request.form.get("channel_id", "")
-            pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
+            applied = pipeline.set_channel_niches(conn, cid, request.form.getlist("niches"))
             row = conn.execute("SELECT handle FROM channel WHERE id=?", (cid,)).fetchone()
             saved = row["handle"] if row else cid
 
@@ -632,6 +672,10 @@ def create_app():
         has_meta_connection = bool(conn.execute("SELECT 1 FROM meta_connection LIMIT 1").fetchone())
         pending = conn.execute(
             "SELECT COUNT(*) FROM post WHERE status IN ('PENDING_REVIEW','DRAFT')").fetchone()[0]
+        # D4-A: preset chọn nhanh -- checklist tạo nhóm cần TOÀN BỘ channel
+        # ACTIVE (không lọc thêm enabled=1, khác /sanpham -- nhóm là preset
+        # lâu dài, channel tạm tắt vẫn nên giữ trong nhóm để bật lại là dùng
+        # được ngay, không cần tạo lại nhóm).
         all_active_channels = [r for r in rows if r["status"] == "ACTIVE"]
         account_groups = pipeline.list_account_groups(conn)
         conn.close()
@@ -657,6 +701,8 @@ def create_app():
         pipeline.audit(conn, "channel", channel_id, "disabled", actor="operator")
         conn.close()
         return redirect(url_for("channels"))
+
+    # ------------------------------------------------- nhóm account (D4-A)
 
     @app.route("/kenh/nhom/tao", methods=["POST"])
     def account_group_create():
@@ -692,9 +738,13 @@ def create_app():
             conn.close()
         return redirect(url_for("channels", err=None if res.get("ok") else res.get("error")))
 
+    # ----------------------------------------------------------- duyệt bài
+
     @app.route("/duyet")
     def review():
         conn = connect()
+        # LEFT JOIN -- bài không bán hàng (post_type='VALUE') không có product_id,
+        # INNER JOIN sẽ âm thầm giấu chúng khỏi màn hình duyệt.
         rows = [dict(r) for r in conn.execute("""
             SELECT p.*, pr.name AS product_name, pr.category_code, pr.current_price,
                    pr.commission_value, pr.rating, pr.review_count, pr.sold_count,
@@ -708,10 +758,20 @@ def create_app():
             ORDER BY p.created_at DESC""").fetchall()]
         selections = pipeline.post_channel_selections(conn, [r["id"] for r in rows])
         for r in rows:
+            # Bài KHÔNG có dòng post_channel_selection nào vẫn phải duyệt được:
+            # bài cũ tạo từ trước khi có bảng này, và bài do một writer tương lai
+            # quên gọi _save_channel_selection(). Checklist rỗng sẽ vướng rào
+            # "chọn ít nhất 1 kênh" ở review_action() -> bài kẹt vĩnh viễn. Rơi
+            # về đúng 1 kênh gốc của bài (post.channel_id) là hành vi cũ, an toàn.
             r["selected_channels"] = selections.get(r["id"]) or [
                 {"id": r["channel_id"], "code": r["channel_code"],
                  "platform": r["channel_platform"], "handle": r["channel_handle"]}
             ]
+        # Điền lại override theo account đã nhập ở lần duyệt trước: bài bị
+        # bounce về PENDING_REVIEW (ContentViolationError ở MỘT kênh khác, xem
+        # core/jobs.py) rồi duyệt lại là đường DUY NHẤT để duyệt lại một bài,
+        # mà template cố ý render ô override rỗng (spec §8) -- không đọc lại
+        # thì chữ operator đã gõ mất im lặng, kênh đó đăng caption gốc.
         overrides_by_post = pipeline.latest_channel_caption_overrides(conn, [r["id"] for r in rows])
         for r in rows:
             channel_overrides = overrides_by_post.get(r["id"], {})
@@ -733,6 +793,11 @@ def create_app():
             scheduled_at = None
             raw_time = request.form.get("scheduled_at", "").strip()
             if raw_time:
+                # <input type="datetime-local"> trả về giờ theo múi giờ TRÌNH
+                # DUYỆT của operator, không có offset. ACP vận hành cho thị
+                # trường VN nên quy ước đó là giờ Việt Nam (UTC+7, không có
+                # DST) rồi quy đổi sang UTC trước khi lưu -- mọi giờ khác
+                # trong hệ thống (scheduled_at, published_at) đều là UTC.
                 try:
                     local_dt = datetime.fromisoformat(raw_time)
                     scheduled_at = (local_dt - timedelta(hours=7)).replace(
@@ -742,8 +807,15 @@ def create_app():
                     return redirect(url_for("review", err="Giờ đăng không hợp lệ"))
             channel_ids = request.form.getlist("channel_ids")
             if not channel_ids:
+                # Checklist rỗng nghĩa là operator bỏ tích hết -- CHẶN, không
+                # được âm thầm rơi về fallback 1-kênh của approve_post() (đó
+                # là dành cho caller cũ gọi trực tiếp, không phải cho form này).
                 res = {"ok": False, "error": "Chọn ít nhất 1 kênh trước khi duyệt"}
             else:
+                # request.form.get(...) không kèm default: None nếu field
+                # không có trong form (giữ nguyên giá trị cũ), chuỗi rỗng nếu
+                # có mặt nhưng để trống (xoá override) -- đúng ngữ nghĩa
+                # approve_post() cần, xem D2 spec §8.
                 caption_overrides = {}
                 for cid in channel_ids:
                     val = request.form.get(f"caption_override_{cid}", "").strip()
@@ -763,6 +835,8 @@ def create_app():
             abort(404)
         conn.close()
         return redirect(url_for("review", err=None if res.get("ok") else res.get("error")))
+
+    # ----------------------------------------------------------- vận hành
 
     @app.route("/vanhanh")
     def ops():
@@ -795,6 +869,12 @@ def create_app():
             audit=[dict(r) for r in conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT 12").fetchall()],
         )
+        # D4-B: post.status là rollup thô ("PUBLISHED" = ít nhất 1/N kênh
+        # thành công, không phải tất cả) -- gộp publish_target theo post_id
+        # để operator thấy đúng từng kênh của bài đa kênh thay vì đoán qua
+        # con số tổng. Quét rộng hơn 100 target gần nhất (không chỉ 20 như
+        # bảng phẳng ở trên) để không bỏ sót bài đa kênh có target không lọt
+        # top-20 theo thời gian cập nhật.
         wide_targets = conn.execute("""
             SELECT pt.*, pr.name AS product_name, ch.handle AS channel_handle, ch.platform AS channel_platform
             FROM publish_target pt
@@ -806,6 +886,10 @@ def create_app():
         for r in wide_targets:
             g = by_post.setdefault(r["post_id"], {"product_name": r["product_name"], "targets": []})
             g["targets"].append(dict(r))
+        # dict giữ nguyên thứ tự chèn (Python 3.7+) -- vì wide_targets đã
+        # ORDER BY updated_at DESC, post nào có target cập nhật gần nhất sẽ
+        # được thêm vào by_post trước, nên thứ tự duyệt ở đây đã đúng ý
+        # "bài có hoạt động gần đây nhất lên trước" mà không cần sort thêm.
         multi_channel_posts = [
             {"post_id": pid, "product_name": g["product_name"], "targets": g["targets"]}
             for pid, g in by_post.items() if len(g["targets"]) >= 2
@@ -823,6 +907,7 @@ def create_app():
 
     @app.route("/vanhanh/work", methods=["POST"])
     def ops_work():
+        # Dùng chung factory với CLI. Trước đây chỗ này hardcode mock.
         conn = connect()
         jobs.drain(conn, ctx=factory.build_context())
         conn.close()
@@ -830,6 +915,8 @@ def create_app():
 
     @app.route("/vanhanh/worker-toggle", methods=["POST"])
     def ops_worker_toggle():
+        # Chỉ nhận đúng "0"/"1" -- không suy đoán giá trị khác thành bật/tắt,
+        # tránh công tắc publish tự động bị đổi bởi input sai định dạng.
         value = request.form.get("enabled", "")
         if value not in ("0", "1"):
             abort(400, "Giá trị công tắc không hợp lệ")
@@ -837,6 +924,8 @@ def create_app():
         set_system_setting(conn, PUBLISH_WORKER_ENABLED, value, actor="operator")
         conn.close()
         return redirect(url_for("ops"))
+
+    # ----------------------------------------------------------- chấm điểm
 
     @app.route("/chamdiem", methods=["GET", "POST"])
     def scoring_page():
@@ -860,8 +949,16 @@ def create_app():
                                rejected=[p for p in preview if p["rejected"]][:10],
                                total=len(preview))
 
+    # ------------------------------------------------- postback (công khai)
+
     @app.route("/webhook/at/postback")
     def postback():
+        """Accesstrade gửi GET và mong nhận HTTP 200.
+
+        Khoá bí mật nằm trên URL vì Accesstrade không ký request. Đặt
+        ACP_WEBHOOK_SECRET rồi khai postback URL kèm ?k=<secret>. Không có khoá
+        thì ai biết đường dẫn cũng bơm được doanh thu giả vào hệ thống.
+        """
         if webhook_secret:
             given = request.args.get("k", "")
             if not given or not hmac.compare_digest(given, webhook_secret):
@@ -873,14 +970,22 @@ def create_app():
             return jsonify(ok=False, error="Thiếu transaction_id hoặc external_product_id"), 400
         return jsonify(ok=True, status=status, id=cid), 200
 
+    # ---------------------------------------------- OAuth Threads (công khai)
+
     @app.route("/oauth/threads/callback")
     def oauth_callback():
+        """Meta chuyển hướng về đây kèm ?code=. Hiển thị code để đổi lấy token.
+
+        Cố ý KHÔNG tự đổi token tại đây: bước đó cần app_secret, và giữ secret
+        ngoài tiến trình web an toàn hơn cho một thao tác thiết lập chỉ làm một lần.
+        """
         code = request.args.get("code", "")
         err = request.args.get("error_description") or request.args.get("error")
         return render_template("oauth.html", page=None, code=code, err=err), (200 if code else 400)
 
     @app.route("/oauth/threads/deauthorize", methods=["POST"])
     def oauth_deauthorize():
+        """Meta gọi khi người dùng gỡ app. Đánh dấu kênh cần kết nối lại."""
         conn = connect()
         conn.execute("UPDATE channel SET status='NEEDS_REAUTH' WHERE platform='threads'")
         conn.close()
@@ -896,8 +1001,15 @@ def create_app():
     def oauth_delete_status():
         return jsonify(status="completed", code=request.args.get("code", "")), 200
 
+    # ------------------------------------------------ OAuth Meta (Facebook/IG)
+
     @app.route("/oauth/meta/start")
     def oauth_meta_start():
+        """Bắt đầu Facebook Login. Khác Threads: route này và callback đều bắt
+        buộc đăng nhập ACP trước, dù nằm dưới prefix /oauth/ công khai --
+        kiểm tra thủ công ở đây vì đây là hành động quản trị (thêm account có
+        thể publish), không phải webhook/redirect không mang session như
+        Threads deauthorize."""
         if admin_password and not session.get("uid"):
             return redirect(url_for("login", next="/oauth/meta/start"))
         state = secrets.token_urlsafe(24)
@@ -916,6 +1028,9 @@ def create_app():
         code = request.args.get("code", "")
         state = request.args.get("state", "")
         expected = session.get("meta_oauth_state", "")
+        # So bytes chứ không so str: hmac.compare_digest ném TypeError nếu một
+        # trong hai str chứa ký tự ngoài ASCII -- state đến từ query string do
+        # người dùng/kẻ tấn công kiểm soát, non-ASCII từng làm callback 500.
         if (not code or not state or not expected
                 or not hmac.compare_digest(state.encode(), expected.encode())):
             abort(400, "State OAuth không hợp lệ")
@@ -927,6 +1042,8 @@ def create_app():
         try:
             res = connections.connect_meta_account(conn, svc, code, redirect_uri, actor="operator")
         except AuthError as e:
+            # exchange_code/list_pages thất bại trước khi có connection_id -- chưa
+            # có meta_connection nào để đánh dấu NEEDS_REAUTH, chỉ báo lỗi.
             conn.close()
             return redirect(url_for("channels", err=f"Kết nối Meta thất bại: {e}"))
         except Exception as e:
@@ -940,6 +1057,10 @@ def create_app():
 
     @app.route("/kenh/meta/sync", methods=["POST"])
     def kenh_meta_sync():
+        """Đồng bộ lại TẤT CẢ connection Meta đã có -- một operator có thể đã
+        kết nối nhiều tài khoản Meta khác nhau (upsert theo meta_user_id, xem
+        core/connections.py), nút "Đồng bộ lại" phải làm mới cả loạt chứ không
+        chỉ connection gần nhất."""
         conn = connect()
         rows = conn.execute("SELECT id FROM meta_connection").fetchall()
         if not rows:
