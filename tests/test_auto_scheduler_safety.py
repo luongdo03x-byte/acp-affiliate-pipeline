@@ -1,5 +1,19 @@
+import importlib.util
+import os
 import sqlite3
+import sys
 import unittest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if "acp" not in sys.modules:
+    spec = importlib.util.spec_from_file_location(
+        "acp",
+        os.path.join(REPO_ROOT, "__init__.py"),
+        submodule_search_locations=[REPO_ROOT],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["acp"] = module
+    spec.loader.exec_module(module)
 
 from acp.core.auto_scheduler import live_slot_occupied
 
