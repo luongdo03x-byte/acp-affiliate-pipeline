@@ -1,4 +1,4 @@
-"""Shopee Affiliate image-enrichment job state.
+"""Shopee Affiliate image-enrichment primitives.
 
 This module owns only the bounded post-import image-enrichment lifecycle.  It
 never logs in to Shopee, reads browser credentials, solves CAPTCHA, calls
@@ -6,10 +6,18 @@ private Shopee endpoints, creates posts, or publishes content.
 """
 from __future__ import annotations
 
+import glob
 import os
+import tempfile
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
+from PIL import Image
+
+from ..adapters.safe_http import SafeHttpClient, SafeHttpError
+from ..adapters.shopee_affiliate import ProductMetadata
 from .db import now
+from .shopee_helper import ShopeeHelperError, sanitize_helper_metadata
 from .shopee_products import ShopeeProductError, identity_from_url
 
 
@@ -27,6 +35,8 @@ MAX_PUBLIC_ATTEMPTS = 2
 MAX_DOWNLOAD_ATTEMPTS = 2
 MAX_BATCH_SIZE = 20
 DEFAULT_DELAY_SECONDS = 1.5
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_EXT_BY_FORMAT = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}
 
 
 class ShopeeImageEnrichmentError(ValueError):
@@ -162,3 +172,198 @@ def recover_stale_jobs(conn, *, now_dt: datetime | None = None) -> int:
         )
         recovered += 1
     return recovered
+
+
+def _verified_extension(data: bytes) -> str:
+    try:
+        probe = Image.open(BytesIO(data))
+        fmt = (probe.format or "").upper()
+        probe.verify()
+    except Exception as exc:
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_DECODE_FAILED",
+            "Dữ liệu tải về không phải ảnh sản phẩm hợp lệ.",
+        ) from exc
+    ext = _EXT_BY_FORMAT.get(fmt)
+    if not ext:
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_INVALID_CONTENT",
+            "Định dạng ảnh sản phẩm chưa được hỗ trợ.",
+        )
+    return ext
+
+
+def _valid_existing_image(path: str) -> bool:
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            _verified_extension(fh.read())
+    except (OSError, ShopeeImageEnrichmentError):
+        return False
+    return True
+
+
+def _safe_image_url(image_url: str) -> str:
+    try:
+        value = sanitize_helper_metadata({"image_url": image_url}).get("image_url")
+    except ShopeeHelperError as exc:
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_INVALID_CONTENT",
+            "URL ảnh sản phẩm không hợp lệ.",
+        ) from exc
+    if not value:
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_INVALID_CONTENT",
+            "Thiếu URL ảnh sản phẩm.",
+        )
+    return value
+
+
+def _publish_local_image(storage_backend, local_path: str) -> str:
+    try:
+        public_url = storage_backend.put(local_path)
+    except Exception as exc:
+        raise ShopeeImageEnrichmentError(
+            "STORAGE_FAILED",
+            "Ảnh đã tải về nhưng chưa thể đưa lên vùng lưu trữ ACP.",
+        ) from exc
+    public_url = str(public_url or "").strip()
+    if not public_url:
+        raise ShopeeImageEnrichmentError(
+            "STORAGE_FAILED",
+            "Vùng lưu trữ ACP không trả URL ảnh công khai.",
+        )
+    return public_url
+
+
+def materialize_product_image(
+    product_url: str,
+    image_url: str,
+    media_dir: str,
+    storage_backend,
+    *,
+    http_client=None,
+) -> dict:
+    """Download, decode, atomically store, and publish one Shopee product image."""
+    try:
+        identity = identity_from_url(product_url)
+    except (ShopeeProductError, TypeError, ValueError) as exc:
+        raise ShopeeImageEnrichmentError(
+            "PRODUCT_IDENTITY_INVALID",
+            "Link sản phẩm Shopee không hợp lệ để lưu ảnh.",
+        ) from exc
+    safe_url = _safe_image_url(image_url)
+    media_dir = os.path.abspath(media_dir)
+    os.makedirs(media_dir, exist_ok=True)
+    stem = f"shopee_{identity.shop_id}_{identity.item_id}"
+
+    for existing in sorted(glob.glob(os.path.join(media_dir, stem + ".*"))):
+        if _valid_existing_image(existing):
+            return {
+                "image_url_original": safe_url,
+                "image_path_local": existing,
+                "main_image_url": _publish_local_image(storage_backend, existing),
+            }
+
+    client = http_client or SafeHttpClient(max_bytes=MAX_IMAGE_BYTES)
+    try:
+        response = client.get(
+            safe_url,
+            allowed_hosts=None,
+            expected_content_prefix="image/",
+        )
+    except SafeHttpError as exc:
+        message = str(exc)
+        code = "IMAGE_TOO_LARGE" if "giới hạn kích thước" in message else "IMAGE_DOWNLOAD_FAILED"
+        raise ShopeeImageEnrichmentError(
+            code,
+            "Không thể tải ảnh sản phẩm an toàn.",
+        ) from exc
+    except OSError as exc:
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_DOWNLOAD_FAILED",
+            "Không thể tải ảnh sản phẩm an toàn.",
+        ) from exc
+
+    if not str(response.content_type or "").lower().startswith("image/"):
+        raise ShopeeImageEnrichmentError(
+            "IMAGE_INVALID_CONTENT",
+            "URL ảnh không trả nội dung hình ảnh.",
+        )
+    ext = _verified_extension(response.content)
+    target = os.path.join(media_dir, stem + ext)
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=media_dir,
+            prefix=stem + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            temp_path = fh.name
+            fh.write(response.content)
+        # Verify the exact bytes written before replacing the deterministic target.
+        if not _valid_existing_image(temp_path):
+            raise ShopeeImageEnrichmentError(
+                "IMAGE_DECODE_FAILED",
+                "File ảnh tạm không thể xác thực sau khi ghi.",
+            )
+        os.replace(temp_path, target)
+        temp_path = None
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    return {
+        "image_url_original": safe_url,
+        "image_path_local": target,
+        "main_image_url": _publish_local_image(storage_backend, target),
+    }
+
+
+def merge_metadata_into_product(
+    conn,
+    product_id: str,
+    metadata: ProductMetadata,
+    materialized: dict | None = None,
+) -> None:
+    """Fill only missing enrichment-owned Product fields."""
+    product = _product(conn, product_id)
+    if product is None:
+        raise ShopeeImageEnrichmentError("PRODUCT_IDENTITY_INVALID", "Không tìm thấy Product cần enrich.")
+    _eligible_identity(product)
+
+    values = {}
+    metadata = metadata or ProductMetadata()
+    materialized = materialized or {}
+
+    if not str(product["name"] or "").strip() and str(metadata.name or "").strip():
+        values["name"] = str(metadata.name).strip()
+    if product["original_price"] is None and metadata.original_price:
+        try:
+            original = int(metadata.original_price)
+        except (TypeError, ValueError):
+            original = None
+        if original and original > 0:
+            values["original_price"] = original
+    if not str(product["shop_name"] or "").strip() and str(metadata.shop or "").strip():
+        values["shop_name"] = str(metadata.shop).strip()
+
+    for column in ("image_url_original", "image_path_local", "main_image_url"):
+        if not str(product[column] or "").strip() and str(materialized.get(column) or "").strip():
+            values[column] = str(materialized[column]).strip()
+
+    if not values:
+        return
+    values["updated_at"] = now()
+    columns = list(values)
+    conn.execute(
+        "UPDATE product SET " + ", ".join(f"{column}=?" for column in columns) + " WHERE id=?",
+        tuple(values[column] for column in columns) + (product_id,),
+    )
