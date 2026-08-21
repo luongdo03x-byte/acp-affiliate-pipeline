@@ -1260,8 +1260,12 @@ class AutoScheduleFillTests(unittest.TestCase):
         rating=4.8,
         review_count=120,
         commission_value=50000,
+        image_path_local=None,
+        affiliate_link_status="NOT_CREATED",
     ):
         ts = db.now()
+        if image_path_local is None:
+            image_path_local = os.path.join(self.tempdir.name, "catalog-source.jpg")
         self.conn.execute(
             """
             INSERT INTO product (
@@ -1290,7 +1294,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                 review_count,
                 1000,
                 "https://img.test/catalog.jpg",
-                os.path.join(self.tempdir.name, "catalog-source.jpg"),
+                image_path_local,
                 f"https://example.test/catalog/{product_id}",
                 1,
                 ts,
@@ -1305,7 +1309,7 @@ class AutoScheduleFillTests(unittest.TestCase):
                 1000,
                 1,
                 99.0,
-                "NOT_CREATED",
+                affiliate_link_status,
                 ts,
             ),
         )
@@ -1471,13 +1475,18 @@ class AutoScheduleFillTests(unittest.TestCase):
 
         original_build_context = factory.build_context
         original_compose = pipeline.imaging.compose
+        original_materialize = pipeline.materialize_catalog_image
         try:
             factory.build_context = lambda: {"product_client": _ProductClient(), "storage": _Storage()}
+            pipeline.materialize_catalog_image = lambda conn, product, media_dir, *, http=None: product[
+                "image_path_local"
+            ]
             pipeline.imaging.compose = lambda *args, **kwargs: os.path.join(self.tempdir.name, "catalog-composed.jpg")
 
             stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
         finally:
             factory.build_context = original_build_context
+            pipeline.materialize_catalog_image = original_materialize
             pipeline.imaging.compose = original_compose
 
         post = self.conn.execute(
@@ -1500,6 +1509,121 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(target["scheduled_at"], "2026-08-20T02:30:00+00:00")
         self.assertEqual(target["auto_scheduled"], 1)
         self.assertIsNotNone(job)
+
+    def test_fill_auto_schedule_marks_fresh_catalog_link_ready_before_preflight(self):
+        from acp.adapters.accesstrade_client import LinkResult
+        from acp.core import pipeline
+
+        for stale_status in ("FAILED", "STALE"):
+            with self.subTest(stale_status=stale_status):
+                self.tearDown()
+                self.setUp()
+                self._insert_channel()
+                self._insert_catalog_product(affiliate_link_status=stale_status)
+                now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+
+                class _ProductClient:
+                    def create_product_link(self, detail_link, *, post_id, external_product_id):
+                        return LinkResult(
+                            full_url=f"https://go.example.test/full/{post_id}",
+                            short_url=f"https://go.example.test/s/{post_id}",
+                        )
+
+                class _Storage:
+                    def put(self, image_path):
+                        return "https://cdn.example.test/catalog.jpg"
+
+                original_compose = pipeline.imaging.compose
+                original_materialize = pipeline.materialize_catalog_image
+                try:
+                    pipeline.materialize_catalog_image = lambda conn, product, media_dir, *, http=None: product[
+                        "image_path_local"
+                    ]
+                    pipeline.imaging.compose = lambda *args, **kwargs: os.path.join(
+                        self.tempdir.name, "catalog-composed.jpg"
+                    )
+                    stats = pipeline.fill_auto_schedule(
+                        self.conn,
+                        "camp",
+                        now_utc=now_utc,
+                        ctx={"product_client": _ProductClient(), "storage": _Storage()},
+                    )
+                finally:
+                    pipeline.materialize_catalog_image = original_materialize
+                    pipeline.imaging.compose = original_compose
+
+                post = self.conn.execute(
+                    "SELECT * FROM post WHERE product_id='catalog-product-1'"
+                ).fetchone()
+                product = self.conn.execute(
+                    """
+                    SELECT affiliate_link_status, affiliate_url, affiliate_short_url, affiliate_link_error
+                    FROM product WHERE id='catalog-product-1'
+                    """
+                ).fetchone()
+
+                self.assertEqual(stats["scheduled"], 1)
+                self.assertIsNotNone(post)
+                self.assertEqual(post["status"], "SCHEDULED")
+                self.assertEqual(product["affiliate_link_status"], "READY")
+                self.assertTrue(product["affiliate_url"].startswith("https://go.example.test/"))
+                self.assertTrue(product["affiliate_short_url"].startswith("https://go.example.test/"))
+                self.assertIsNone(product["affiliate_link_error"])
+
+    def test_fill_auto_schedule_materializes_catalog_image_before_composing(self):
+        from acp.adapters.accesstrade_client import LinkResult
+        from acp.core import pipeline
+
+        self._insert_channel()
+        self._insert_catalog_product(image_path_local="")
+        now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)
+        materialized = os.path.join(self.tempdir.name, "materialized.jpg")
+        compose_seen = []
+
+        class _ProductClient:
+            def create_product_link(self, detail_link, *, post_id, external_product_id):
+                return LinkResult(
+                    full_url=f"https://go.example.test/full/{post_id}",
+                    short_url=f"https://go.example.test/s/{post_id}",
+                )
+
+        class _Storage:
+            def put(self, image_path):
+                return "https://cdn.example.test/catalog.jpg"
+
+        original_materialize = pipeline.materialize_catalog_image
+        original_compose = pipeline.imaging.compose
+        try:
+            def fake_materialize(conn, product, media_dir, *, http=None):
+                self.assertFalse(product["image_path_local"])
+                conn.execute(
+                    "UPDATE product SET image_path_local=? WHERE id=?",
+                    (materialized, product["id"]),
+                )
+                return materialized
+
+            def fake_compose(product, *args, **kwargs):
+                compose_seen.append(product["image_path_local"])
+                return os.path.join(self.tempdir.name, "catalog-composed.jpg")
+
+            pipeline.materialize_catalog_image = fake_materialize
+            pipeline.imaging.compose = fake_compose
+            stats = pipeline.fill_auto_schedule(
+                self.conn,
+                "camp",
+                now_utc=now_utc,
+                ctx={"product_client": _ProductClient(), "storage": _Storage()},
+            )
+        finally:
+            pipeline.materialize_catalog_image = original_materialize
+            pipeline.imaging.compose = original_compose
+
+        product = self.conn.execute(
+            "SELECT image_path_local FROM product WHERE id='catalog-product-1'"
+        ).fetchone()
+        self.assertEqual(stats["scheduled"], 1)
+        self.assertEqual(compose_seen, [materialized])
+        self.assertEqual(product["image_path_local"], materialized)
 
     def test_auto_catalog_candidates_and_preflight_apply_active_quality_filters(self):
         from acp.core import auto_scheduler, pipeline

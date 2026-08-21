@@ -180,6 +180,23 @@ def _prepare_auto_sales_post_artifacts(conn, ctx, product, campaign, channel, te
             external_product_id=product["external_product_id"],
         )
         link = _tracking_link_from_result(link_result)
+        if not link:
+            return {"ok": False, "error": "Không tạo được tracking link"}
+        full_url = getattr(link_result, "full_url", None) or link
+        short_url = getattr(link_result, "short_url", None)
+        linked_at = now()
+        conn.execute("""UPDATE product
+                        SET affiliate_url=?, affiliate_short_url=?, affiliate_link_status='READY',
+                            affiliate_link_error=NULL, affiliate_link_created_at=?, updated_at=?
+                        WHERE id=? AND provider=?""",
+                     (full_url, short_url, linked_at, linked_at, product["id"], CATALOG_PROVIDER))
+        try:
+            image_path_local = materialize_catalog_image(
+                conn, product, MEDIA_DIR, http=ctx.get("catalog_image_http"))
+        except CatalogImageError as error:
+            return {"ok": False, "error": str(error)}
+        product = dict(product)
+        product["image_path_local"] = image_path_local
         attribution_payload = {
             "provider": "accesstrade_product",
             "link_mode": "post_specific",
