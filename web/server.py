@@ -1397,4 +1397,6 @@ def create_app():
     from .seeding_routes import register_seeding
     register_seeding(app)
 
+    from .account_factory import register_account_factory_routes
+    register_account_factory_routes(app)
     return app
