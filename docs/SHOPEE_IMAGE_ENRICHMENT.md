@@ -1,49 +1,113 @@
-# Shopee Image Enrichment Runbook
+# Shopee Image Enrichment & Auto Publish Runbook
 
-## Purpose
+## Normal operation
 
-This workflow adds a validated product image to `SHOPEE_AFFILIATE` Products that were imported from official Shopee Affiliate bulk-link CSV files.
-
-The CSV remains the source of affiliate/product identity, price, sold count and commission data. Image enrichment is additive and does not replace those CSV-owned values.
-
-## Source policy
-
-ACP accepts Shopee metadata from only two sources in this phase:
-
-1. public product-page HTML on `https://shopee.vn/...`;
-2. rendered DOM metadata sent by the existing operator-assisted ACP Shopee Helper.
-
-ACP does **not** use Shopee Open API for this workflow and does not call private `/api/v4/...` metadata endpoints.
-
-The workflow does not automate Shopee login, read cookies/session/localStorage credentials, solve CAPTCHA, evade anti-bot controls, reverse engineer private APIs, run an unbounded crawler, create posts, approve posts or publish content.
-
-## Data flow
+The normal Shopee Affiliate workflow is now:
 
 ```text
 Official Shopee Affiliate CSV
         ↓
-CSV Import
+Import into ACP
         ↓
-SHOPEE_AFFILIATE Product
+enqueue image enrichment
         ↓
-missing usable image?
-        ├─ no  → READY / no work
-        └─ yes → PENDING
-                   ↓
-              PUBLIC_FETCH
-                   ↓
-          public HTML has image?
-             ├─ yes → DOWNLOADING → validate bytes → local/storage → READY
-             └─ no  → NEEDS_HELPER
-                            ↓
-                      Chrome Helper
-                            ↓
-                      DOWNLOADING
-                            ↓
-                    READY or FAILED
+hourly ACP Auto service
+        ↓
+product-sync → Shopee enrich → auto-schedule → worker-once
+        ↓
+READY Shopee products become Threads Auto candidates
+        ↓
+niche / duplicate / cooldown / quota / slot checks
+        ↓
+generate + validate content
+        ↓
+SCHEDULED or REVIEW
+        ↓
+existing publish worker
 ```
 
-## Workspace
+During normal operation, the operator does **not** need to press **Quét sản phẩm thiếu ảnh** or **Enrich 20 sản phẩm thiếu ảnh** after importing the CSV. Those buttons remain recovery controls.
+
+The timer cadence remains the existing 60 minutes. The Shopee enrichment stage is bounded to at most 20 products per timer pass.
+
+## Source of truth
+
+The official CSV remains the source of:
+
+- Shopee product identity;
+- current price;
+- sold count when present;
+- commission data;
+- the affiliate URL.
+
+Automatic post creation uses the exact `product.affiliate_url` imported from the CSV. ACP does not ask another affiliate source to generate or rewrite that Shopee URL.
+
+Image enrichment is additive. Public HTML or Chrome Helper may fill image fields, shop name and other missing enrichment-owned metadata, but does not overwrite stronger CSV-owned commercial fields.
+
+## Auto eligibility for `SHOPEE_AFFILIATE`
+
+Shopee Affiliate CSV products intentionally have incomplete commerce metadata. In particular, `has_inventory`, rating and review count may be unknown. ACP does not write fake inventory values and does not require missing rating/review values to pass legacy filters.
+
+A Shopee product can enter Auto only when:
+
+- `provider='SHOPEE_AFFILIATE'`;
+- `is_available=1`;
+- `affiliate_link_status='READY'`;
+- `affiliate_url` is a valid absolute HTTP(S) URL;
+- image enrichment status is `READY`;
+- enriched media is usable;
+- the CSV snapshot is no older than 72 hours;
+- commission meets the configured minimum;
+- the category is not blocked;
+- the product matches the target Threads channel niche;
+- duplicate/cooldown, category/day, channel quota and slot checks pass.
+
+Shopee freshness is 72 hours from `last_synced_at`, falling back to `last_seen_at`. Re-import a current official CSV when a product becomes `STALE`.
+
+Other providers keep their existing inventory and 120-minute catalog freshness semantics.
+
+## Image enrichment lifecycle
+
+Statuses are:
+
+```text
+PENDING
+PUBLIC_FETCH
+DOWNLOADING
+NEEDS_HELPER
+READY
+FAILED
+```
+
+The automatic stage uses the existing bounded enrichment implementation:
+
+- public `https://shopee.vn/...` HTML only;
+- JSON-LD/OpenGraph/product metadata only;
+- image download through ACP safe HTTP / SSRF protections;
+- max image size 8 MiB;
+- Pillow byte validation;
+- deterministic local media path;
+- existing storage abstraction;
+- at most 2 public metadata attempts and 2 image download attempts per product;
+- max 20 products per batch.
+
+A Product failure is isolated from the rest of the batch.
+
+## Chrome Helper fallback
+
+If public Shopee HTML is blocked, incomplete or does not expose an image, the product moves to `NEEDS_HELPER`.
+
+Only then does the operator need to use:
+
+```text
+Mở Shopee & dùng Helper
+```
+
+The existing Helper remains operator-assisted. ACP does not automate login, extract cookies/session/localStorage, solve CAPTCHA, evade anti-bot controls or call private Shopee APIs.
+
+A `NEEDS_HELPER` product cannot enter Auto. After Helper completion safely materializes the image and moves the job to `READY`, the product can participate in a later Auto schedule pass.
+
+## Product Pool
 
 Open:
 
@@ -51,228 +115,128 @@ Open:
 /sanpham/shopee
 ```
 
-The workspace is separate from the existing ACCESSTRADE catalog query at `/sanpham`.
+The table shows image enrichment state plus a derived Auto state. Auto state is read from existing Product/Post/PublishTarget records; no second mutable Auto-state table exists.
 
-Filters:
+Possible Auto states:
 
-- `Tất cả`
-- `Thiếu ảnh`
-- `Đã có ảnh`
-- `Cần Helper`
-- `Lỗi`
+- `WAITING_IMAGE` — image is not READY;
+- `STALE` — official CSV snapshot is older than 72 hours;
+- `ELIGIBLE` — READY/fresh and currently unused by an active post;
+- `SCHEDULED` — an auto-scheduled publish target exists;
+- `REVIEW` — generated content is in DRAFT/PENDING_REVIEW;
+- `PUBLISHED` — the product already has a published/successful post.
 
-Each row shows the image/placeholder, product name, price, sold count, commission, enrichment status, bounded error message and actions appropriate to the current state.
+For `SCHEDULED`, the Product Pool also shows the target channel and scheduled timestamp when available.
 
-## Enrolling Products
+## Recovery controls
 
-New/updated/unchanged Products confirmed through the Shopee Affiliate CSV importer are enrolled idempotently when they still need an image.
-
-For Products imported before this feature, press:
-
-```text
-Quét sản phẩm thiếu ảnh
-```
-
-This scans existing `provider='SHOPEE_AFFILIATE'` Products and creates missing enrichment jobs without re-importing CSV files.
-
-Re-running backfill or re-importing the same CSV does not create duplicate jobs because the job key is `product_id`.
-
-## Status meanings
-
-### `PENDING`
-
-Eligible for the next public enrichment attempt.
-
-### `PUBLIC_FETCH`
-
-ACP is reading the canonical public Shopee product HTML. It parses JSON-LD Product metadata and OpenGraph/product meta tags only.
-
-### `DOWNLOADING`
-
-ACP has an image URL and is downloading/validating the image.
-
-### `NEEDS_HELPER`
-
-The public product page was blocked/incomplete or did not expose a usable image. Use the ACP Shopee Helper from the rendered product tab.
-
-### `READY`
-
-ACP has a usable Product image. The Product contains the source image URL plus ACP-managed image fields.
-
-### `FAILED`
-
-Automatic image download, decode, local write or storage publication exhausted the bounded retry budget, or another isolated enrichment failure occurred. Use `Retry` after the underlying problem is corrected.
-
-## Batch behavior
-
-Press:
+The following controls remain available but are not required in the normal path:
 
 ```text
-Enrich 20 sản phẩm thiếu ảnh
-```
-
-One operator action processes at most 20 `PENDING` jobs.
-
-Defaults:
-
-```text
-batch size:                  20
-concurrency:                 1
-public-request delay:        1.5 seconds
-max public attempts/product: 2
-max image attempts/product:  2
-```
-
-ACP does not automatically start the next batch. Run another batch when desired.
-
-A failure on one Product is isolated; the batch continues with the remaining selected Products.
-
-If the process dies while a job is in `PUBLIC_FETCH` or `DOWNLOADING`, a later batch can recover a transient job older than 10 minutes back to `PENDING` unless the Product already has usable media.
-
-## Chrome Helper fallback
-
-For a `NEEDS_HELPER` Product, press:
-
-```text
+Recovery: quét thiếu ảnh
+Recovery: enrich 20
+Retry
 Mở Shopee & dùng Helper
 ```
 
-ACP then:
+Backfill is idempotent by `product_id`. Re-importing the same official CSV does not create duplicate enrichment jobs.
 
-1. loads the Product server-side and issues the existing one-time Helper pairing token bound to that Product's canonical Shopee URL;
-2. opens the canonical product page in a new tab;
-3. waits for the operator to view the page and click ACP Shopee Helper;
-4. accepts only allowlisted rendered metadata fields;
-5. verifies the observed tab is the same canonical Shopee Product;
-6. consumes ready Helper metadata only for the Product the token is bound to;
-7. downloads the returned image URL again on the ACP server through the same safe image-validation path.
+## Scheduler and publish safety
 
-The one-time token is never rendered as a static Product-table value and is not stored in the database/audit data.
+The Shopee integration reuses the existing Threads scheduler. It does not create a second router or publish worker.
 
-A token ready for Product A cannot be completed against Product B.
+The following existing controls remain authoritative:
 
-## Image validation and storage
+- per-channel `auto_schedule_enabled`;
+- channel ACTIVE/enabled state;
+- niche matching;
+- duplicate and cooldown protection;
+- daily target/cap;
+- category/day cap;
+- available posting slots;
+- content validation;
+- publish-time preflight;
+- global publish-worker switch.
 
-Image URL requirements include HTTPS, no embedded credentials, a normal HTTPS port and existing ACP safe HTTP / SSRF validation.
+Clean generated content can be auto-approved into a scheduled target. Content with validation problems remains in the review path and is not automatically published.
 
-Download size is capped at 8 MiB.
+Publish preflight fails closed if a Shopee product has become unavailable, its affiliate URL is invalid, the image is no longer READY, it no longer matches the channel, or the official CSV snapshot is older than 72 hours.
 
-ACP validates actual bytes with Pillow. Supported decoded formats:
+## Timer service
 
-- JPEG
-- PNG
-- WEBP
-- GIF
+`ops/acp-auto-schedule.service` runs:
 
-HTML/JSON masquerading as an image, corrupt image bytes and unsupported image formats are rejected.
+```text
+1. run.py product-sync
+2. shopee_auto_enrich.py
+3. run.py auto-schedule
+4. run.py worker-once
+```
 
-The local deterministic filename is:
+`ops/acp-auto-schedule.timer` remains on the existing 60-minute cadence. The service timeout is increased to allow the bounded Shopee enrichment pass to complete.
+
+## Image storage
+
+Validated local files use deterministic names:
 
 ```text
 var/media/shopee_<shop_id>_<item_id>.<verified-extension>
 ```
 
-Examples:
+Supported decoded formats are JPEG, PNG, WEBP and GIF. HTML/JSON masquerading as an image, corrupt bytes and unsupported formats are rejected.
+
+Successful enrichment fills:
 
 ```text
-var/media/shopee_196194160_20834209498.jpg
-var/media/shopee_1240355310_24676329852.webp
+image_url_original
+image_path_local
+main_image_url
 ```
-
-A valid deterministic local file is reused rather than downloaded again. Temporary files from interrupted writes are not accepted as final cached media.
-
-After local validation, ACP calls the existing storage abstraction:
-
-- local storage → public ACP `/media/...` URL through `ACP_MEDIA_BASE_URL`;
-- S3/R2 → existing configured storage backend/public URL.
-
-Product fields after success:
-
-```text
-image_url_original = original Shopee image URL
-image_path_local    = verified ACP local file
-main_image_url      = public URL produced by ACP storage
-```
-
-If storage publication fails, the verified local file may remain for retry, but the job is not marked `READY` until Product media is consistent.
-
-## Non-destructive metadata policy
-
-Public HTML / Helper enrichment may fill blank enrichment fields such as:
-
-- `image_url_original`
-- `image_path_local`
-- `main_image_url`
-- `shop_name`
-- `original_price`
-- product name only if blank
-
-It does not overwrite CSV-owned current price, sold count, commission fields, affiliate URL, provider identity or nonblank stronger Product metadata.
-
-## Error codes
-
-Operator-facing failures use bounded messages and stable internal codes such as:
-
-```text
-PUBLIC_BLOCKED
-PUBLIC_NO_IMAGE
-IMAGE_DOWNLOAD_FAILED
-IMAGE_TOO_LARGE
-IMAGE_INVALID_CONTENT
-IMAGE_DECODE_FAILED
-STORAGE_FAILED
-PRODUCT_IDENTITY_INVALID
-HELPER_REQUIRED
-ENRICHMENT_FAILED
-```
-
-Raw HTML, response bodies, cookies, auth headers, pairing tokens and stack traces are not persisted as job errors.
 
 ## Verification
 
-Run from the parent directory containing package `acp/`:
+Use mock adapters. Never verify this feature by publishing to a real Threads account.
+
+Focused gate:
 
 ```bash
+export ACP_ENV=test
 export ACP_ADAPTER=mock
 export ACP_SOURCE=mock
+export ACP_CAPTION_LLM=
+export ACP_CONTENT_ENGINE_LLM=
 
-python -m acp.tests.test_shopee_public_metadata -v
-python -m acp.tests.test_shopee_image_enrichment -v
-python -m acp.tests.test_shopee_image_enrichment_flow -v
-python -m acp.tests.test_shopee_image_enrichment_review -v
-python -m acp.tests.test_shopee_helper_pairing_enrichment -v
-python -m acp.tests.test_shopee_csv_enrichment -v
-python -m acp.tests.test_shopee_image_enrichment_web -v
-
-python -m acp.tests.test_shopee_csv_import -v
-python -m acp.tests.test_shopee_csv_web -v
-python -m acp.tests.test_shopee_helper -v
-python -m acp.tests.test_shopee_helper_ui -v
-python -m acp.tests.test_shopee_product_intel -v
-python -m acp.tests.test_shopee_product_upsert -v
-python -m acp.tests.test_shopee_product_intel_web -v
+python -m unittest \
+  tests.test_shopee_auto_pipeline \
+  tests.test_shopee_auto_state \
+  tests.test_shopee_csv_enrichment \
+  tests.test_shopee_image_enrichment \
+  tests.test_shopee_image_enrichment_web \
+  tests.test_shopee_helper \
+  tests.test_shopee_polish_resilience \
+  tests.test_auto_scheduler \
+  tests.test_auto_scheduler_safety -v
 ```
 
-Then from the repo/package root:
+Project release gate:
 
 ```bash
 ./manage.sh test
 git diff --check
-python -m compileall core web tests adapters >/dev/null
+python -m compileall core web tests adapters run.py shopee_auto_enrich.py >/dev/null
 ```
 
-Do not mark the feature release-ready until the fresh checkout/worktree gate above is green.
+Do not mark the branch release-ready until these commands pass on a fresh local checkout/worktree.
 
 ## Controlled pilot
 
-After tests are green, use a small real CSV batch already exported from the official Shopee Affiliate UI:
+After the mock/release gate is green:
 
-1. import a few Products;
-2. open `/sanpham/shopee`;
-3. confirm they appear as missing/PENDING;
-4. run one 20-or-smaller public enrichment batch;
-5. verify `READY` images are real product images and local files exist;
-6. verify blocked/no-image Products move to `NEEDS_HELPER`;
-7. complete one Product with Chrome Helper;
-8. verify the Helper Product becomes `READY` and the original affiliate URL/CSV price/commission values did not change;
-9. do not create/publish posts as part of this pilot.
+1. import a small official Shopee Affiliate CSV;
+2. confirm rows appear in `/sanpham/shopee` without manually running Enrich;
+3. run the bounded enrichment stage manually only if testing the timer stage in isolation;
+4. verify publicly enrichable products become READY;
+5. verify blocked products become NEEDS_HELPER and never enter Auto;
+6. keep the global publish worker disabled for the first real-data observation pass;
+7. verify eligible READY products receive the expected derived Auto state and routing candidate behavior;
+8. enable real publishing only through the normal operator-controlled production procedure.
