@@ -6,7 +6,6 @@ private Shopee endpoints, creates posts, or publishes content.
 """
 from __future__ import annotations
 
-import glob
 import os
 import tempfile
 import time
@@ -115,7 +114,7 @@ def enqueue_product(conn, product_id: str) -> str | None:
         )
         return READY
 
-    # Missing-image re-enqueue never resets retry/error/helper state.  Explicit
+    # Missing-image re-enqueue never resets retry/error/helper state. Explicit
     # Retry owns that transition later; repeated CSV imports stay idempotent.
     return existing["status"]
 
@@ -263,7 +262,10 @@ def materialize_product_image(
     os.makedirs(media_dir, exist_ok=True)
     stem = f"shopee_{identity.shop_id}_{identity.item_id}"
 
-    for existing in sorted(glob.glob(os.path.join(media_dir, stem + ".*"))):
+    # Reuse only the exact deterministic final names. A valid-looking stale
+    # NamedTemporaryFile from a crashed process must never become Product media.
+    for ext in _EXT_BY_FORMAT.values():
+        existing = os.path.join(media_dir, stem + ext)
         if _valid_existing_image(existing):
             return {
                 "image_url_original": safe_url,
@@ -280,7 +282,12 @@ def materialize_product_image(
         )
     except SafeHttpError as exc:
         message = str(exc)
-        code = "IMAGE_TOO_LARGE" if "giới hạn kích thước" in message else "IMAGE_DOWNLOAD_FAILED"
+        if "giới hạn kích thước" in message:
+            code = "IMAGE_TOO_LARGE"
+        elif "Content-Type" in message:
+            code = "IMAGE_INVALID_CONTENT"
+        else:
+            code = "IMAGE_DOWNLOAD_FAILED"
         raise ShopeeImageEnrichmentError(code, "Không thể tải ảnh sản phẩm an toàn.") from exc
     except OSError as exc:
         raise ShopeeImageEnrichmentError(
@@ -337,7 +344,9 @@ def merge_metadata_into_product(
     """Fill only missing enrichment-owned Product fields."""
     product = _product(conn, product_id)
     if product is None:
-        raise ShopeeImageEnrichmentError("PRODUCT_IDENTITY_INVALID", "Không tìm thấy Product cần enrich.")
+        raise ShopeeImageEnrichmentError(
+            "PRODUCT_IDENTITY_INVALID", "Không tìm thấy Product cần enrich."
+        )
     _eligible_identity(product)
 
     values = {}
@@ -499,6 +508,8 @@ def enrich_product(
     media_dir: str,
     storage_backend,
     image_http=None,
+    retry_delay_seconds: float = 0.0,
+    sleep_fn=time.sleep,
 ) -> dict:
     """Run one bounded public-HTML enrichment cycle for a Product."""
     product = _product(conn, product_id)
@@ -521,13 +532,13 @@ def enrich_product(
 
     remaining = max(0, MAX_PUBLIC_ATTEMPTS - int(job["attempt_count"] or 0))
     metadata = None
-    last_public_error = None
-    for _ in range(remaining):
+    for attempt_index in range(remaining):
         _set_job(conn, product_id, PUBLIC_FETCH, public_attempt_delta=1)
         try:
             metadata = _resolve_public(metadata_resolver, product["product_url"])
-        except (AffiliateImportError, ShopeeImageEnrichmentError, OSError) as exc:
-            last_public_error = exc
+        except (AffiliateImportError, ShopeeImageEnrichmentError, OSError):
+            if attempt_index < remaining - 1 and float(retry_delay_seconds) > 0:
+                sleep_fn(float(retry_delay_seconds))
             continue
         if not getattr(metadata, "image_url", None):
             _set_job(
@@ -570,7 +581,7 @@ def complete_from_helper(
     storage_backend,
     image_http=None,
 ) -> dict:
-    """Complete a NEEDS_HELPER job after existing pairing validation succeeded."""
+    """Complete a job after existing product-bound Helper validation succeeded."""
     product = _product(conn, product_id)
     if product is None or str(product["provider"] or "") != PROVIDER:
         raise ShopeeImageEnrichmentError(
@@ -666,16 +677,32 @@ def run_batch(
         try:
             resolver = metadata_resolver_factory() if metadata_resolver_factory else ProductMetadataResolver()
             image_http = image_http_factory() if image_http_factory else SafeHttpClient(max_bytes=MAX_IMAGE_BYTES)
-            result = enrich_product(
-                conn,
-                product_id,
-                metadata_resolver=resolver,
-                media_dir=media_root,
-                storage_backend=backend,
-                image_http=image_http,
-            )
+            try:
+                result = enrich_product(
+                    conn,
+                    product_id,
+                    metadata_resolver=resolver,
+                    media_dir=media_root,
+                    storage_backend=backend,
+                    image_http=image_http,
+                    retry_delay_seconds=max(0.0, float(delay_seconds)),
+                    sleep_fn=sleep_fn,
+                )
+            except Exception:
+                # Keep a provider/parser bug isolated to this Product. Never
+                # persist exception text or stack trace because upstream errors
+                # may contain request/provider details.
+                _set_job(
+                    conn,
+                    product_id,
+                    FAILED,
+                    error_code="ENRICHMENT_FAILED",
+                    error_message="Không thể enrich ảnh sản phẩm này.",
+                )
+                result = _result(conn, product_id)
         finally:
             conn.close()
+
         summary["processed"] += 1
         if result["status"] == READY:
             summary["ready"] += 1
@@ -685,7 +712,7 @@ def run_batch(
             summary["failed"] += 1
         else:
             summary["pending"] += 1
-        if index < len(product_ids) - 1:
+        if index < len(product_ids) - 1 and float(delay_seconds) > 0:
             sleep_fn(max(0.0, float(delay_seconds)))
     return summary
 
