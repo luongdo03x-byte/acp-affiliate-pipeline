@@ -1,3 +1,4 @@
+import csv
 import io
 import os
 import re
@@ -13,11 +14,31 @@ HEADER = (
 
 
 def csv_bytes(item_id="123", *, shop_id="1", name="CSV Product", price="100,0k", affiliate="abc"):
-    return (
-        HEADER
-        + f"{item_id},{name},{price},10k+,Shop CSV,5%,₫5.000,"
-        + f"https://shopee.vn/product/{shop_id}/{item_id},https://s.shopee.vn/{affiliate}\n"
-    ).encode("utf-8")
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "Mã sản phẩm",
+        "Tên sản phẩm",
+        "Giá",
+        "Doanh thu",
+        "Tên cửa hàng",
+        "Tỉ lệ hoa hồng",
+        "Hoa hồng",
+        "Link sản phẩm",
+        "Link ưu đãi",
+    ])
+    writer.writerow([
+        item_id,
+        name,
+        price,
+        "10k+",
+        "Shop CSV",
+        "5%",
+        "₫5.000",
+        f"https://shopee.vn/product/{shop_id}/{item_id}",
+        f"https://s.shopee.vn/{affiliate}",
+    ])
+    return buffer.getvalue().encode("utf-8")
 
 
 class ShopeeCsvWebTests(unittest.TestCase):
