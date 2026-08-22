@@ -27,6 +27,10 @@ def _product(**overrides):
     return row
 
 
+def _first_line(caption):
+    return next(line.strip() for line in caption.splitlines() if line.strip())
+
+
 class ReviewerCaptionV2Tests(unittest.TestCase):
     def tearDown(self):
         content.set_llm(None)
@@ -58,6 +62,27 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         ):
             self.assertNotIn(phrase, caption.lower())
 
+    def test_variant_code_changes_reviewer_hook_but_keeps_same_real_signal(self):
+        product = _product()
+
+        social = content.generate(
+            product, "spec_highlight", AFFILIATE,
+            hook_code="H5_XAHOI", rng=random.Random(11),
+        )
+        question = content.generate(
+            product, "spec_highlight", AFFILIATE,
+            hook_code="H4_CAUHOI", rng=random.Random(11),
+        )
+
+        social_hook = _first_line(social)
+        question_hook = _first_line(question)
+        self.assertNotEqual(social_hook, question_hook)
+        self.assertIn("40k+", social_hook)
+        self.assertIn("40k+", question_hook)
+        self.assertIn("?", question_hook)
+        self.assertLessEqual(len(social_hook.split()), 12)
+        self.assertLessEqual(len(question_hook.split()), 12)
+
     def test_bigsize_product_leads_with_the_audience_pain_point(self):
         product = _product(
             name="Áo Yếm Bigsize Nữ 55-90kg Lưng Nhún Chun Dễ Phối",
@@ -73,7 +98,7 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
             rng=random.Random(2),
         )
 
-        first_line = next(line.strip() for line in caption.splitlines() if line.strip())
+        first_line = _first_line(caption)
         self.assertTrue("55-90kg" in first_line.lower() or "55–90kg" in first_line.lower())
         self.assertLessEqual(len(first_line.split()), 12)
         self.assertIn("129.000đ", caption)
