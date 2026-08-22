@@ -60,6 +60,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
             "không thể bỏ lỡ",
             "mình đã dùng",
             "mình dùng thử",
+            "listing",
+            "detail",
         ):
             self.assertNotIn(phrase, caption.lower())
 
@@ -104,6 +106,7 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertLessEqual(len(first_line.split()), 12)
         self.assertIn("129.000đ", caption)
         self.assertIn(AFFILIATE, caption)
+        self.assertNotIn("listing", caption.lower())
 
     def test_real_csv_set_title_uses_a_concrete_listing_detail_not_generic_filler(self):
         product = _product(
@@ -121,6 +124,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         )
 
         self.assertNotIn("chỉ note lại đúng thông tin nổi bật", caption.lower())
+        self.assertNotIn("listing", caption.lower())
+        self.assertNotIn("detail", caption.lower())
         self.assertTrue("thun tăm" in caption.lower() or "mặc nhà" in caption.lower())
 
     def test_llm_rewrite_is_used_when_it_keeps_real_facts_and_short_structure(self):
