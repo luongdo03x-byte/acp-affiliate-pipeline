@@ -65,6 +65,20 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         ):
             self.assertNotIn(phrase, caption.lower())
 
+    def test_shopee_reviewer_ignores_explicit_manual_disclosure(self):
+        caption = content.generate(
+            _product(),
+            "spec_highlight",
+            AFFILIATE,
+            disclosure=content.DISCLOSURE_DEFAULT,
+            hook_code="H5_XAHOI",
+            rng=random.Random(13),
+        )
+
+        self.assertIn(AFFILIATE, caption)
+        self.assertNotIn(content.DISCLOSURE_DEFAULT, caption)
+        self.assertNotIn("#tiepthilienket", caption.lower())
+
     def test_variant_code_changes_reviewer_hook_but_keeps_same_real_signal(self):
         product = _product()
         social = content.generate(
