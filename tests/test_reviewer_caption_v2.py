@@ -5,6 +5,10 @@ from acp.core import content
 
 
 AFFILIATE = "https://s.shopee.vn/reviewer-test"
+HOOK_CODES = (
+    "H1_GIAGIAM", "H2_SOSANH", "H3_KHANHIEM", "H4_CAUHOI", "H5_XAHOI",
+    "H6_HANGMOI", "H7_TIETKIEM", "H8_CANHBAO", "H9_TRUCTIEP",
+)
 
 
 def _product(**overrides):
@@ -55,19 +59,13 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertNotIn(product["name"], caption)
         self.assertLessEqual(len(caption), 500)
         for phrase in (
-            "sản phẩm này",
-            "sự lựa chọn lý tưởng",
-            "không thể bỏ lỡ",
-            "mình đã dùng",
-            "mình dùng thử",
-            "listing",
-            "detail",
+            "sản phẩm này", "sự lựa chọn lý tưởng", "không thể bỏ lỡ",
+            "mình đã dùng", "mình dùng thử", "listing", "detail",
         ):
             self.assertNotIn(phrase, caption.lower())
 
     def test_variant_code_changes_reviewer_hook_but_keeps_same_real_signal(self):
         product = _product()
-
         social = content.generate(
             product, "spec_highlight", AFFILIATE,
             hook_code="H5_XAHOI", rng=random.Random(11),
@@ -86,6 +84,20 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertLessEqual(len(social_hook.split()), 12)
         self.assertLessEqual(len(question_hook.split()), 12)
 
+    def test_all_measured_hook_codes_remain_distinct_and_short(self):
+        hooks = []
+        for code in HOOK_CODES:
+            caption = content.generate(
+                _product(), "spec_highlight", AFFILIATE,
+                hook_code=code, rng=random.Random(12),
+            )
+            hook = _first_line(caption)
+            hooks.append(hook)
+            self.assertLessEqual(len(hook.split()), 12, msg=f"{code}: {hook}")
+            self.assertIn("40k+", hook, msg=f"{code}: {hook}")
+
+        self.assertEqual(len(set(hooks)), len(HOOK_CODES))
+
     def test_bigsize_product_leads_with_the_audience_pain_point(self):
         product = _product(
             name="Áo Yếm Bigsize Nữ 55-90kg Lưng Nhún Chun Dễ Phối",
@@ -94,11 +106,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         )
 
         caption = content.generate(
-            product,
-            "comparison",
-            AFFILIATE,
-            hook_code="H4_CAUHOI",
-            rng=random.Random(2),
+            product, "comparison", AFFILIATE,
+            hook_code="H4_CAUHOI", rng=random.Random(2),
         )
 
         first_line = _first_line(caption)
@@ -116,11 +125,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         )
 
         caption = content.generate(
-            product,
-            "spec_highlight",
-            AFFILIATE,
-            hook_code="H5_XAHOI",
-            rng=random.Random(7),
+            product, "spec_highlight", AFFILIATE,
+            hook_code="H5_XAHOI", rng=random.Random(7),
         )
 
         self.assertNotIn("chỉ note lại đúng thông tin nổi bật", caption.lower())
@@ -138,11 +144,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         content.set_llm(lambda _prompt: rewritten)
 
         caption = content.generate(
-            _product(),
-            "spec_highlight",
-            AFFILIATE,
-            hook_code="H5_XAHOI",
-            rng=random.Random(4),
+            _product(), "spec_highlight", AFFILIATE,
+            hook_code="H5_XAHOI", rng=random.Random(4),
         )
 
         self.assertTrue(caption.startswith("118,7k mà 40k+ lượt mua"))
@@ -159,11 +162,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         content.set_llm(lambda _prompt: unsafe)
 
         caption = content.generate(
-            _product(),
-            "spec_highlight",
-            AFFILIATE,
-            hook_code="H5_XAHOI",
-            rng=random.Random(5),
+            _product(), "spec_highlight", AFFILIATE,
+            hook_code="H5_XAHOI", rng=random.Random(5),
         )
 
         self.assertNotIn("mình đã dùng", caption.lower())
@@ -180,11 +180,8 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         content.set_llm(lambda _prompt: unsafe)
 
         caption = content.generate(
-            _product(),
-            "spec_highlight",
-            AFFILIATE,
-            hook_code="H5_XAHOI",
-            rng=random.Random(6),
+            _product(), "spec_highlight", AFFILIATE,
+            hook_code="H5_XAHOI", rng=random.Random(6),
         )
 
         self.assertNotIn("99k", caption.lower())
@@ -192,18 +189,13 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
 
     def test_non_shopee_product_keeps_legacy_generation_path(self):
         product = _product(
-            provider="LEGACY",
-            name="Tai nghe kiểm thử legacy",
-            sold_count=0,
-            current_price=300_000,
+            provider="LEGACY", name="Tai nghe kiểm thử legacy",
+            sold_count=0, current_price=300_000,
         )
 
         caption = content.generate(
-            product,
-            "spec_highlight",
-            AFFILIATE,
-            hook_code="H9_TRUCTIEP",
-            rng=random.Random(3),
+            product, "spec_highlight", AFFILIATE,
+            hook_code="H9_TRUCTIEP", rng=random.Random(3),
         )
 
         self.assertIn("Tai nghe kiểm thử legacy", caption)
