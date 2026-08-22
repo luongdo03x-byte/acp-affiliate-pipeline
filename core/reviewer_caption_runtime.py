@@ -53,9 +53,9 @@ def install() -> None:
             hook_code=hook_code,
             llm_fn=content._llm_fn,
         )
-        # Shopee Reviewer captions rely on the platform/native affiliate label.
-        # Keep caption_final limited to reviewer copy + the exact affiliate URL;
-        # never append the manual #tiepthilienket disclosure text here.
+        # Shopee Reviewer captions intentionally omit ACP's manual disclosure
+        # text. Any platform/native affiliate-label behavior stays in the
+        # publisher/platform integration and is not altered here.
         return draft.strip()
 
     content.generate = generate
