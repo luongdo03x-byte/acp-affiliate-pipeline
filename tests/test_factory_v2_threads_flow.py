@@ -10,7 +10,7 @@ class FakeDriver:
     def __init__(
         self,
         screens,
-        available=("display_name", "bio", "continue", "continue_with_instagram"),
+        available=("display_name", "bio", "continue", "continue_with_instagram", "expected_threads_username"),
         *,
         tap_statuses=None,
         set_statuses=None,

@@ -511,7 +511,10 @@ class FactoryControllerRuntime:
         if checkpoint is None:
             raise ValueError("observation requested without checkpoint")
         flow = self._remote_flow_for_checkpoint(checkpoint)
-        result = self._command(job, "OBSERVE_CHECKPOINT", {"flow": flow})
+        payload = {"flow": flow}
+        if flow == "threads":
+            payload["profile"] = {"username": str(account.get("username") or "")}
+        result = self._command(job, "OBSERVE_CHECKPOINT", payload)
         if _pending(result):
             return
         observed_status = str(result.get("status") or "").lower()

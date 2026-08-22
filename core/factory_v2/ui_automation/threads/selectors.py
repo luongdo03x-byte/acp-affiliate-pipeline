@@ -36,6 +36,7 @@ HOME = Selector(
     semantic="home",
     content_descs=("Home", "Trang chủ"),
     resource_ids=(
+        "MainFeedScreen",
         "com.instagram.barcelona:id/barcelona_tab_main_feed",
         "com.instagram.barcelona:id/home_tab",
     ),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..flow_result import FlowResult
+from ..selectors import Selector
 from .screens import PACKAGE
 from .selectors import BIO_INPUT, CONTINUE, CONTINUE_WITH_INSTAGRAM, DISPLAY_NAME_INPUT
 
@@ -50,6 +51,9 @@ class ThreadsFlow:
         if detected.protected:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
         if detected.kind in _SUCCESS:
+            expected_username = str(profile.get("username") or "").strip()
+            if not expected_username or self.driver.find(Selector(semantic="expected_threads_username", texts=(expected_username,), require_enabled=False)) is None:
+                return FlowResult("needs_confirmation", detected.kind, "ACCOUNT_MISMATCH")
             return FlowResult("completed", detected.kind, last_safe_step="THREADS_POSTCHECK_OK")
         if detected.kind in {"RATE_LIMITED", "ACTION_BLOCKED"}:
             return FlowResult("retry_pending", detected.kind, detected.kind)
@@ -114,11 +118,15 @@ class ThreadsFlow:
     def run(self, profile: dict) -> FlowResult:
         return self._handle_detected(self._detect_bounded(), dict(profile or {}))
 
-    def observe_checkpoint(self) -> FlowResult:
+    def observe_checkpoint(self, profile: dict | None = None) -> FlowResult:
         detected = self._detect_bounded()
         if detected.protected:
             return FlowResult("waiting_human", detected.kind, "HUMAN_VERIFICATION_REQUIRED")
         if detected.kind in _CHECKPOINT_SUCCESSORS and detected.automation_allowed:
+            if profile is not None:
+                expected_username = str(profile.get("username") or "").strip()
+                if not expected_username or self.driver.find(Selector(semantic="expected_threads_username", texts=(expected_username,), require_enabled=False)) is None:
+                    return FlowResult("needs_confirmation", detected.kind, "ACCOUNT_MISMATCH")
             return FlowResult("completed", detected.kind, last_safe_step=detected.kind)
         if detected.kind in _CHECKPOINT_RESUMABLE and detected.automation_allowed:
             return FlowResult("running", detected.kind, last_safe_step=detected.kind)

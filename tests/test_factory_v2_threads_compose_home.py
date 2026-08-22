@@ -57,6 +57,15 @@ class ThreadsComposeHomeTests(unittest.TestCase):
         self.assertEqual("THREADS_HOME", detected.kind)
         self.assertTrue(detected.automation_allowed)
 
+    def test_normal_flow_home_rejects_different_account(self):
+        driver = SnapshotDriver(compose_home("baongocd806415"))
+
+        result = ThreadsFlow(driver).run({"username": "myduyenn681999"})
+
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("ACCOUNT_MISMATCH", result.reason)
+        self.assertEqual([], driver.mutations)
+
     def test_checkpoint_home_completes_when_expected_username_is_visible(self):
         driver = SnapshotDriver(compose_home("myduyenn681999"))
 

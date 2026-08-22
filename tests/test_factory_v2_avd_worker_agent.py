@@ -35,7 +35,7 @@ class FakeFlow:
         self.account_ids.append(account_id)
         return self.result
 
-    def observe_checkpoint(self):
+    def observe_checkpoint(self, profile=None):
         self.observe_calls += 1
         return self.result
 
@@ -62,9 +62,13 @@ class FakeAvd:
         self.urls = []
         self.packages = []
         self.browser_resets = []
+        self.app_resets = []
 
     def reset_browser_session(self, serial, browser_package):
         self.browser_resets.append((serial, browser_package))
+
+    def reset_app_session(self, serial, package):
+        self.app_resets.append((serial, package))
 
     def open_url(self, serial, url, *, browser_package=None):
         self.urls.append((serial, url, browser_package))

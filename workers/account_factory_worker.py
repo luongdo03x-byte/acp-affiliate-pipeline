@@ -399,7 +399,7 @@ class WorkerAgent:
                 if flow_name == "instagram":
                     result = self.instagram_flow.observe_checkpoint()
                 elif flow_name == "threads":
-                    result = self.threads_flow.observe_checkpoint()
+                    result = self.threads_flow.observe_checkpoint(_safe_profile(command.payload))
                 else:
                     raise ValueError("unsupported checkpoint flow")
                 return self._flow_response(flow_name, result)
