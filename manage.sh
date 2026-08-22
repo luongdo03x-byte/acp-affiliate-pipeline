@@ -562,16 +562,14 @@ install_release() {
 
 migrate_release() {
     local new="$1"
-    local parent
-    parent="$(dirname "$new")"
     load_env_from "$new"
     (
-        cd "$parent"
-        ACP_ADAPTER=mock ACP_SOURCE=mock "$new/.venv/bin/python" - <<'PY'
-from acp.core.db import init_db
+        cd "$new"
+        ACP_ADAPTER=mock ACP_SOURCE=mock "$new/.venv/bin/python" - <<'PYINNER'
+from core.db import init_db
 init_db()
 print("SCHEMA_OK")
-PY
+PYINNER
     )
 }
 
