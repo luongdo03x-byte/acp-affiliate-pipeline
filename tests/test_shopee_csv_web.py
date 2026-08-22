@@ -151,10 +151,14 @@ class ShopeeCsvWebTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row["affiliate_url"], "https://s.shopee.vn/abc")
             self.assertEqual(row["current_price"], 100_000)
+            queued = conn.execute(
+                "SELECT job_type FROM job_queue ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(queued["job_type"], "SHOPEE_ENRICH_PRODUCT")
         finally:
             conn.close()
         self.assertEqual(self._count("post"), 0)
-        self.assertEqual(self._count("job_queue"), 0)
+        self.assertEqual(self._count("job_queue"), 1)
 
     def test_confirm_requires_csrf(self):
         preview = self._preview()
