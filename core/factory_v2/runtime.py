@@ -13,6 +13,7 @@ import threading
 
 from core.db import now, transaction, ulid
 
+from .account_credentials import CredentialDecryptError
 from .models import AccountStage, RunnerType
 from .runner_gateway import RunnerGateway
 
@@ -580,7 +581,25 @@ class FactoryControllerRuntime:
 
         current = self.repo.get_account(account["id"])
         self._ensure_activation_checkpoint(job, current)
-        opened = self._command(job, "OPEN_URL", {"url": started["authorization_url"]})
+        try:
+            opened = self._command(
+                job,
+                "OPEN_URL",
+                {"url": started["authorization_url"]},
+            )
+        except CredentialDecryptError:
+            current = self.repo.get_account(account["id"]) or account
+            self._transition_remote_terminal(
+                job,
+                current,
+                stage=AccountStage.RETRY_PENDING,
+                error_code="CREDENTIAL_DECRYPT_FAILED",
+                message=(
+                    "Stored account credential cannot be decrypted "
+                    "with the active master key"
+                ),
+            )
+            return
         if _pending(opened):
             return
         self.repo.conn.execute(

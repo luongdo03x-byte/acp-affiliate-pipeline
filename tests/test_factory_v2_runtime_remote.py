@@ -12,6 +12,7 @@ _ALLOWED = {
     "IG_CREATED": {"THREADS_READY_FOR_HUMAN", "RETRY_PENDING", "ERROR", "DISABLED"},
     "THREADS_READY_FOR_HUMAN": {"WAITING_HUMAN", "THREADS_CREATED", "NEEDS_VERIFICATION", "ERROR"},
     "THREADS_CREATED": {"ACP_CONNECTING", "RETRY_PENDING", "ERROR", "DISABLED"},
+    "ACP_CONNECTING": {"RETRY_PENDING", "ERROR"},
 }
 
 
@@ -440,6 +441,45 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertEqual("WAITING_HUMAN", acc["stage"])
         self.assertEqual([], service.transitions)
         self.assertEqual(["job-1"], runtime.waiting)
+
+    def test_start_activation_credential_decrypt_failure_releases_without_retry_loop(self):
+        from core.factory_v2.account_credentials import CredentialDecryptError
+
+        class CredentialFailureGateway(FakeGateway):
+            def send(self, job, action, payload=None):
+                self.commands.append((action, payload or {}))
+                raise CredentialDecryptError("CREDENTIAL_DECRYPT_FAILED")
+
+        class Activation:
+            def start(inner_self, account_id):
+                acc["stage"] = "ACP_CONNECTING"
+                return {"authorization_url": "https://example.test/oauth"}
+
+        acc = account("THREADS_CREATED")
+        acc["last_safe_stage"] = "THREADS_CREATED"
+        repo = FakeRepo(acc)
+        service = FakeService(repo)
+        gateway = CredentialFailureGateway([])
+        runtime = TestRuntime(repo, service, gateway)
+        runtime.activation_service = Activation()
+
+        FactoryControllerRuntime._start_activation(
+            runtime,
+            job("START_ACP"),
+            acc,
+        )
+
+        self.assertEqual("RETRY_PENDING", acc["stage"])
+        self.assertEqual("THREADS_CREATED", acc["last_safe_stage"])
+        self.assertEqual(
+            "CREDENTIAL_DECRYPT_FAILED",
+            service.transitions[-1][2],
+        )
+        self.assertEqual([("job-1", "FAILED")], runtime.released)
+        self.assertEqual(
+            ["OPEN_URL"],
+            [action for action, _ in gateway.commands],
+        )
 
 
 if __name__ == "__main__":

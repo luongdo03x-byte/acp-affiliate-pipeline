@@ -17,6 +17,7 @@ from .state_machine import require_transition, safe_stage_after_transition
 _ALLOWED_ERROR_CODES = frozenset({
     "ACCOUNT_DISABLED",
     "ACCOUNT_MISMATCH",
+    "CREDENTIAL_DECRYPT_FAILED",
     "ACTION_BLOCKED",
     "ADB_DISCONNECTED",
     "AVD_BOOT_FAILED",
