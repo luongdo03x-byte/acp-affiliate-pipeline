@@ -1,8 +1,8 @@
 """Reviewer-style Threads captions for Shopee Affiliate products.
 
 This module is deliberately narrow: it turns Product facts already owned by ACP
-into a short conversational draft.  It does not publish, schedule, create links,
-or invent first-hand product experience.  The caller owns disclosure fitting and
+into a short conversational draft. It does not publish, schedule, create links,
+or invent first-hand product experience. The caller owns disclosure fitting and
 existing content validation.
 """
 from __future__ import annotations
@@ -35,15 +35,20 @@ _FABRICATED_EXPERIENCE = (
 )
 
 _FEATURES = (
+    "chống nắng toàn thân",
     "lưng nhún chun",
+    "nhún eo chun",
+    "chân váy lụa",
+    "chân váy ngắn",
+    "đũi vân mây",
+    "dáng đuôi tôm",
     "hở lưng",
     "form rộng",
+    "ống rộng",
+    "ống suông",
     "cạp chun",
-    "chân váy lụa",
-    "lụa",
+    "thun tăm",
     "ren bèo",
-    "ren",
-    "dáng suông",
     "cổ vuông",
     "tay bồng",
     "sạc nhanh",
@@ -51,6 +56,22 @@ _FEATURES = (
     "chống nắng",
     "chống thấm",
     "gấp gọn",
+    "chấm bi",
+    "2 dây",
+    "dáng suông",
+    "dáng dài",
+    "lụa",
+    "ren",
+    "pijama",
+)
+
+_USE_CASES = (
+    "mặc nhà",
+    "đi biển",
+    "du lịch",
+    "dạo phố",
+    "đi tiệc",
+    "hẹn hò",
 )
 
 _PRODUCT_KINDS = (
@@ -65,6 +86,10 @@ _PRODUCT_KINDS = (
     "đầm maxi",
     "đầm",
     "váy",
+    "set đồ",
+    "set bộ",
+    "bộ ngủ",
+    "pijama",
     "túi xách",
     "túi",
     "giày",
@@ -88,6 +113,7 @@ class ReviewerSignals:
     angle: str
     kind: str
     feature: str
+    use_case: str
     size_range: str
     price_full: str
     price_short: str
@@ -157,13 +183,27 @@ def _extract_kind(title: str) -> str:
     return "món này"
 
 
-def _extract_feature(title: str) -> str:
+def _distinct_hits(title: str, phrases) -> list[str]:
     folded = _fold(title)
-    hits = [feature for feature in _FEATURES if _fold(feature) in folded]
-    if not hits:
-        return ""
-    # Prefer a compact pair when both facts are literally present in the title.
-    return " + ".join(hits[:2])
+    selected = []
+    for phrase in phrases:
+        folded_phrase = _fold(phrase)
+        if folded_phrase not in folded:
+            continue
+        if any(folded_phrase in _fold(existing) for existing in selected):
+            continue
+        selected.append(phrase)
+    return selected
+
+
+def _extract_feature(title: str) -> str:
+    hits = _distinct_hits(title, _FEATURES)
+    return " + ".join(hits[:2]) if hits else ""
+
+
+def _extract_use_case(title: str) -> str:
+    hits = _distinct_hits(title, _USE_CASES)
+    return " / ".join(hits[:2]) if hits else ""
 
 
 def extract_signals(product) -> ReviewerSignals:
@@ -171,12 +211,13 @@ def extract_signals(product) -> ReviewerSignals:
     size_range = _extract_size_range(title)
     kind = _extract_kind(title)
     feature = _extract_feature(title)
+    use_case = _extract_use_case(title)
     sold_label = _fmt_sold(_row_get(product, "sold_count", 0))
-    if size_range and ("bigsize" in _fold(title) or "big size" in _fold(title) or size_range):
+    if size_range:
         angle = "AUDIENCE"
     elif sold_label and int(_row_get(product, "sold_count", 0) or 0) >= 1000:
         angle = "SOCIAL_PROOF"
-    elif feature:
+    elif feature or use_case:
         angle = "FEATURE"
     else:
         angle = "PRICE"
@@ -184,6 +225,7 @@ def extract_signals(product) -> ReviewerSignals:
         angle=angle,
         kind=kind,
         feature=feature,
+        use_case=use_case,
         size_range=size_range,
         price_full=_fmt_vnd(_row_get(product, "current_price", 0)),
         price_short=_fmt_price_short(_row_get(product, "current_price", 0)),
@@ -209,12 +251,13 @@ def _hook_candidates(signals: ReviewerSignals) -> list[str]:
             f"Giá {signals.price_short}, lượt mua {signals.sold_label}: khá đáng chú ý.",
         ]
     if signals.angle == "FEATURE":
+        detail = signals.feature or signals.use_case
         return [
-            f"{signals.feature.capitalize()} mới là điểm mình để ý ở mẫu này.",
-            f"Mình dừng lại vì đúng chi tiết {signals.feature}.",
-            f"Ai thích kiểu {signals.feature} chắc sẽ muốn xem mẫu này.",
-            f"Mẫu này lọt mắt mình vì phần {signals.feature}.",
-            f"Điểm đáng nhìn nhất ở mẫu này là {signals.feature}.",
+            f"{detail.capitalize()} mới là điểm mình để ý ở mẫu này.",
+            f"Mình dừng lại vì đúng chi tiết {detail}.",
+            f"Ai thích kiểu {detail} chắc sẽ muốn xem mẫu này.",
+            f"Mẫu này lọt mắt mình vì phần {detail}.",
+            f"Điểm đáng nhìn nhất ở mẫu này là {detail}.",
         ]
     return [
         f"Mức {signals.price_short} là lý do mình dừng ở món này.",
@@ -232,7 +275,13 @@ def _score_hook(hook: str, signals: ReviewerSignals) -> float:
         score -= 0.15 * (words - HOOK_WORD_TARGET)
     if words < 5:
         score -= 0.1
-    primary = signals.size_range or signals.sold_label or signals.feature or signals.price_short
+    primary = (
+        signals.size_range
+        or signals.sold_label
+        or signals.feature
+        or signals.use_case
+        or signals.price_short
+    )
     if primary and _fold(primary) in _fold(hook):
         score += 0.2
     if hook.lower().startswith(("sản phẩm này", "đây là")):
@@ -248,6 +297,8 @@ def select_hook(signals: ReviewerSignals) -> str:
 def _detail_line(signals: ReviewerSignals) -> str:
     if signals.feature:
         return f"Mình để ý nhất phần {signals.feature}."
+    if signals.use_case:
+        return f"Listing ghi kiểu này để {signals.use_case}."
     if signals.size_range:
         return f"Range size ghi trên listing là {signals.size_range}."
     return "Mình chỉ note lại đúng thông tin nổi bật trên listing."
@@ -255,7 +306,6 @@ def _detail_line(signals: ReviewerSignals) -> str:
 
 def _support_line(signals: ReviewerSignals) -> str:
     if signals.angle == "SOCIAL_PROOF":
-        # Price + sold are already in the hook; avoid repeating the same data.
         return ""
     bits = [signals.price_full]
     if signals.sold_label:
