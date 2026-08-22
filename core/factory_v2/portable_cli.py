@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import socket
 import sqlite3
@@ -22,6 +23,7 @@ from .portable_state import (
     require_active_ownership,
     restore_bundle,
     snapshot_sqlite,
+    validate_bundle,
     write_machine_state,
 )
 
@@ -39,6 +41,24 @@ def _generation_assets(assets: list[dict]) -> list[int]:
         if generation is not None:
             generations.append(generation)
     return generations
+
+
+def _persist_import_git_metadata(machine_path: Path, manifest: dict) -> None:
+    try:
+        raw = json.loads(Path(machine_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("INVALID_MACHINE_STATE") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("INVALID_MACHINE_STATE")
+    raw["source_git_commit"] = str(manifest.get("source_git_commit") or "")
+    raw["source_branch"] = str(manifest.get("source_branch") or "")
+    temp = Path(machine_path).with_name(Path(machine_path).name + ".metadata.tmp")
+    temp.write_text(
+        json.dumps(raw, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp.chmod(0o600)
+    temp.replace(machine_path)
 
 
 def handoff_out(
@@ -126,6 +146,7 @@ def handoff_in(
 
     with tempfile.TemporaryDirectory(prefix="acp-portable-in-") as tmp_name:
         archive = transport.download_generation(remote_generation, Path(tmp_name))
+        manifest = validate_bundle(archive, expected_generation=remote_generation)
         restore_bundle(
             archive,
             base=base,
@@ -136,6 +157,7 @@ def handoff_in(
         machine_path,
         MachineState(str(machine_id), remote_generation, "ACTIVE"),
     )
+    _persist_import_git_metadata(machine_path, manifest)
     stream.write(f"IMPORT_OK generation={remote_generation}\n")
     return remote_generation
 
