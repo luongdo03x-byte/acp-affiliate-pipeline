@@ -23,10 +23,12 @@ class PortableDocsCiTests(unittest.TestCase):
             "tests.test_factory_v2_portable_doctor_readiness",
             "tests.test_factory_v2_portable_resume",
             "tests.test_factory_v2_portable_cli",
+            "tests.test_factory_v2_portable_cli_commands",
             "tests.test_factory_v2_manage_portable",
             "tests.test_factory_v2_portable_setup",
             "tests.test_factory_v2_portable_setup_prereq",
             "tests.test_factory_v2_portable_setup_rollback",
+            "tests.test_factory_v2_portable_docs_ci",
         ):
             self.assertIn(module, self.workflow)
 
