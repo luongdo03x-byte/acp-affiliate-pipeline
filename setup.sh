@@ -29,6 +29,24 @@ fi
 
 ACP_BASE="$BASE" "$REPO_ROOT/manage.sh" setup
 
+# A portable receiving machine needs the configured factory AVD before the
+# doctor can prove it is bootable.  Do not create images, accept licenses, or
+# change host security settings implicitly; stop with a stable prerequisite.
+(
+    cd "$REPO_ROOT"
+    "$PYTHON" -c '
+from core.factory_v2.avd import AvdManager
+import sys
+try:
+    avds = set(AvdManager().list_avds())
+except Exception:
+    avds = set()
+if "acp-worker-01" not in avds:
+    print("ANDROID_AVD_PREREQUISITE: acp-worker-01 missing", file=sys.stderr)
+    raise SystemExit(18)
+' setup-avd-prereq
+)
+
 # Doctor owns the Android/AVD/callback readiness probes and fails closed with a
 # stable code.  Do not auto-accept Android licenses or change host security.
 (
