@@ -156,6 +156,37 @@ class PortableReleaseTests(unittest.TestCase):
 
         transport.verify_remote_asset(archive)
 
+    def test_prune_keep_latest_deletes_only_oldest_generation_assets(self):
+        view = ("gh", "release", "view", "acp-portable-state", "--repo", "o/r", "--json", "assets")
+        payload = json.dumps({
+            "assets": [
+                *[
+                    {"name": f"acp-state-g{generation:06d}.tar.gz", "size": generation}
+                    for generation in range(1, 8)
+                ],
+                {"name": "notes.txt", "size": 1},
+                {"name": "acp-state-g7.tar.gz", "size": 1},
+            ]
+        })
+        delete1 = (
+            "gh", "release", "delete-asset", "acp-portable-state",
+            "acp-state-g000001.tar.gz", "--repo", "o/r", "--yes",
+        )
+        delete2 = (
+            "gh", "release", "delete-asset", "acp-portable-state",
+            "acp-state-g000002.tar.gz", "--repo", "o/r", "--yes",
+        )
+        runner, calls = self._runner({
+            view: self.CommandResult(0, payload, ""),
+            delete1: self.CommandResult(0, "", ""),
+            delete2: self.CommandResult(0, "", ""),
+        })
+        transport = self.GitHubReleaseTransport("o/r", runner=runner)
+
+        transport.prune_keep_latest(keep=5)
+
+        self.assertEqual([view, delete1, delete2], calls)
+
 
 if __name__ == "__main__":
     unittest.main()
