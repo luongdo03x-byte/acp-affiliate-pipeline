@@ -91,6 +91,7 @@ jobs:
             tests.test_factory_v2_avd_worker_agent \
             tests.test_factory_v2_portable_state \
             tests.test_factory_v2_portable_release \
+            tests.test_factory_v2_portable_crypto \
             tests.test_factory_v2_portable_doctor \
             tests.test_factory_v2_portable_doctor_readiness \
             tests.test_factory_v2_portable_resume \
