@@ -1,6 +1,6 @@
 """Reviewer-style Threads captions for Shopee Affiliate products.
 
-Turns product facts already owned by ACP into short conversational copy.  It
+Turns product facts already owned by ACP into short conversational copy. It
 never schedules/publishes and never invents first-hand product experience.
 """
 from __future__ import annotations
@@ -162,36 +162,29 @@ def extract_signals(product) -> ReviewerSignals:
 
 
 def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
-    """Nine safe reviewer hooks matching the existing H1..H9 analytics codes.
-
-    Old meanings are preserved loosely (price/question/social/discovery/direct)
-    but unsafe scarcity/price-change claims are intentionally replaced by pure
-    attention/discovery wording.
-    """
+    """Safe reviewer hooks aligned with existing H1..H9 analytics codes."""
     if signals.angle == "AUDIENCE":
-        s = signals.size_range
-        k = signals.kind
+        s, k, price = signals.size_range, signals.kind, signals.price_short
         return {
-            "H1_GIAGIAM": f"{signals.price_short}, mà range tới {s} — mình note lại.",
+            "H1_GIAGIAM": f"{price}, mà range tới {s} — mình note lại.",
             "H2_SOSANH": f"Không cần title dài, range {s} đã đủ đáng chú ý.",
             "H3_KHANHIEM": f"Khoan lướt, mẫu {k} này ghi range tới {s}.",
             "H4_CAUHOI": f"Ai {s} đang tìm {k} kiểu này không?",
             "H5_XAHOI": f"Range {s} là điểm mình chú ý nhất ở mẫu này.",
             "H6_HANGMOI": f"Lướt thấy {k} có range {s}, mình dừng lại.",
-            "H7_TIETKIEM": f"{signals.price_short} cho range {s}, mình để lại để xem kỹ.",
+            "H7_TIETKIEM": f"{price} cho range {s}, mình để lại để xem kỹ.",
             "H8_CANHBAO": f"Đừng bỏ qua nếu bạn đang cần range {s}.",
             "H9_TRUCTIEP": f"Mẫu {k} này ghi size tới {s}.",
         }
 
     if signals.angle == "SOCIAL_PROOF":
-        sold = signals.sold_label
-        price = signals.price_short
+        sold, price = signals.sold_label, signals.price_short
         return {
             "H1_GIAGIAM": f"{price} mà {sold} lượt mua, mình dừng lại xem.",
             "H2_SOSANH": f"Giá {price}, lượt mua {sold}: con số khá đáng chú ý.",
             "H3_KHANHIEM": f"Khoan lướt, con số {sold} lượt mua khá đáng nhìn.",
             "H4_CAUHOI": f"{sold} lượt mua ở mức {price}, có đáng xem không?",
-            "H5_XAHOI": f"{sold} lượt mua — con số mình chú ý nhất ở mẫu này.",
+            "H5_XAHOI": f"{sold} lượt mua ở mức {price} — mình chú ý nhất chỗ này.",
             "H6_HANGMOI": f"Lướt tới {sold} lượt mua là mình dừng lại.",
             "H7_TIETKIEM": f"Mức {price} đi cùng {sold} lượt mua, mình note lại.",
             "H8_CANHBAO": f"Đừng lướt qua con số {sold} lượt mua này.",
@@ -199,15 +192,15 @@ def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
         }
 
     if signals.angle == "FEATURE":
-        detail = signals.feature or signals.use_case
+        detail, price = signals.feature or signals.use_case, signals.price_short
         return {
-            "H1_GIAGIAM": f"{signals.price_short} mà có detail {detail}, mình note lại.",
+            "H1_GIAGIAM": f"{price} mà có detail {detail}, mình note lại.",
             "H2_SOSANH": f"Không cần title dài, {detail} đã đủ nổi bật.",
             "H3_KHANHIEM": f"Khoan lướt, detail {detail} là điểm đáng nhìn.",
             "H4_CAUHOI": f"Ai thích kiểu {detail} không?",
             "H5_XAHOI": f"{detail.capitalize()} là detail mình muốn note lại ở mẫu này.",
             "H6_HANGMOI": f"Lướt thấy {detail}, mình dừng lại xem.",
-            "H7_TIETKIEM": f"Mức {signals.price_short} với detail {detail}, mình để lại đây.",
+            "H7_TIETKIEM": f"Mức {price} với detail {detail}, mình để lại đây.",
             "H8_CANHBAO": f"Đừng bỏ qua nếu bạn đang tìm kiểu {detail}.",
             "H9_TRUCTIEP": f"Điểm chính trên listing: {detail}.",
         }
@@ -244,8 +237,6 @@ def select_hook(signals: ReviewerSignals, hook_code: str = None) -> str:
     requested = hooks.get(str(hook_code or ""))
     if requested and len(requested.split()) <= HOOK_WORD_TARGET:
         return requested
-    # Unknown/overlong variant: choose the strongest safe hook without losing
-    # the primary product signal.
     return max(hooks.values(), key=lambda hook: _score_hook(hook, signals))
 
 
@@ -261,7 +252,6 @@ def _detail_line(signals: ReviewerSignals) -> str:
 
 def _support_line(signals: ReviewerSignals) -> str:
     if signals.angle == "SOCIAL_PROOF":
-        # The hook already carries price/sold; avoid a second numerical sentence.
         return ""
     bits = [signals.price_full]
     if signals.sold_label:
