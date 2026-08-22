@@ -348,6 +348,53 @@ cmd_factory_stop() {
     info "FACTORY_STOPPED"
 }
 
+github_repo_slug() {
+    local remote="$1"
+    remote="${remote%.git}"
+    case "$remote" in
+        git@github.com:*) printf '%s' "${remote#git@github.com:}" ;;
+        https://github.com/*) printf '%s' "${remote#https://github.com/}" ;;
+        ssh://git@github.com/*) printf '%s' "${remote#ssh://git@github.com/}" ;;
+        *) return 1 ;;
+    esac
+}
+
+require_factory_quiescent() {
+    if pgrep -af 'account_factory_server.py' >/dev/null 2>&1; then
+        die "FACTORY_NOT_QUIESCENT"
+    fi
+    if pgrep -af 'account_factory_worker.py' >/dev/null 2>&1; then
+        die "FACTORY_NOT_QUIESCENT"
+    fi
+}
+
+cmd_handoff_out() {
+    local release remote repo git_commit git_branch
+    release="$(current_release)"
+    [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
+
+    require_factory_ownership "$release"
+    cmd_factory_stop
+    cmd_stop
+    require_factory_quiescent
+
+    "$release/.venv/bin/python" -m core.factory_v2.portable_cli resume \
+        --base "$BASE"
+
+    remote="$(git -C "$release" remote get-url origin 2>/dev/null || true)"
+    repo="$(github_repo_slug "$remote" 2>/dev/null || true)"
+    [[ -n "$repo" ]] || die "GITHUB_REPO_UNAVAILABLE"
+    git_commit="$(git -C "$release" rev-parse HEAD 2>/dev/null || true)"
+    git_branch="$(git -C "$release" branch --show-current 2>/dev/null || true)"
+    [[ -n "$git_commit" && -n "$git_branch" ]] || die "GIT_METADATA_UNAVAILABLE"
+
+    "$release/.venv/bin/python" -m core.factory_v2.portable_cli handoff-out \
+        --base "$BASE" \
+        --repo "$repo" \
+        --git-commit "$git_commit" \
+        --git-branch "$git_branch"
+}
+
 cmd_status() {
     local release version
     release="$(current_release)"
@@ -581,6 +628,7 @@ case "${1:-}" in
     restart) cmd_restart ;;
     factory-start) cmd_factory_start ;;
     factory-stop) cmd_factory_stop ;;
+    handoff-out) cmd_handoff_out ;;
     status) cmd_status ;;
     test) cmd_test ;;
     upgrade) shift; cmd_upgrade "$@" ;;
