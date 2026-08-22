@@ -187,6 +187,17 @@ class PortableReleaseTests(unittest.TestCase):
 
         self.assertEqual([view, delete1, delete2], calls)
 
+    def test_custom_release_tag_is_used_for_all_release_commands(self):
+        tag = "acp-portable-dry-run-123"
+        view = ("gh", "release", "view", tag, "--repo", "o/r", "--json", "assets")
+        payload = json.dumps({"assets": []})
+        runner, calls = self._runner({view: self.CommandResult(0, payload, "")})
+
+        transport = self.GitHubReleaseTransport("o/r", runner=runner, release_tag=tag)
+        self.assertEqual([], transport.list_assets())
+
+        self.assertEqual([view], calls)
+
 
 if __name__ == "__main__":
     unittest.main()
