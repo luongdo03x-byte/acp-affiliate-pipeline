@@ -47,7 +47,11 @@ class ShopeeImmediateEnrichmentEdgeTests(unittest.TestCase):
                WHERE product_id=?""",
             (product_id,),
         )
-        self.assertEqual(reset_for_retry(self.conn, product_id), "PENDING")
+        with mock.patch(
+            "acp.core.shopee_image_enrichment.now",
+            return_value="2099-01-01T00:00:00+00:00",
+        ):
+            self.assertEqual(reset_for_retry(self.conn, product_id), "PENDING")
 
         second = queue_pending_products(self.conn, [product_id])
 
