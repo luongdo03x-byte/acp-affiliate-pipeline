@@ -47,8 +47,12 @@ class GitHubReleaseTransport:
         repo: str,
         *,
         runner: Callable[[Sequence[str]], CommandResult] | None = None,
+        release_tag: str = _RELEASE_TAG,
     ) -> None:
         self.repo = str(repo)
+        self.release_tag = str(release_tag or "").strip()
+        if not self.release_tag:
+            raise ValueError("release_tag is required")
         self.runner = runner or _default_runner
 
     def _run(self, argv: Sequence[str]) -> CommandResult:
@@ -63,7 +67,7 @@ class GitHubReleaseTransport:
                 "gh",
                 "release",
                 "view",
-                _RELEASE_TAG,
+                self.release_tag,
                 "--repo",
                 self.repo,
                 "--json",
@@ -107,7 +111,7 @@ class GitHubReleaseTransport:
                 "gh",
                 "release",
                 "create",
-                _RELEASE_TAG,
+                self.release_tag,
                 "--repo",
                 self.repo,
                 "--title",
@@ -130,7 +134,7 @@ class GitHubReleaseTransport:
                 "gh",
                 "release",
                 "upload",
-                _RELEASE_TAG,
+                self.release_tag,
                 str(path),
                 "--repo",
                 self.repo,
@@ -151,7 +155,7 @@ class GitHubReleaseTransport:
                 "gh",
                 "release",
                 "download",
-                _RELEASE_TAG,
+                self.release_tag,
                 "--pattern",
                 name,
                 "--dir",
@@ -206,7 +210,7 @@ class GitHubReleaseTransport:
                     "gh",
                     "release",
                     "delete-asset",
-                    _RELEASE_TAG,
+                    self.release_tag,
                     name,
                     "--repo",
                     self.repo,
