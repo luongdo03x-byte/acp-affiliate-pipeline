@@ -13,6 +13,8 @@ if __name__ == "acp.core":
     from . import shopee_import_runtime as _shopee_import_runtime  # noqa: E402
     from . import shopee_enrichment_jobs as _shopee_enrichment_jobs  # noqa: F401,E402
     from . import shopee_auto_runtime as _shopee_auto_runtime  # noqa: E402
+    from . import reviewer_caption_runtime as _reviewer_caption_runtime  # noqa: E402
 
     _shopee_import_runtime.install()
     _shopee_auto_runtime.install()
+    _reviewer_caption_runtime.install()
