@@ -25,6 +25,7 @@ on:
       - "tests/test_shopee_image_enrichment_web.py"
       - "tests/test_shopee_product_pool_v2.py"
       - "tests/test_shopee_product_pool_v2_edges.py"
+      - "tests/test_shopee_import_trigger_resilience.py"
       - ".github/workflows/shopee-auto-pipeline-ci.yml"
 
 jobs:
@@ -63,6 +64,7 @@ jobs:
               python -m unittest \
                 acp.tests.test_shopee_product_pool_v2 \
                 acp.tests.test_shopee_product_pool_v2_edges \
+                acp.tests.test_shopee_import_trigger_resilience \
                 acp.tests.test_shopee_auto_pipeline \
                 acp.tests.test_shopee_csv_web \
                 acp.tests.test_shopee_csv_enrichment \
