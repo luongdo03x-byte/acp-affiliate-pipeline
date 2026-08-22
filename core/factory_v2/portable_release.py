@@ -185,3 +185,33 @@ class GitHubReleaseTransport:
             raise RuntimeError("REMOTE_ASSET_VERIFICATION_FAILED") from None
         if remote_size != local_size:
             raise RuntimeError("REMOTE_ASSET_VERIFICATION_FAILED")
+
+    def prune_keep_latest(self, keep: int = 5) -> None:
+        keep = int(keep)
+        if keep < 1:
+            raise RuntimeError("INVALID_RELEASE_RETENTION")
+
+        generations: list[tuple[int, str]] = []
+        for asset in self.list_assets():
+            name = str(asset.get("name") or "")
+            generation = generation_from_asset(name)
+            if generation is not None:
+                generations.append((generation, name))
+
+        generations.sort(key=lambda item: item[0])
+        stale = generations[:-keep] if len(generations) > keep else []
+        for _, name in stale:
+            result = self._run(
+                [
+                    "gh",
+                    "release",
+                    "delete-asset",
+                    _RELEASE_TAG,
+                    name,
+                    "--repo",
+                    self.repo,
+                    "--yes",
+                ]
+            )
+            if result.returncode != 0:
+                raise RuntimeError("GITHUB_RELEASE_PRUNE_FAILED")
