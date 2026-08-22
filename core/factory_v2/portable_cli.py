@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -41,6 +42,23 @@ def _generation_assets(assets: list[dict]) -> list[int]:
         if generation is not None:
             generations.append(generation)
     return generations
+
+
+def _read_env_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = value
+    return values
 
 
 def _persist_import_git_metadata(machine_path: Path, manifest: dict) -> None:
@@ -183,13 +201,24 @@ def resume(
     base = Path(base)
     if now_iso is None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    restored_env = _read_env_values(base / "shared" / ".env.local")
+    previous_env = {key: os.environ.get(key) for key in restored_env}
+    missing_before = {key for key in restored_env if key not in os.environ}
     conn = sqlite3.connect(str(base / "shared" / "var" / "acp-live.db"), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
+        os.environ.update(restored_env)
         result = reconciler(conn, now_iso)
     finally:
         conn.close()
+        for key in restored_env:
+            if key in missing_before:
+                os.environ.pop(key, None)
+            else:
+                previous = previous_env[key]
+                if previous is not None:
+                    os.environ[key] = previous
     _output_stream(out).write(
         "RESUME_RECONCILED leases={} oauth={} gated={}\n".format(
             int(result.get("leases_reconciled", 0)),
