@@ -1,5 +1,7 @@
+import importlib
 import importlib.util
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,7 +25,8 @@ class PortableStateTests(unittest.TestCase):
         self.write_machine_state = write_machine_state
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.machine_file = Path(self.tmp.name) / "machine.json"
+        self.root = Path(self.tmp.name)
+        self.machine_file = self.root / "machine.json"
 
     def test_generation_parser_accepts_only_contract_name(self):
         from core.factory_v2.portable_state import generation_from_asset
@@ -89,6 +92,72 @@ class PortableStateTests(unittest.TestCase):
                 self.machine_file,
                 self.MachineState("m1", 7, "UNKNOWN"),
             )
+
+    def _sqlite_api(self):
+        module = importlib.import_module(_MODULE)
+        self.assertTrue(
+            hasattr(module, "snapshot_sqlite"),
+            "snapshot_sqlite missing",
+        )
+        self.assertTrue(
+            hasattr(module, "validate_sqlite"),
+            "validate_sqlite missing",
+        )
+        return module.snapshot_sqlite, module.validate_sqlite
+
+    def test_snapshot_sqlite_copies_committed_wal_state(self):
+        snapshot_sqlite, validate_sqlite = self._sqlite_api()
+        source = self.root / "source.db"
+        destination = self.root / "snapshot.db"
+
+        conn = sqlite3.connect(source)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO item(value) VALUES ('from-wal')")
+            conn.commit()
+
+            snapshot_sqlite(source, destination)
+        finally:
+            conn.close()
+
+        validate_sqlite(destination)
+        copied = sqlite3.connect(destination)
+        try:
+            self.assertEqual(
+                "from-wal",
+                copied.execute("SELECT value FROM item").fetchone()[0],
+            )
+        finally:
+            copied.close()
+
+    def test_validate_sqlite_rejects_corrupt_database(self):
+        _, validate_sqlite = self._sqlite_api()
+        corrupt = self.root / "corrupt.db"
+        corrupt.write_bytes(b"this is not a sqlite database")
+
+        with self.assertRaisesRegex(RuntimeError, "^SQLITE_INTEGRITY_FAILED$"):
+            validate_sqlite(corrupt)
+
+    def test_validate_sqlite_rejects_foreign_key_violation(self):
+        _, validate_sqlite = self._sqlite_api()
+        invalid = self.root / "foreign-key-invalid.db"
+        conn = sqlite3.connect(invalid)
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE child ("
+                "id INTEGER PRIMARY KEY, "
+                "parent_id INTEGER REFERENCES parent(id))"
+            )
+            conn.execute("INSERT INTO child(id, parent_id) VALUES (1, 999)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaisesRegex(RuntimeError, "^SQLITE_INTEGRITY_FAILED$"):
+            validate_sqlite(invalid)
 
 
 if __name__ == "__main__":
