@@ -15,6 +15,18 @@ from .avd import AvdManager
 from .portable_state import load_machine_state, validate_sqlite
 
 
+_REQUIRED_FACTORY_TABLES = frozenset({
+    "factory_batch",
+    "factory_worker",
+    "factory_account",
+    "factory_account_credential",
+    "factory_job",
+    "factory_checkpoint",
+    "factory_runner_command",
+    "factory_resource_sample",
+})
+
+
 @dataclass(frozen=True)
 class DoctorCheck:
     name: str
@@ -70,6 +82,17 @@ def _temporary_environment(values: Mapping[str, str]) -> Iterator[None]:
 def _database_path(base: Path, env: Mapping[str, str]) -> Path:
     configured = str(env.get("ACP_DB") or "").strip()
     return Path(configured) if configured else base / "shared" / "var" / "acp-live.db"
+
+
+def _factory_schema_ok(conn: sqlite3.Connection) -> bool:
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return False
+    tables = {str(row[0]) for row in rows}
+    return _REQUIRED_FACTORY_TABLES.issubset(tables)
 
 
 def _callback_required(conn: sqlite3.Connection) -> bool:
@@ -189,6 +212,9 @@ def run_portable_doctor(
     except (RuntimeError, sqlite3.DatabaseError, OSError):
         sqlite_ok = False
     checks.append(_check("SQLITE", sqlite_ok, "SQLITE_INTEGRITY_FAILED"))
+
+    schema_ok = bool(sqlite_ok and conn is not None and _factory_schema_ok(conn))
+    checks.append(_check("FACTORY_SCHEMA", schema_ok, "FACTORY_SCHEMA_INVALID"))
 
     credential_ok = True
     credential_code = "OK"
