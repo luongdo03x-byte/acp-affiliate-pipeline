@@ -53,7 +53,8 @@ def install() -> None:
             hook_code=hook_code,
             llm_fn=content._llm_fn,
         )
-        return content._fit(draft, disclosure)
+        effective_disclosure = disclosure or content.DISCLOSURE_DEFAULT
+        return content._fit(draft, effective_disclosure)
 
     content.generate = generate
     _INSTALLED = True
