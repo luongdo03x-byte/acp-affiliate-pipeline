@@ -49,13 +49,14 @@ This change does not:
 
 ### 4.1 Product Pool query/service boundary
 
-Create a focused core module, tentatively `core/shopee_product_pool.py`, responsible for read-only Product Pool projections.
+Create a focused core module, `core/shopee_product_pool.py`, responsible for read-only Product Pool projections.
 
 It owns:
 
 - parsing/normalizing Product Pool filters;
 - deriving usage state;
 - deriving niche matches using the existing `core.niche` matcher;
+- deriving exact current Auto eligibility across active Auto Threads channels;
 - filtering and pagination;
 - pool-wide summary counts;
 - per-niche summary counts;
@@ -71,18 +72,21 @@ No routing/eligibility rules are duplicated in the template.
 
 What is missing is an immediate executor trigger. After a successful confirmed import, the web layer will enqueue bounded enrichment work into the existing job system rather than processing all images synchronously inside the HTTP request.
 
-Preferred contract:
+Contract:
 
 - new non-publish job type: `SHOPEE_ENRICH_PRODUCT`;
 - payload contains only `product_id`;
-- import confirmation enqueues work for products whose enrichment state is `PENDING`;
-- the normal ACP worker can execute non-publish jobs even when publish is disabled;
+- `import_rows()` returns an internal `touched_product_ids` collection in addition to display counters; it is not rendered or written into audit details;
+- after the import transaction commits, the confirm route inspects those products and queues work only when their enrichment state is `PENDING`;
+- idempotency key is `shopee-enrich:{product_id}:{enrichment_job.updated_at}` using the PENDING enrichment row observed at queue time;
+- the handler processes one product using the existing `enrich_product()` primitive and normal safe HTTP/storage dependencies;
+- the normal ACP worker can execute non-publish jobs even when publishing is disabled;
 - existing `acp-worker.timer` therefore starts work on its next pass, normally within one minute;
 - the hourly/60-minute Shopee enrichment command remains a recovery/backfill path.
 
 This is considered “immediate” operationally because the trigger is created by the import event itself and no manual action/hourly wait is required. The HTTP request does not wait for network/image processing.
 
-Idempotency is enforced by the enrichment job state plus a queue idempotency key that represents the current pending enrichment generation. Re-importing a product that is already READY does not create unnecessary work; FAILED/NEEDS_HELPER remains operator-controlled unless the existing retry contract permits a reset.
+Re-importing a product that is already READY creates no enrichment execution job. Existing FAILED/NEEDS_HELPER states are not silently reset by import; operator retry/Helper remains authoritative.
 
 ### 4.3 Shopee-only Auto source
 
@@ -121,16 +125,17 @@ This state powers “Chưa dùng / Đã lên lịch / Đã đăng” counts. A s
 
 ### 5.2 Auto/health state
 
-The UI may continue to expose operational states such as:
+The Product Pool exposes these operational states:
 
-- `ELIGIBLE`
-- `WAITING_IMAGE`
-- `STALE`
-- `REVIEW`
-- `SCHEDULED`
-- `PUBLISHED`
+- `PUBLISHED` when usage state is PUBLISHED;
+- `SCHEDULED` when usage state is SCHEDULED;
+- `REVIEW` when usage state is REVIEW;
+- `WAITING_IMAGE` when UNUSED but enrichment is not READY;
+- `STALE` when UNUSED, image is READY, but the Shopee CSV snapshot is stale;
+- `ELIGIBLE` when UNUSED and at least one currently active, enabled, Auto-enabled Threads channel accepts the product through the same `_shopee_product_auto_eligibility()` rules used by the scheduler;
+- `INELIGIBLE` for remaining UNUSED products that are READY/fresh but fail all active Auto Threads channels.
 
-For `UNUSED` products, `ELIGIBLE` means the current Shopee Auto eligibility checks can admit the product for at least one active Auto Threads channel matching its niche. If evaluating against all active channels would be too expensive for a pool-wide request, the first implementation may use the existing product-level readiness projection for the card and keep channel-specific eligibility authoritative in the scheduler. Tests must document whichever contract is chosen; the UI must not claim a product is eligible when it clearly fails image/freshness/link/provider requirements.
+`Auto Eligible` summary is therefore exact for the current channel configuration, not an approximation. The service evaluates eligible UNUSED products against active Auto Threads channels using the existing scheduler eligibility function; it does not duplicate its business rules.
 
 ## 6. Niche classification
 
@@ -145,8 +150,7 @@ Each niche summary exposes:
 - total matching products;
 - unused;
 - scheduled;
-- published;
-- optionally eligible if it can be computed without duplicating scheduler logic.
+- published.
 
 Example:
 
@@ -167,7 +171,7 @@ Supported parameters:
 
 - `q`: product/shop search text;
 - `niche`: niche code or empty/all;
-- `auto`: operational Auto state or all;
+- `auto`: all/eligible/waiting_image/stale/ineligible/review/scheduled/published;
 - `image`: all/ready/missing/needs_helper/failed/pending;
 - `usage`: all/unused/scheduled/review/published;
 - `page`: 1-based page;
@@ -187,11 +191,11 @@ Pagination metadata includes:
 - has previous/next;
 - URLs preserve all current filters.
 
-When filters reduce the result set below the requested page, clamp to the final valid page.
+When filters reduce the result set below the requested page, clamp to the final valid page. With zero results, page is 1 and total pages is 1 so template logic remains simple.
 
 ### 7.3 Global summary
 
-Display pool-wide counts independent of the current table page:
+Display pool-wide counts independent of the current table page and current filters:
 
 - Tổng sản phẩm
 - Chưa dùng
@@ -230,11 +234,12 @@ Add enough context to distinguish `UNUSED`, `SCHEDULED`, and `PUBLISHED` without
 3. Operator confirms.
 4. Product rows are inserted/updated in one transaction.
 5. `enqueue_product()` leaves image jobs READY or PENDING idempotently.
-6. After the transaction succeeds, queue `SHOPEE_ENRICH_PRODUCT` work for current PENDING products from that confirmed batch.
-7. The ACP worker processes enrichment jobs without blocking the import response.
-8. READY products become visible as eligible candidates to Auto on the next scheduler pass.
+6. `import_rows()` returns display counters plus internal touched product IDs.
+7. After the transaction succeeds, the web route queues `SHOPEE_ENRICH_PRODUCT` for touched products whose enrichment state is currently PENDING.
+8. The ACP worker processes enrichment jobs without blocking the import response.
+9. READY products become visible as eligible candidates to Auto on the next scheduler pass.
 
-If the immediate queue trigger fails after the Product transaction has committed, the import is still successful; the existing recovery/backfill timer can rediscover PENDING products. The UI should report the import as imported and, when possible, note that enrichment recovery remains pending.
+If the immediate queue trigger fails after the Product transaction has committed, the import is still successful; the existing recovery/backfill timer can rediscover PENDING products. The UI reports the import as imported and may report that enrichment recovery remains pending.
 
 ### 8.2 Auto schedule
 
@@ -259,9 +264,11 @@ If the immediate queue trigger fails after the Product transaction has committed
 
 Current pool size is small, so correctness and shared niche semantics are prioritized over premature schema changes.
 
-The first implementation may scan Shopee Product rows in application code to apply the existing Python niche matcher, then paginate the matched projection. Search and simple DB-level constraints should be applied as early as practical.
+The first implementation scans Shopee Product rows in application code to apply the existing Python niche matcher and derive usage/Auto state, then paginates the matched projection. Search text and simple image constraints may be applied in SQL before projection when doing so does not change semantics.
 
-No niche-materialization table is introduced in this phase. If the pool later grows enough for request latency to become material, niche matches can be cached/materialized behind the same `shopee_product_pool` service API without changing routes/templates.
+Exact Auto eligibility is evaluated only for UNUSED products and stops at the first active Auto Threads channel that accepts the product.
+
+No niche-materialization table is introduced in this phase. If the pool later grows enough for request latency to become material, niche matches/state projections can be cached/materialized behind the same `shopee_product_pool` service API without changing routes/templates.
 
 ## 11. Testing strategy
 
@@ -277,9 +284,10 @@ Required tests:
 
 ### Import-triggered enrichment
 
-- successful confirm/import creates enrichment execution work for PENDING imported products;
+- successful confirm/import creates enrichment execution work for PENDING touched products;
 - READY products are not needlessly re-enriched;
-- repeated imports do not create duplicate concurrent enrichment work;
+- repeated imports with the same PENDING enrichment generation do not create duplicate concurrent work;
+- a new PENDING generation can be queued after the previous generation changes;
 - a queue-trigger failure does not corrupt/rollback a successful Product import;
 - worker handler changes PENDING product toward READY/NEEDS_HELPER/FAILED using existing enrichment primitives;
 - publish-disabled mode still permits non-publish enrichment jobs.
@@ -295,8 +303,9 @@ Required tests:
 - niche filter uses the same matcher as scheduler;
 - usage-state precedence produces stable mutually exclusive counts;
 - published products remain counted as published even when CSV becomes stale;
+- Auto Eligible is exact against at least one active Auto Threads channel;
 - per-niche totals may overlap but each niche's usage breakdown is internally consistent;
-- global summaries are independent of current page.
+- global summaries are independent of current page and filters.
 
 ### Regression
 
@@ -308,12 +317,12 @@ Likely files:
 
 - `core/shopee_product_pool.py` — new read/query projection service;
 - `core/shopee_auto_runtime.py` — Shopee-only candidate boundary;
-- `core/shopee_csv_import.py` — expose/return imported product IDs if needed for event trigger without weakening transactional behavior;
+- `core/shopee_csv_import.py` — return touched product IDs without weakening transactional behavior;
 - `core/shopee_image_enrichment.py` — reuse existing primitives; minimal changes only if needed for worker-safe execution;
 - `core/jobs.py` or a focused Shopee job-handler module — enrichment job registration/execution;
 - `web/shopee_csv_import.py` — queue immediate enrichment work after successful confirm;
 - `web/shopee_image_enrichment.py` — delegate filtering/pagination/stats to Product Pool service;
-- `web/shopee_auto_state.py` — adjust projection responsibilities if needed, preserving compatibility;
+- `web/shopee_auto_state.py` — reduce/adjust projection responsibilities if needed, preserving compatibility;
 - `web/templates/shopee_image_enrichment.html` — filters, pagination, niche statistics, usage state;
 - focused tests for all three changes.
 
@@ -326,7 +335,8 @@ The feature is complete when all of the following are true:
 1. Importing and confirming a valid Shopee Affiliate CSV automatically creates image-enrichment execution work without a manual “Enrich” click or waiting for the hourly timer.
 2. `/sanpham/shopee` supports search, niche/Auto/image/usage filters and 20/50/100 pagination.
 3. The Product Pool shows global usage/health totals and per-niche total/unused/scheduled/published statistics.
-4. Auto scheduler candidates are exclusively Shopee Affiliate products.
-5. Legacy catalog/manual workflows remain functional.
-6. Existing duplicate/quota/slot/preflight/live worker safeguards remain active.
-7. Focused and regression tests pass without generating another live Threads post.
+4. `Auto Eligible` reflects at least one real active Auto Threads channel accepting the product through existing Shopee eligibility logic.
+5. Auto scheduler candidates are exclusively Shopee Affiliate products.
+6. Legacy catalog/manual workflows remain functional.
+7. Existing duplicate/quota/slot/preflight/live worker safeguards remain active.
+8. Focused and regression tests pass without generating another live Threads post.
