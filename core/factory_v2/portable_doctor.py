@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 from typing import Callable, Iterator, Mapping
 
 from .account_credentials import CredentialDecryptError, get_account_password
@@ -39,6 +41,14 @@ def _read_env(path: Path) -> dict[str, str]:
         if key:
             values[key] = value
     return values
+
+
+def _read_machine_metadata(path: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 @contextmanager
@@ -80,6 +90,54 @@ def _callback_required(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _oauth_config_required(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM factory_batch WHERE completion_mode='ACP_ACTIVE' LIMIT 1"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return False
+    return row is not None
+
+
+def _git_state_ok(repo_root: Path, machine_metadata: Mapping[str, object]) -> bool:
+    expected_commit = str(machine_metadata.get("source_git_commit") or "").strip()
+    expected_branch = str(machine_metadata.get("source_branch") or "").strip()
+    if not expected_commit or not expected_branch:
+        return False
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        branch = subprocess.run(
+            ["git", "-C", str(repo_root), "branch", "--show-current"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    if commit.returncode != 0 or branch.returncode != 0:
+        return False
+    return commit.stdout.strip() == expected_commit and branch.stdout.strip() == expected_branch
+
+
+def _github_auth_ok() -> bool:
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status", "--hostname", "github.com"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def run_portable_doctor(
     base: Path,
     repo_root: Path,
@@ -88,12 +146,13 @@ def run_portable_doctor(
     http_probe: Callable[[str], bool] | None = None,
 ) -> list[DoctorCheck]:
     """Return sanitized readiness results without exposing environment secrets."""
-    del repo_root  # Reserved for later git/repo checks; no secret-bearing output.
     base = Path(base)
+    repo_root = Path(repo_root)
     shared = base / "shared"
     env_path = shared / ".env.local"
     machine_path = shared / "machine.json"
     env = _read_env(env_path)
+    machine_metadata = _read_machine_metadata(machine_path)
     checks: list[DoctorCheck] = []
 
     env_mode_ok = False
@@ -114,6 +173,9 @@ def run_portable_doctor(
         ownership_ok = False
         ownership_code = "INVALID_MACHINE_STATE"
     checks.append(_check("OWNERSHIP", ownership_ok, ownership_code))
+
+    checks.append(_check("GIT_STATE", _git_state_ok(repo_root, machine_metadata), "GIT_STATE_MISMATCH"))
+    checks.append(_check("GITHUB_AUTH", _github_auth_ok(), "GITHUB_AUTH_REQUIRED"))
 
     db_path = _database_path(base, env)
     sqlite_ok = False
@@ -153,6 +215,15 @@ def run_portable_doctor(
                     credential_ok = False
                     credential_code = "CREDENTIAL_DECRYPT_FAILED"
     checks.append(_check("CREDENTIAL_DECRYPT", credential_ok, credential_code))
+
+    oauth_required = bool(sqlite_ok and conn is not None and _oauth_config_required(conn))
+    oauth_ok = True
+    if oauth_required:
+        oauth_ok = bool(
+            str(env.get("THREADS_APP_ID") or "").strip()
+            and str(env.get("THREADS_APP_SECRET") or "").strip()
+        )
+    checks.append(_check("OAUTH_CONFIG", oauth_ok, "OAUTH_CONFIG_MISSING"))
 
     avd = avd or AvdManager()
     avd_ok = False
