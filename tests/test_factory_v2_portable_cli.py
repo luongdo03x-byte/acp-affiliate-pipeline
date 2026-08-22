@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import shutil
 import sqlite3
 import tempfile
@@ -205,8 +206,12 @@ class PortableCliTests(unittest.TestCase):
 
         self.assertEqual(5, generation)
         self.assertEqual("remote-five", self._read_marker(target))
-        state = load_machine_state(target / "shared" / "machine.json")
+        machine_path = target / "shared" / "machine.json"
+        state = load_machine_state(machine_path)
         self.assertEqual(MachineState("weekend-machine", 5, "ACTIVE"), state)
+        metadata = json.loads(machine_path.read_text(encoding="utf-8"))
+        self.assertEqual("commit-5", metadata.get("source_git_commit"))
+        self.assertEqual("feat/account-factory-android", metadata.get("source_branch"))
         self.assertEqual([("auth",), ("list_assets",), ("download", 5)], transport.calls)
         self.assertEqual("IMPORT_OK generation=5\n", output.getvalue())
         env_text = (target / "shared" / ".env.local").read_text(encoding="utf-8")
