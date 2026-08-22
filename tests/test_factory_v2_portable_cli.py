@@ -1,12 +1,16 @@
+import base64
 import importlib.util
 import io
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from core.factory_v2.portable_crypto import encrypt_portable_bundle
 from core.factory_v2.portable_state import (
     MachineState,
     build_bundle,
@@ -17,6 +21,7 @@ from core.factory_v2.portable_state import (
 
 _MODULE = "core.factory_v2.portable_cli"
 _MODULE_AVAILABLE = importlib.util.find_spec(_MODULE) is not None
+_KEY = base64.b64encode(b"\x44" * 32).decode("ascii")
 
 
 class PortableCliModuleContractTests(unittest.TestCase):
@@ -79,6 +84,9 @@ class PortableCliTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.env_patch = patch.dict(os.environ, {"ACP_PORTABLE_BUNDLE_KEY": _KEY}, clear=False)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
 
     def _seed_base(self, name="ACP", *, generation=0, ownership="ACTIVE", marker="source"):
         base = self.root / name
@@ -113,7 +121,7 @@ class PortableCliTests(unittest.TestCase):
 
     def _build_remote_bundle(self, generation, marker):
         source = self._seed_base(f"bundle-src-{generation}", marker=marker)
-        return build_bundle(
+        archive = build_bundle(
             snapshot_db=source / "shared" / "var" / "acp-live.db",
             env_path=source / "shared" / ".env.local",
             avatar_dir=source / "shared" / "avatars",
@@ -123,6 +131,7 @@ class PortableCliTests(unittest.TestCase):
             source_git_commit=f"commit-{generation}",
             source_branch="feat/account-factory-android",
         )
+        return encrypt_portable_bundle(archive, archive, _KEY)
 
     @staticmethod
     def _read_marker(base):
