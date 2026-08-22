@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import re
+import sqlite3
 
 
 _ASSET_RE = re.compile(r"^acp-state-g([0-9]{6})\.tar\.gz$")
@@ -79,3 +80,43 @@ def require_active_ownership(path: Path) -> MachineState:
     if state is None or state.ownership != "ACTIVE":
         raise RuntimeError("MACHINE_HANDED_OFF")
     return state
+
+
+def validate_sqlite(path: Path) -> None:
+    path = Path(path)
+    conn = None
+    try:
+        conn = sqlite3.connect(str(path))
+        integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+        integrity = integrity_row[0] if integrity_row else None
+        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise RuntimeError("SQLITE_INTEGRITY_FAILED") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if integrity != "ok" or foreign_key_errors:
+        raise RuntimeError("SQLITE_INTEGRITY_FAILED")
+
+
+def snapshot_sqlite(source: Path, destination: Path) -> None:
+    source = Path(source)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    src = None
+    dst = None
+    try:
+        src = sqlite3.connect(str(source))
+        dst = sqlite3.connect(str(destination))
+        src.backup(dst)
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise RuntimeError("SQLITE_INTEGRITY_FAILED") from exc
+    finally:
+        if dst is not None:
+            dst.close()
+        if src is not None:
+            src.close()
+
+    validate_sqlite(destination)
