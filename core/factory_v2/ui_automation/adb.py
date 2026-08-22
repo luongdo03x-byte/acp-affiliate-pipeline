@@ -119,11 +119,12 @@ class AdbClient:
     def _dump_hierarchy_unlocked(self) -> str:
         try:
             result = self._run(["exec-out", "uiautomator", "dump", "/dev/tty"], timeout=25)
+        except RuntimeError:
+            result = None
+        if result is not None:
             xml = self._hierarchy_xml_from_output(result.stdout)
             if xml is not None:
                 return xml
-        except RuntimeError:
-            pass
 
         path = self._HIERARCHY_DEVICE_PATH
         try:
