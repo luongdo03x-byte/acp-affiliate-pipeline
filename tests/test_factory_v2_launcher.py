@@ -30,7 +30,11 @@ class FactoryV2LauncherRuntimeTests(unittest.TestCase):
 
     def test_build_app_can_start_and_close_controller_runtime_explicitly(self):
         runtime = FakeRuntime()
-        app = build_app(start_controller=True, runtime_factory=lambda: runtime)
+        app = build_app(
+            start_controller=True,
+            runtime_factory=lambda: runtime,
+            ownership_guard=lambda: None,
+        )
         thread = app.extensions["factory_v2_controller_thread"]
         thread.join(timeout=1)
 
@@ -38,6 +42,26 @@ class FactoryV2LauncherRuntimeTests(unittest.TestCase):
         self.assertTrue(runtime.closed)
         self.assertIs(runtime, app.extensions["factory_v2_runtime"])
         self.assertFalse(thread.is_alive())
+
+    def test_controller_start_checks_ownership_before_runtime_construction(self):
+        calls = []
+
+        def guard():
+            calls.append("guard")
+            raise RuntimeError("MACHINE_HANDED_OFF")
+
+        def runtime_factory():
+            calls.append("runtime")
+            return FakeRuntime()
+
+        with self.assertRaisesRegex(RuntimeError, r"^MACHINE_HANDED_OFF$"):
+            build_app(
+                start_controller=True,
+                runtime_factory=runtime_factory,
+                ownership_guard=guard,
+            )
+
+        self.assertEqual(["guard"], calls)
 
     def test_launcher_imports_when_worktree_directory_is_not_named_acp(self):
         repo_root = Path(__file__).resolve().parents[1]
