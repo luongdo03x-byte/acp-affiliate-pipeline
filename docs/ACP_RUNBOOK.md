@@ -2,6 +2,49 @@
 
 Mục tiêu: sau khi setup một lần, vận hành ACP chỉ qua `manage.sh`. Không lặp lại các bước `source`, `nohup`, backup DB, tạo symlink, test và migration bằng tay.
 
+## 0. Account Factory portable handoff giữa hai máy
+
+Mô hình hỗ trợ là một operator, hai máy Ubuntu tin cậy, **chỉ một máy ACTIVE tại một thời điểm**. Không chạy controller đồng thời trên cả hai máy.
+
+### Rời máy đang ACTIVE
+
+Trong clone/release đang dùng:
+
+```bash
+./manage.sh handoff-out
+```
+
+Lệnh dừng các process có thể ghi state, reconcile bounded state, tạo SQLite-consistent snapshot, đóng gói DB + avatars + `.env.local`, upload generation mới lên private GitHub Release `acp-portable-state`, verify asset rồi mới chuyển local ownership sang `HANDED_OFF`.
+
+### Lần đầu trên máy còn lại
+
+Máy nhận cần GitHub CLI đã authenticate vào private repo và các prerequisite hệ thống/Android cần thiết:
+
+```bash
+git clone -b feat/account-factory-android git@github.com:luongdo03x-byte/acp-affiliate-pipeline.git
+cd acp-affiliate-pipeline
+./setup.sh
+```
+
+### Những lần chuyển máy sau
+
+Trong clone đã có sẵn:
+
+```bash
+git pull --ff-only
+./setup.sh
+```
+
+`./setup.sh` bootstrap venv, import generation mới nhất, chạy setup/migration, kiểm AVD, portable doctor, bounded resume rồi mới `factory-start`. Nếu doctor fail sau import, state cũ được rollback; first-clone lỗi không được để lại `machine.json` ACTIVE.
+
+### Bảo mật và checkpoint thủ công
+
+Private Release `acp-portable-state` chứa archive có `.env.local` ở dạng **plaintext** bên trong tar, bao gồm `ACP_MASTER_KEY`, app/provider secrets và các cấu hình runtime khác. Không có lớp mã hoá bundle thứ hai. Bất kỳ ai có quyền download private release của repository đều có thể lấy các secret này. Bật **2FA** và **passkey** cho tài khoản GitHub, giới hạn quyền repo, và tuyệt đối không commit `.env.local` vào Git.
+
+AVD/browser profile không phải durable state được copy. Vì vậy **Chrome Terms**, **OAuth consent**, OTP, CAPTCHA, identity/security challenge vẫn có thể yêu cầu thao tác của người vận hành. Portability không tự bấm Agree/Authorize/Allow và không bypass checkpoint bảo mật.
+
+Nếu `./manage.sh handoff-out` đã thành công, máy nguồn ở trạng thái `HANDED_OFF`; supported wrappers phải từ chối start cho đến khi máy đó import/claim một generation mới hơn trong lần chuyển ngược lại.
+
 ## 1. Cấu trúc cố định
 
 ```text
@@ -23,7 +66,7 @@ Mục tiêu: sau khi setup một lần, vận hành ACP chỉ qua `manage.sh`. K
 
 ## 2. Setup một lần
 
-**Máy mới (git clone lần đầu):**
+**Máy mới cho deployment ACP legacy (không phải portable Account Factory ở mục 0):**
 
 ```bash
 git clone <repo-url> ~/Downloads/ACP/releases/2.0/acp
@@ -39,31 +82,18 @@ data), và tạo hai symlink `~/Downloads/ACP/acp` +
 `~/Downloads/ACP/manage.sh`. Idempotent: chạy lại không ghi đè
 `.env.local`/CSDL đã có.
 
-Muốn giữ nguyên kết nối Threads + catalog của máy cũ thay vì bắt đầu
-trắng, chọn một trong hai:
+Các cơ chế GPG/copy tay dưới đây là **legacy deployment paths**. Với Account Factory portable handoff, dùng workflow private Release ở mục 0.
 
-- **Mã hoá + commit vào git (khỏi copy tay mỗi lần):**
+- **Mã hoá + commit vào git (legacy):**
 
   ```bash
-  ./manage.sh encrypt-secrets      # hỏi passphrase, tạo secrets/env.local.gpg
+  ./manage.sh encrypt-secrets
   git add secrets/env.local.gpg && git commit -m "chore: cập nhật bản mã hoá .env.local" && git push
   ```
 
-  `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 (gpg) — an toàn
-  để commit dù repo private hay public, chỉ đọc được với đúng passphrase.
-  Passphrase gpg tự hỏi qua pinentry, không truyền qua đối số/biến môi
-  trường nên không lộ qua shell history; tự lưu passphrase ở nơi khác
-  git (mất là mất luôn). `setup` ở máy mới tự thấy file này và hỏi
-  passphrase để giải mã ra `shared/.env.local`. **Không bao giờ tự tay
-  commit `shared/.env.local` dạng chữ thường** — lịch sử git gần như
-  không xoá được thật sự, kể cả trên repo private (ai từng clone/fork
-  vẫn giữ bản cũ). Sau mỗi lần sửa `shared/.env.local` phải chạy lại
-  `encrypt-secrets` rồi commit — file mã hoá trong git không tự đồng bộ.
+  `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 (gpg). Không bao giờ commit `shared/.env.local` dạng chữ thường.
 
-- **Copy tay ngoài git:** copy nguyên `shared/` (scp/rsync, **không** qua
-  git vì có secret thật) sang máy mới trước khi chạy `setup` — `setup`
-  thấy `.env.local` đã tồn tại thì bỏ qua cả hai bước trên (tạo mới lẫn
-  giải mã).
+- **Copy tay ngoài git (legacy):** copy nguyên `shared/` bằng scp/rsync, không qua git.
 
 Sau `setup`, điền các biến bắt buộc mà script không tự sinh được vào
 `shared/.env.local`: `ACP_ADMIN_PASSWORD`, `ACP_SECRET_KEY`, và tuỳ nhu
