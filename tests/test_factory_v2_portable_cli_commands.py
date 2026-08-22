@@ -1,5 +1,6 @@
 import importlib
 import io
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -108,6 +109,62 @@ class PortableCliCommandTests(unittest.TestCase):
             output.getvalue(),
         )
         self.assertNotIn("must-not-appear", output.getvalue())
+
+    def test_resume_scopes_restored_env_to_reconciliation(self):
+        _, resume, _ = self._remaining_api()
+        base = self.root / "ACP"
+        shared = base / "shared"
+        db_path = shared / "var" / "acp-live.db"
+        db_path.parent.mkdir(parents=True)
+        sqlite3.connect(db_path).close()
+        secret = "restored-oauth-secret-must-not-escape"
+        env_path = shared / ".env.local"
+        env_path.write_text(
+            "THREADS_APP_ID=restored-app-id\n"
+            f"THREADS_APP_SECRET={secret}\n"
+            "ACP_PUBLIC_BASE_URL=https://factory.example.com\n",
+            encoding="utf-8",
+        )
+        env_path.chmod(0o600)
+        output = io.StringIO()
+
+        observed = []
+
+        def reconciler(_conn, _now_iso):
+            observed.append((
+                os.environ.get("THREADS_APP_ID"),
+                os.environ.get("THREADS_APP_SECRET"),
+                os.environ.get("ACP_PUBLIC_BASE_URL"),
+            ))
+            return {"leases_reconciled": 0, "oauth_reconciled": 1, "oauth_gated": 0}
+
+        with patch.dict(
+            os.environ,
+            {
+                "THREADS_APP_ID": "preexisting-app-id",
+                "ACP_PUBLIC_BASE_URL": "https://preexisting.example.com",
+            },
+            clear=True,
+        ):
+            result = resume(
+                base=base,
+                now_iso="2026-08-22T12:00:00+00:00",
+                reconciler=reconciler,
+                out=output,
+            )
+            self.assertEqual("preexisting-app-id", os.environ.get("THREADS_APP_ID"))
+            self.assertIsNone(os.environ.get("THREADS_APP_SECRET"))
+            self.assertEqual(
+                "https://preexisting.example.com",
+                os.environ.get("ACP_PUBLIC_BASE_URL"),
+            )
+
+        self.assertEqual(
+            [("restored-app-id", secret, "https://factory.example.com")],
+            observed,
+        )
+        self.assertEqual(1, result["oauth_reconciled"])
+        self.assertNotIn(secret, output.getvalue())
 
     def test_main_dispatches_doctor_and_resume_without_extra_output(self):
         _, _, main = self._remaining_api()
