@@ -1,3 +1,4 @@
+import base64
 import os
 import sqlite3
 import unittest
@@ -62,6 +63,16 @@ class AccountCredentialTests(unittest.TestCase):
         self._insert_account()
         with self.assertRaisesRegex(ValueError, "password"):
             store_account_password(self.conn, "a1", "")
+
+    def test_wrong_master_key_raises_safe_domain_error(self):
+        self._insert_account()
+        key_a = base64.b64encode(b"\x01" * 32).decode()
+        key_b = base64.b64encode(b"\x02" * 32).decode()
+        with patch.dict(os.environ, {"ACP_MASTER_KEY": key_a}):
+            store_account_password(self.conn, "a1", "example-secret")
+        with patch.dict(os.environ, {"ACP_MASTER_KEY": key_b}):
+            with self.assertRaisesRegex(RuntimeError, "^CREDENTIAL_DECRYPT_FAILED$"):
+                get_account_password(self.conn, "a1")
 
 
 if __name__ == "__main__":
