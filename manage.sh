@@ -368,7 +368,7 @@ cmd_status() {
     fi
 
     if pid_matches "$NGROK_PID" "ngrok http"; then
-        info "ngrok   : RUNNING (pid $(cat "$NGROK_PID")) url=$ngrok_url"
+        info "ngrok   : RUNNING (pid $(cat "$NGROK_PID"))"
     else
         info "ngrok   : STOPPED"
     fi
