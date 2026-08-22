@@ -332,8 +332,11 @@ class ThreadsOAuthClient:
     def exchange_long_lived(self, short_token: str):
         response = self.http.get(
             LONG_TOKEN_URL,
-            params={"grant_type": "th_exchange_token", "client_secret": self.app_secret},
-            headers={"Authorization": f"Bearer {short_token}"},
+            params={
+                "grant_type": "th_exchange_token",
+                "client_secret": self.app_secret,
+                "access_token": short_token,
+            },
             timeout=20,
         )
         return self._json_or_error(response, "Không đổi được long-lived Threads token")
