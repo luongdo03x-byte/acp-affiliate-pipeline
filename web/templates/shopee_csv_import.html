@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">Shopee Affiliate</p>
     <h1>Shopee Affiliate CSV Import</h1>
-    <p class="note">Import file từ <strong>Hoa hồng Sản phẩm → Lấy link hàng loạt</strong>. ACP giữ nguyên Link ưu đãi do Shopee tạo và chỉ đưa sản phẩm vào Product Pool.</p>
+    <p class="note">Import file từ <strong>Hoa hồng Sản phẩm → Lấy link hàng loạt</strong>. ACP giữ nguyên Link ưu đãi do Shopee tạo, đưa sản phẩm vào Product Pool và xếp việc enrich ảnh ngay sau khi import thành công.</p>
   </div>
 </div>
 
@@ -22,9 +22,17 @@
     <div class="kpi-card"><span>Không đổi</span><strong>{{ import_summary.unchanged }}</strong></div>
     <div class="kpi-card"><span>Trùng upload</span><strong>{{ import_summary.duplicate }}</strong></div>
     <div class="kpi-card"><span>Lỗi dòng</span><strong>{{ import_summary.error }}</strong></div>
+    <div class="kpi-card"><span>Enrich đã xếp hàng</span><strong>{{ import_summary.enrichment_queued or 0 }}</strong></div>
   </div>
-  <p class="note">Importer không tạo Post, job, lịch đăng hoặc publish.</p>
-  <div class="form-actions"><a class="btn btn--primary" href="/sanpham/shopee-import">Import batch khác</a></div>
+  {% if import_summary.enrichment_trigger_failed %}
+  <div class="alert alert--warning" role="status">Import Product đã thành công nhưng trigger enrich tức thời gặp lỗi. Không cần import lại; recovery 60 phút vẫn xử lý các sản phẩm PENDING.</div>
+  {% else %}
+  <p class="note">Import không tạo Post hoặc lịch đăng. Chỉ job enrich ảnh không-publish được xếp ngay; worker hiện có sẽ xử lý ở lượt kế tiếp.</p>
+  {% endif %}
+  <div class="form-actions">
+    <a class="btn btn--primary" href="/sanpham/shopee">Mở Product Pool</a>
+    <a class="btn btn--ghost" href="/sanpham/shopee-import">Import batch khác</a>
+  </div>
 </section>
 {% else %}
 <section class="card panel">
@@ -97,7 +105,7 @@
     <button class="btn btn--primary" type="submit">Import vào Product Pool</button>
   </form>
   {% endif %}
-  <p class="note">Preview không ghi Product, price history, Post hoặc job. Chỉ nút Import ở trên mới xác nhận dữ liệu Product.</p>
+  <p class="note">Preview không ghi Product, price history, Post hoặc job. Chỉ nút Import ở trên mới xác nhận dữ liệu Product và sau đó xếp job enrich ảnh.</p>
 </section>
 {% endif %}
 {% endblock %}
