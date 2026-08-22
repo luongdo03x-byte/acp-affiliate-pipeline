@@ -1,12 +1,17 @@
 """Portable single-machine handoff orchestration for Account Factory V2."""
 from __future__ import annotations
 
+import argparse
+from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 from typing import TextIO
 
+from .portable_doctor import require_portable_doctor
 from .portable_release import GitHubReleaseTransport
+from .portable_resume import reconcile_for_portable_resume
 from .portable_state import (
     MachineState,
     build_bundle,
@@ -132,3 +137,61 @@ def handoff_in(
     )
     stream.write(f"IMPORT_OK generation={remote_generation}\n")
     return remote_generation
+
+
+def doctor(
+    *,
+    base: Path,
+    repo_root: Path,
+    checker=require_portable_doctor,
+    out: TextIO | None = None,
+) -> None:
+    checker(Path(base), Path(repo_root))
+    _output_stream(out).write("DOCTOR_OK\n")
+
+
+def resume(
+    *,
+    base: Path,
+    now_iso: str | None = None,
+    reconciler=reconcile_for_portable_resume,
+    out: TextIO | None = None,
+) -> dict[str, int | str]:
+    base = Path(base)
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn = sqlite3.connect(str(base / "shared" / "var" / "acp-live.db"), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        result = reconciler(conn, now_iso)
+    finally:
+        conn.close()
+    _output_stream(out).write(
+        "RESUME_RECONCILED leases={} oauth={} gated={}\n".format(
+            int(result.get("leases_reconciled", 0)),
+            int(result.get("oauth_reconciled", 0)),
+            int(result.get("oauth_gated", 0)),
+        )
+    )
+    return result
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="portable_cli")
+    commands = parser.add_subparsers(dest="command", required=True)
+    doctor_parser = commands.add_parser("doctor")
+    doctor_parser.add_argument("--base", type=Path, required=True)
+    doctor_parser.add_argument("--repo-root", type=Path, required=True)
+    resume_parser = commands.add_parser("resume")
+    resume_parser.add_argument("--base", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if args.command == "doctor":
+        doctor(base=args.base, repo_root=args.repo_root)
+    else:
+        resume(base=args.base)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
