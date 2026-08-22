@@ -17,11 +17,10 @@ from ..core.shopee_image_enrichment import (
     backfill_missing,
     complete_from_helper,
     enrich_product,
-    list_products,
     reset_for_retry,
     run_batch,
 )
-from .shopee_auto_state import auto_summary, derive_auto_state
+from ..core.shopee_product_pool import build_product_pool
 
 
 bp = Blueprint("shopee_image_enrichment", __name__)
@@ -73,29 +72,19 @@ def _image_http():
     return factory() if callable(factory) else SafeHttpClient(max_bytes=MAX_IMAGE_BYTES)
 
 
-def _summary_counts(conn) -> dict:
-    rows = conn.execute(
-        """SELECT COALESCE(j.status, 'UNQUEUED') AS status, COUNT(*) AS count
-           FROM product p
-           LEFT JOIN shopee_image_enrichment_job j ON j.product_id=p.id
-           WHERE p.provider='SHOPEE_AFFILIATE'
-           GROUP BY COALESCE(j.status, 'UNQUEUED')"""
-    ).fetchall()
-    counts = {str(row["status"]): int(row["count"]) for row in rows}
-    total = sum(counts.values())
-    ready = counts.get("READY", 0)
-    return {
-        "total": total,
-        "ready": ready,
-        "missing": max(0, total - ready),
-        "needs_helper": counts.get("NEEDS_HELPER", 0),
-        "failed": counts.get("FAILED", 0),
-        "pending": counts.get("PENDING", 0) + counts.get("UNQUEUED", 0),
-    }
-
-
 def _workspace_redirect(*, status=None, message=None, err=None):
-    values = {"status": _safe_status(status or request.form.get("status") or request.args.get("status"))}
+    image = _safe_status(
+        status
+        or request.form.get("image")
+        or request.form.get("status")
+        or request.args.get("image")
+        or request.args.get("status")
+    )
+    values = {"image": image}
+    for key in ("q", "niche", "auto", "usage", "per_page", "page"):
+        value = request.form.get(key) or request.args.get(key)
+        if value:
+            values[key] = value
     if message:
         values["message"] = message
     if err:
@@ -111,25 +100,26 @@ def _bounded_message(error: Exception) -> str:
 
 @bp.get("/sanpham/shopee")
 def page():
-    status = _safe_status(request.args.get("status"))
+    values = request.args.to_dict(flat=True)
+    # Backward-compatible alias for links/tests created before Product Pool v2.
+    if "image" not in values and "status" in values:
+        values["image"] = _safe_status(values.get("status"))
+
     conn = connect()
     try:
-        rows = list_products(conn, status=status, limit=200)
-        for item in rows:
-            auto = derive_auto_state(conn, item)
-            item["auto_state"] = auto["state"]
-            item["auto_channel_handle"] = auto.get("channel_handle")
-            item["auto_scheduled_at"] = auto.get("scheduled_at")
-        summary = _summary_counts(conn)
-        summary.update(auto_summary(rows))
+        pool = build_product_pool(conn, values)
     finally:
         conn.close()
     return render_template(
         "shopee_image_enrichment.html",
         page="shopee-product-pool",
-        items=rows,
-        status_filter=status,
-        summary=summary,
+        items=pool["items"],
+        filters=pool["filters"],
+        status_filter=pool["filters"]["image"],
+        summary=pool["summary"],
+        niche_stats=pool["niche_stats"],
+        niche_options=pool["niche_options"],
+        pagination=pool["pagination"],
         message=request.args.get("message"),
         err=request.args.get("err"),
         pending_review=_pending_review_count(),
