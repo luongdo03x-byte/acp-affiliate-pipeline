@@ -411,9 +411,10 @@ def restore_bundle(archive: Path, *, base: Path, expected_generation: int) -> Pa
         with tarfile.open(archive, "r:gz") as tar:
             for member in tar.getmembers():
                 normalized = _classify_member(member)
-                if member.isdir():
-                    continue
                 target = staging_root / normalized
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(_read_member_bytes(tar, member))
 
