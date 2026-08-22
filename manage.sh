@@ -359,6 +359,13 @@ github_repo_slug() {
     esac
 }
 
+require_github_preflight() {
+    local repo="$1"
+    command -v gh >/dev/null 2>&1 || die "GITHUB_AUTH_REQUIRED"
+    gh auth status --hostname github.com >/dev/null 2>&1 || die "GITHUB_AUTH_REQUIRED"
+    gh repo view "$repo" --json nameWithOwner >/dev/null 2>&1 || die "GITHUB_REPO_UNAVAILABLE"
+}
+
 require_factory_quiescent() {
     if pgrep -af 'account_factory_server.py' >/dev/null 2>&1; then
         die "FACTORY_NOT_QUIESCENT"
@@ -374,6 +381,15 @@ cmd_handoff_out() {
     [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
 
     require_factory_ownership "$release"
+
+    remote="$(git -C "$release" remote get-url origin 2>/dev/null || true)"
+    repo="$(github_repo_slug "$remote" 2>/dev/null || true)"
+    [[ -n "$repo" ]] || die "GITHUB_REPO_UNAVAILABLE"
+    git_commit="$(git -C "$release" rev-parse HEAD 2>/dev/null || true)"
+    git_branch="$(git -C "$release" branch --show-current 2>/dev/null || true)"
+    [[ -n "$git_commit" && -n "$git_branch" ]] || die "GIT_METADATA_UNAVAILABLE"
+    require_github_preflight "$repo"
+
     cmd_factory_stop
     cmd_stop
     require_factory_quiescent
@@ -383,13 +399,6 @@ cmd_handoff_out() {
         "$release/.venv/bin/python" -m core.factory_v2.portable_cli resume \
             --base "$BASE"
     )
-
-    remote="$(git -C "$release" remote get-url origin 2>/dev/null || true)"
-    repo="$(github_repo_slug "$remote" 2>/dev/null || true)"
-    [[ -n "$repo" ]] || die "GITHUB_REPO_UNAVAILABLE"
-    git_commit="$(git -C "$release" rev-parse HEAD 2>/dev/null || true)"
-    git_branch="$(git -C "$release" branch --show-current 2>/dev/null || true)"
-    [[ -n "$git_commit" && -n "$git_branch" ]] || die "GIT_METADATA_UNAVAILABLE"
 
     (
         cd "$release"
