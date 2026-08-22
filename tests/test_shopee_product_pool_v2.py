@@ -132,7 +132,9 @@ class ShopeeProductPoolV2Tests(unittest.TestCase):
         review_count=0,
         commission_value=12_000,
     ):
-        item_id = item_id or product_id.strip("p") or "1"
+        if item_id is None:
+            digits = "".join(character for character in str(product_id) if character.isdigit())
+            item_id = digits or "1"
         stamp = (last_synced_at or self.now).isoformat(timespec="seconds")
         self.conn.execute(
             """INSERT INTO product (
@@ -185,16 +187,22 @@ class ShopeeProductPoolV2Tests(unittest.TestCase):
 
     def test_installed_auto_candidate_source_is_shopee_only(self):
         self._insert_channel()
-        self._insert_product("sp1")
+        self._insert_product("sp1", item_id="1")
         self._insert_product(
             "legacy1",
+            item_id="2",
             provider="LEGACY",
             has_inventory=1,
             rating=4.9,
             review_count=500,
             commission_value=50_000,
         )
-        rows = pipeline._candidate_products_for_channel(self.conn, self.conn.execute("SELECT * FROM channel WHERE id='ch'").fetchone(), 20, self.now)
+        rows = pipeline._candidate_products_for_channel(
+            self.conn,
+            self.conn.execute("SELECT * FROM channel WHERE id='ch'").fetchone(),
+            20,
+            self.now,
+        )
         self.assertTrue(rows)
         self.assertEqual({row["product"]["provider"] for row in rows}, {"SHOPEE_AFFILIATE"})
 
@@ -243,14 +251,17 @@ class ShopeeProductPoolV2Tests(unittest.TestCase):
     def test_enrichment_worker_handler_is_registered_and_uses_existing_primitive(self):
         handler = jobs._handlers.get("SHOPEE_ENRICH_PRODUCT")
         self.assertTrue(callable(handler))
-        self._insert_product("sp1", main_image_url=None, image_status="PENDING")
+        self._insert_product("sp1", item_id="1", main_image_url=None, image_status="PENDING")
         jobs.enqueue(
             self.conn,
             "SHOPEE_ENRICH_PRODUCT",
             {"product_id": "sp1"},
             idempotency_key="shopee-enrich:sp1:test",
         )
-        with mock.patch("acp.core.shopee_enrichment_jobs.enrichment.enrich_product", return_value={"status": "NEEDS_HELPER"}) as enrich:
+        with mock.patch(
+            "acp.core.shopee_enrichment_jobs.enrichment.enrich_product",
+            return_value={"status": "NEEDS_HELPER"},
+        ) as enrich:
             stats = jobs.run_once(self.conn, limit=10, ctx={})
         self.assertEqual(stats["done"], 1)
         enrich.assert_called_once()
@@ -274,9 +285,23 @@ class ShopeeProductPoolV2Tests(unittest.TestCase):
     def test_published_usage_precedes_stale_health(self):
         stale = self.now - timedelta(hours=80)
         self._insert_product("p1", item_id="1", last_synced_at=stale)
+        self._insert_channel()
+        stamp = self.now.isoformat(timespec="seconds")
         self.conn.execute(
-            "INSERT INTO post (id, product_id, channel_id, status, published_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            ("post1", "p1", None, "PUBLISHED", self.now.isoformat(), self.now.isoformat(), self.now.isoformat()),
+            "INSERT INTO campaign (id, code, name, niche, is_active, created_at) VALUES (?,?,?,?,1,?)",
+            ("camp", "pool-v2", "Pool v2", "cong-nghe", stamp),
+        )
+        self.conn.execute(
+            """INSERT INTO post (
+                 id, product_id, channel_id, campaign_id, variant_code,
+                 caption_body, disclosure_text, caption_final, status,
+                 published_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "post1", "p1", "ch", "camp", "v1", "caption",
+                "#affiliate", "caption #affiliate", "PUBLISHED",
+                stamp, stamp, stamp,
+            ),
         )
         response = self.client.get("/sanpham/shopee")
         self.assertEqual(response.status_code, 200)
