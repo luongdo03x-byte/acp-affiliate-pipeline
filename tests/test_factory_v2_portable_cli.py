@@ -141,6 +141,74 @@ class PortableCliTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_handoff_out_ensures_first_release_before_listing_assets(self):
+        base = self._seed_base(generation=0, ownership="ACTIVE")
+
+        class FirstReleaseTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.release_exists = False
+
+            def ensure_release(self):
+                self.calls.append(("ensure_release",))
+                self.release_exists = True
+
+            def list_assets(self):
+                self.calls.append(("list_assets",))
+                if not self.release_exists:
+                    raise RuntimeError("GITHUB_RELEASE_UNAVAILABLE")
+                return list(self.assets)
+
+        transport = FirstReleaseTransport()
+
+        generation = self.handoff_out(
+            base=base,
+            repo="o/r",
+            git_commit="abc123",
+            git_branch="feat/account-factory-android",
+            transport=transport,
+            out=io.StringIO(),
+        )
+
+        self.assertEqual(1, generation)
+        self.assertEqual(("auth",), transport.calls[0])
+        self.assertEqual(("ensure_release",), transport.calls[1])
+        self.assertEqual(("list_assets",), transport.calls[2])
+
+    def test_handoff_out_ensures_first_release_before_listing_assets(self):
+        base = self._seed_base(generation=0, ownership="ACTIVE")
+
+        class FirstReleaseTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.release_exists = False
+
+            def ensure_release(self):
+                self.calls.append(("ensure_release",))
+                self.release_exists = True
+
+            def list_assets(self):
+                self.calls.append(("list_assets",))
+                if not self.release_exists:
+                    raise RuntimeError("GITHUB_RELEASE_UNAVAILABLE")
+                return list(self.assets)
+
+        transport = FirstReleaseTransport()
+
+        generation = self.handoff_out(
+            base=base,
+            repo="o/r",
+            git_commit="abc123",
+            git_branch="feat/account-factory-android",
+            transport=transport,
+            out=io.StringIO(),
+        )
+
+        self.assertEqual(1, generation)
+        self.assertEqual(("auth",), transport.calls[0])
+        self.assertEqual(("ensure_release",), transport.calls[1])
+        self.assertEqual(("list_assets",), transport.calls[2])
+
     def test_handoff_out_marks_handed_off_only_after_verified_upload(self):
         base = self._seed_base(generation=0, ownership="ACTIVE")
         transport = FakeTransport()
@@ -160,7 +228,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual("HANDED_OFF", state.ownership)
         self.assertEqual(1, state.last_imported_generation)
         self.assertEqual(
-            [("auth",), ("list_assets",), ("ensure_release",),
+            [("auth",), ("ensure_release",), ("list_assets",),
              ("upload", "acp-state-g000001.tar.gz"),
              ("verify", "acp-state-g000001.tar.gz"), ("prune", 5)],
             transport.calls,

@@ -109,12 +109,12 @@ def handoff_out(
     stream = _output_stream(out)
 
     transport.assert_authenticated()
+    transport.ensure_release()
     assets = transport.list_assets()
     generation = next_generation(
         [str(asset.get("name") or "") for asset in assets if isinstance(asset, dict)],
         state.last_imported_generation,
     )
-    transport.ensure_release()
 
     with tempfile.TemporaryDirectory(prefix="acp-portable-out-") as tmp_name:
         temp_root = Path(tmp_name)
