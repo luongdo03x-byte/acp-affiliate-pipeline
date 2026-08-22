@@ -64,6 +64,12 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         fake_python.write_text(
             "#!/usr/bin/env bash\n"
             "printf 'python:%s\\n' \"$*\" >>\"${ACP_TEST_HANDOFF_LOG:?}\"\n"
+            "if [[ -n \"${ACP_TEST_EXPECT_PORTABLE_CWD:-}\" && \"$*\" == *'core.factory_v2.portable_cli '* ]]; then\n"
+            "  if [[ \"$(pwd -P)\" != \"${ACP_TEST_EXPECT_PORTABLE_CWD}\" ]]; then\n"
+            "    printf 'PORTABLE_CLI_WRONG_CWD=%s\\n' \"$(pwd -P)\" >&2\n"
+            "    exit 44\n"
+            "  fi\n"
+            "fi\n"
             "if [[ \"$*\" == *'core.factory_v2.portable_cli resume'* ]]; then\n"
             "  printf 'RESUME_RECONCILED leases=0 oauth=0 gated=0\\n'\n"
             "  exit 0\n"
@@ -234,6 +240,25 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
             lines,
         )
         self.assertFalse(any(line.startswith("adb:") for line in lines), lines)
+
+    def test_handoff_out_runs_portable_cli_from_release_when_invoked_elsewhere(self):
+        release = self._seed_release(ownership="ACTIVE")
+        _, env = self._install_handoff_fakes(release)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        env["ACP_TEST_EXPECT_PORTABLE_CWD"] = str(release.resolve())
+
+        result = subprocess.run(
+            ["bash", str(self.manage), "handoff-out"],
+            cwd=elsewhere,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(0, result.returncode, msg=result.stdout + result.stderr)
+        self.assertIn("RESUME_RECONCILED leases=0 oauth=0 gated=0", result.stdout)
+        self.assertIn("HANDOFF_OK generation=4", result.stdout)
 
 
 if __name__ == "__main__":
