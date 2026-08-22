@@ -55,7 +55,7 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         (self.base / "acp").symlink_to(release, target_is_directory=True)
         return release
 
-    def _install_handoff_fakes(self, release, *, rogue_worker=False):
+    def _install_handoff_fakes(self, release, *, rogue_worker=False, gh_fail=False):
         log = self.root / "handoff.log"
         fake_bin = self.root / "handoff-bin"
         fake_bin.mkdir(exist_ok=True)
@@ -96,6 +96,19 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         )
         fake_git.chmod(0o755)
 
+        fake_gh = fake_bin / "gh"
+        fake_gh.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'gh:%s\\n' \"$*\" >>\"${ACP_TEST_HANDOFF_LOG:?}\"\n"
+            "if [[ \"${ACP_TEST_GH_FAIL:-0}\" == 1 ]]; then\n"
+            "  printf 'secret-marker-must-not-escape\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_gh.chmod(0o755)
+
         fake_pgrep = fake_bin / "pgrep"
         fake_pgrep.write_text(
             "#!/usr/bin/env bash\n"
@@ -121,6 +134,7 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         env = self._env()
         env["ACP_TEST_HANDOFF_LOG"] = str(log)
         env["ACP_TEST_ROGUE_WORKER"] = "1" if rogue_worker else "0"
+        env["ACP_TEST_GH_FAIL"] = "1" if gh_fail else "0"
         env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
         return log, env
 
@@ -259,6 +273,34 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, msg=result.stdout + result.stderr)
         self.assertIn("RESUME_RECONCILED leases=0 oauth=0 gated=0", result.stdout)
         self.assertIn("HANDOFF_OK generation=4", result.stdout)
+
+    def test_handoff_out_github_auth_failure_happens_before_runtime_stop(self):
+        release = self._seed_release(ownership="ACTIVE")
+        log, env = self._install_handoff_fakes(release, gh_fail=True)
+
+        result = subprocess.run(
+            ["bash", str(self.manage), "handoff-out"],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("GITHUB_AUTH_REQUIRED", result.stdout + result.stderr)
+        self.assertNotIn("secret-marker-must-not-escape", result.stdout + result.stderr)
+        self.assertNotIn("FACTORY_STOPPED", result.stdout)
+        self.assertNotIn("ACP_STOPPED", result.stdout)
+        lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        self.assertTrue(any(line.startswith("gh:") for line in lines), lines)
+        self.assertFalse(any(line.startswith("pgrep:") for line in lines), lines)
+        self.assertFalse(
+            any("core.factory_v2.portable_cli resume" in line for line in lines),
+            lines,
+        )
+        self.assertFalse(
+            any("core.factory_v2.portable_cli handoff-out" in line for line in lines),
+            lines,
+        )
 
 
 if __name__ == "__main__":
