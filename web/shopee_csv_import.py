@@ -20,6 +20,7 @@ from ..core.shopee_csv_import import (
     parse_shopee_affiliate_csv,
     preview_rows_against_db,
 )
+from ..core.shopee_enrichment_jobs import queue_pending_products
 
 
 bp = Blueprint("shopee_csv_import", __name__)
@@ -180,7 +181,30 @@ def confirm():
                 status=500,
             )
         else:
-            audit_summary = dict(result)
+            # The import transaction is already complete here. Queueing is a
+            # follow-up trigger only: a queue failure must never roll back or
+            # invite the operator to repeat a successful import.
+            touched_product_ids = list(result.get("touched_product_ids") or [])
+            queue_result = {"queued": 0, "duplicate": 0, "skipped": 0}
+            trigger_failed = False
+            try:
+                queue_result = queue_pending_products(conn, touched_product_ids)
+            except Exception as exc:
+                trigger_failed = True
+                current_app.logger.warning(
+                    "Shopee immediate enrichment trigger failed: error_type=%s",
+                    type(exc).__name__,
+                )
+
+            display_result = {
+                key: value
+                for key, value in result.items()
+                if key != "touched_product_ids"
+            }
+            display_result["enrichment_queued"] = int(queue_result.get("queued", 0) or 0)
+            display_result["enrichment_trigger_failed"] = trigger_failed
+
+            audit_summary = dict(display_result)
             audit_summary["files"] = batch["summary"].get("files", 0)
             audit_summary["rows"] = batch["summary"].get("rows", result.get("total", 0))
             _safe_audit(
@@ -193,7 +217,7 @@ def confirm():
             conn.close()
 
         consume_preview(token)
-        return _render(import_summary=result)
+        return _render(import_summary=display_result)
 
 
 def register_shopee_csv_import_routes(app):

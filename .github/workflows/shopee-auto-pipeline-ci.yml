@@ -2,52 +2,105 @@ name: Shopee Auto Pipeline CI
 
 on:
   push:
-    branches: ["feat/shopee-auto-pipeline"]
+    branches: ["feat/shopee-auto-pipeline", "feat/shopee-product-pool-v2"]
   pull_request:
     paths:
       - "core/__init__.py"
       - "core/shopee_auto_runtime.py"
+      - "core/shopee_csv_import.py"
+      - "core/shopee_import_runtime.py"
+      - "core/shopee_enrichment_jobs.py"
+      - "core/shopee_product_pool.py"
       - "core/auto_scheduler.py"
       - "core/pipeline.py"
       - "run.py"
       - "shopee_auto_enrich.py"
+      - "web/shopee_csv_import.py"
       - "web/shopee_image_enrichment.py"
+      - "web/templates/shopee_csv_import.html"
       - "web/templates/shopee_image_enrichment.html"
       - "ops/acp-auto-schedule.service"
       - "tests/test_shopee_auto_pipeline.py"
+      - "tests/test_shopee_csv_web.py"
       - "tests/test_shopee_image_enrichment_web.py"
+      - "tests/test_shopee_product_pool_v2.py"
+      - "tests/test_shopee_product_pool_v2_edges.py"
+      - "tests/test_shopee_import_trigger_resilience.py"
       - ".github/workflows/shopee-auto-pipeline-ci.yml"
 
 jobs:
   shopee-auto:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       ACP_ADAPTER: mock
       ACP_SOURCE: mock
-      ACP_ENV: development
+      ACP_ENV: test
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: acp
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Capture focused test output
+      - name: Capture verification output
+        shell: bash
         run: |
           set +e
-          python -m unittest tests.test_shopee_auto_pipeline tests.test_auto_scheduler tests.test_auto_scheduler_safety -v > shopee-auto-test-output.txt 2>&1
-          echo "$?" > shopee-auto-test-exit.txt
+          {
+            echo "== Python =="
+            python --version
+
+            echo "== Install dependencies =="
+            python -m pip install -r acp/requirements.txt
+            install_exit=$?
+            echo "INSTALL_EXIT=$install_exit"
+
+            test_exit=99
+            compile_exit=99
+            if [ "$install_exit" -eq 0 ]; then
+              echo "== Focused tests =="
+              python -m unittest \
+                acp.tests.test_shopee_product_pool_v2 \
+                acp.tests.test_shopee_product_pool_v2_edges \
+                acp.tests.test_shopee_import_trigger_resilience \
+                acp.tests.test_shopee_auto_pipeline \
+                acp.tests.test_shopee_csv_web \
+                acp.tests.test_shopee_csv_enrichment \
+                acp.tests.test_shopee_image_enrichment_flow \
+                acp.tests.test_shopee_image_enrichment_web \
+                acp.tests.test_auto_scheduler \
+                acp.tests.test_auto_scheduler_safety -v
+              test_exit=$?
+              echo "TEST_EXIT=$test_exit"
+
+              echo "== Compile =="
+              python -m compileall acp/core acp/web acp/tests acp/adapters acp/run.py acp/shopee_auto_enrich.py
+              compile_exit=$?
+              echo "COMPILE_EXIT=$compile_exit"
+            fi
+
+            echo "== Whitespace =="
+            git -C acp diff --check HEAD^
+            diff_exit=$?
+            echo "DIFF_EXIT=$diff_exit"
+
+            overall=0
+            if [ "$install_exit" -ne 0 ] || [ "$test_exit" -ne 0 ] || [ "$compile_exit" -ne 0 ] || [ "$diff_exit" -ne 0 ]; then
+              overall=1
+            fi
+            echo "OVERALL_EXIT=$overall"
+            echo "$overall" > acp/shopee-auto-test-exit.txt
+          } > acp/shopee-auto-test-output.txt 2>&1
           exit 0
-      - name: Upload focused test output
+      - name: Upload verification output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: shopee-auto-test-output
           path: |
-            shopee-auto-test-output.txt
-            shopee-auto-test-exit.txt
-      - name: Enforce focused test result
-        run: test "$(cat shopee-auto-test-exit.txt)" = "0"
-      - name: Compile Python surfaces
-        run: python -m compileall core web tests adapters run.py shopee_auto_enrich.py
-      - name: Whitespace check
-        run: git diff --check HEAD^
+            acp/shopee-auto-test-output.txt
+            acp/shopee-auto-test-exit.txt
+      - name: Enforce verification result
+        run: test "$(cat acp/shopee-auto-test-exit.txt)" = "0"
