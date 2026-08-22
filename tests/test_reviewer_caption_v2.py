@@ -79,6 +79,24 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertIn("129.000đ", caption)
         self.assertIn(AFFILIATE, caption)
 
+    def test_real_csv_set_title_uses_a_concrete_listing_detail_not_generic_filler(self):
+        product = _product(
+            name="Set Bộ Cộc Sát Nách In Cún SỌC Chất Thun Tăm Hàn Mỏng Nhẹ Mặc Nhà Phong Cách Trẻ Trung Dễ Mặc Top",
+            current_price=85_000,
+            sold_count=1_000,
+        )
+
+        caption = content.generate(
+            product,
+            "spec_highlight",
+            AFFILIATE,
+            hook_code="H5_XAHOI",
+            rng=random.Random(7),
+        )
+
+        self.assertNotIn("chỉ note lại đúng thông tin nổi bật", caption.lower())
+        self.assertTrue("thun tăm" in caption.lower() or "mặc nhà" in caption.lower())
+
     def test_llm_rewrite_is_used_when_it_keeps_real_facts_and_short_structure(self):
         rewritten = (
             "118,7k mà 40k+ lượt mua, mình dừng lại xem.\n"
