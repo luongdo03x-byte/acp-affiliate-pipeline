@@ -12,9 +12,9 @@ from dataclasses import dataclass
 MAX_DRAFT_LEN = 380
 HOOK_WORD_TARGET = 12
 
-_SALESY_PHRASES = (
+_SALESY_OR_ROBOTIC_PHRASES = (
     "sự lựa chọn lý tưởng", "không thể bỏ lỡ", "hoàn hảo", "tuyệt vời",
-    "nâng tầm", "mua ngay", "chốt đơn ngay",
+    "nâng tầm", "mua ngay", "chốt đơn ngay", "listing", "detail",
 )
 _FABRICATED_EXPERIENCE = (
     "mình đã dùng", "mình dùng thử", "mình xài", "mình đã thử",
@@ -167,13 +167,13 @@ def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
         s, k, price = signals.size_range, signals.kind, signals.price_short
         return {
             "H1_GIAGIAM": f"{price}, mà range tới {s} — mình note lại.",
-            "H2_SOSANH": f"Không cần title dài, range {s} đã đủ đáng chú ý.",
+            "H2_SOSANH": f"Không cần tên dài, range {s} đã đủ đáng chú ý.",
             "H3_KHANHIEM": f"Khoan lướt, mẫu {k} này ghi range tới {s}.",
             "H4_CAUHOI": f"Ai {s} đang tìm {k} kiểu này không?",
             "H5_XAHOI": f"Range {s} là điểm mình chú ý nhất ở mẫu này.",
             "H6_HANGMOI": f"Lướt thấy {k} có range {s}, mình dừng lại.",
             "H7_TIETKIEM": f"{price} cho range {s}, mình để lại để xem kỹ.",
-            "H8_CANHBAO": f"Đừng bỏ qua nếu bạn đang cần range {s}.",
+            "H8_CANHBAO": f"Khoan lướt nếu bạn đang cần range {s}.",
             "H9_TRUCTIEP": f"Mẫu {k} này ghi size tới {s}.",
         }
 
@@ -187,35 +187,35 @@ def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
             "H5_XAHOI": f"{sold} lượt mua ở mức {price} — mình chú ý nhất chỗ này.",
             "H6_HANGMOI": f"Lướt tới {sold} lượt mua là mình dừng lại.",
             "H7_TIETKIEM": f"Mức {price} đi cùng {sold} lượt mua, mình note lại.",
-            "H8_CANHBAO": f"Đừng lướt qua con số {sold} lượt mua này.",
+            "H8_CANHBAO": f"Khoan lướt qua con số {sold} lượt mua này.",
             "H9_TRUCTIEP": f"{sold} lượt mua, giá hiện tại {price}.",
         }
 
     if signals.angle == "FEATURE":
-        detail, price = signals.feature or signals.use_case, signals.price_short
+        point, price = signals.feature or signals.use_case, signals.price_short
         return {
-            "H1_GIAGIAM": f"{price} mà có detail {detail}, mình note lại.",
-            "H2_SOSANH": f"Không cần title dài, {detail} đã đủ nổi bật.",
-            "H3_KHANHIEM": f"Khoan lướt, detail {detail} là điểm đáng nhìn.",
-            "H4_CAUHOI": f"Ai thích kiểu {detail} không?",
-            "H5_XAHOI": f"{detail.capitalize()} là detail mình muốn note lại ở mẫu này.",
-            "H6_HANGMOI": f"Lướt thấy {detail}, mình dừng lại xem.",
-            "H7_TIETKIEM": f"Mức {price} với detail {detail}, mình để lại đây.",
-            "H8_CANHBAO": f"Đừng bỏ qua nếu bạn đang tìm kiểu {detail}.",
-            "H9_TRUCTIEP": f"Điểm chính trên listing: {detail}.",
+            "H1_GIAGIAM": f"{price}, còn điểm mình để ý là {point}.",
+            "H2_SOSANH": f"Không cần tên dài, {point} mới là điểm chính.",
+            "H3_KHANHIEM": f"Khoan lướt, phần {point} khá đáng nhìn.",
+            "H4_CAUHOI": f"Ai thích kiểu {point} không?",
+            "H5_XAHOI": f"{point.capitalize()} là điểm mình để ý nhất ở mẫu này.",
+            "H6_HANGMOI": f"Lướt thấy {point}, mình dừng lại xem.",
+            "H7_TIETKIEM": f"Mức {price} với phần {point}, mình để lại đây.",
+            "H8_CANHBAO": f"Khoan lướt nếu bạn đang tìm kiểu {point}.",
+            "H9_TRUCTIEP": f"Điểm mình để ý: {point}.",
         }
 
     price = signals.price_short
     return {
         "H1_GIAGIAM": f"Mức {price} là lý do mình dừng ở món này.",
-        "H2_SOSANH": f"Không cần title dài, mức {price} đã đủ để xem tiếp.",
+        "H2_SOSANH": f"Không cần tên dài, mức {price} đã đủ để xem tiếp.",
         "H3_KHANHIEM": f"Khoan lướt, món này đang ở mức {price}.",
         "H4_CAUHOI": f"{price} cho kiểu này, có đáng xem không?",
-        "H5_XAHOI": f"{price} là con số mình chú ý nhất ở listing này.",
+        "H5_XAHOI": f"{price} là con số làm mình dừng lại xem.",
         "H6_HANGMOI": f"Lướt tới mức {price} là mình dừng lại xem.",
         "H7_TIETKIEM": f"Ai đang canh tầm {price}, mình để lại mẫu này.",
-        "H8_CANHBAO": f"Đừng lướt qua nếu bạn đang canh tầm {price}.",
-        "H9_TRUCTIEP": f"Giá hiện tại trên listing: {price}.",
+        "H8_CANHBAO": f"Khoan lướt nếu bạn đang canh tầm {price}.",
+        "H9_TRUCTIEP": f"Giá mình thấy ở đây là {price}.",
     }
 
 
@@ -241,17 +241,17 @@ def select_hook(signals: ReviewerSignals, hook_code: str = None) -> str:
 
 
 def _detail_line(signals: ReviewerSignals) -> str:
+    # The main FEATURE angle already states the feature in the hook. For other
+    # angles, allow one concrete supporting detail from the title, then stop.
+    if signals.angle == "FEATURE":
+        return ""
     if signals.feature:
-        return f"Listing ghi {signals.feature}."
-    if signals.use_case:
-        return f"Listing ghi kiểu này để {signals.use_case}."
-    if signals.size_range:
-        return f"Range size {signals.size_range} được ghi ngay trên listing."
-    return "Mình chỉ giữ lại đúng thông tin có trên listing."
+        return f"Mình để ý thêm phần {signals.feature}."
+    return ""
 
 
 def _support_line(signals: ReviewerSignals) -> str:
-    if signals.angle == "SOCIAL_PROOF":
+    if signals.angle in ("SOCIAL_PROOF", "PRICE"):
         return ""
     bits = [signals.price_full]
     if signals.sold_label:
@@ -287,7 +287,8 @@ def _safe_rewrite(candidate: str, draft: str, affiliate_link: str) -> bool:
     if len(nonempty[0].split()) > HOOK_WORD_TARGET:
         return False
     flat = _fold(candidate)
-    if any(_fold(phrase) in flat for phrase in _SALESY_PHRASES + _FABRICATED_EXPERIENCE):
+    blocked = _SALESY_OR_ROBOTIC_PHRASES + _FABRICATED_EXPERIENCE
+    if any(_fold(phrase) in flat for phrase in blocked):
         return False
     if "#" in candidate:
         return False
@@ -308,14 +309,15 @@ def _rewrite_prompt(product, draft: str) -> str:
         "- Dòng đầu tối đa 12 từ.\n"
         "- Một angle chính; không liệt kê hàng loạt lợi ích.\n"
         "- Viết như nhắn cho một người bạn, không phải catalogue/brand.\n"
-        "- Không chép nguyên tên listing dài.\n"
+        "- Không chép nguyên tên sản phẩm dài.\n"
         "- Không bịa đã mua/đã mặc/đã dùng/đã thử.\n"
         "- Không thêm công dụng, số liệu, giảm giá, urgency hay social proof ngoài dữ liệu.\n"
         "- Không dùng: hoàn hảo, tuyệt vời, nâng tầm, không thể bỏ lỡ, sự lựa chọn lý tưởng, mua ngay.\n"
+        "- Tránh từ máy móc như listing/detail trong caption.\n"
         "- 0-2 emoji; không markdown; không hashtag.\n"
         "- Một CTA mềm và giữ nguyên URL.\n\n"
         "<<<FACT>>>\n"
-        f"Tên listing: {title}\nGiá: {price}\nSold count: {sold}\nDraft an toàn:\n{draft}\n"
+        f"Tên sản phẩm: {title}\nGiá: {price}\nSold count: {sold}\nDraft an toàn:\n{draft}\n"
         "<<<HẾT_FACT>>>\n\nChỉ trả caption, không giải thích."
     )
 
