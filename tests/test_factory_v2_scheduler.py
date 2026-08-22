@@ -116,6 +116,23 @@ class FactoryV2SchedulerTests(unittest.TestCase):
         self.assertEqual(account["id"], assigned["account_id"])
         self.assertEqual("START_ACP", assigned["desired_action"])
 
+    def test_oauth_failed_threads_retry_remains_gated_from_start_acp(self):
+        account = self._seed_threads_retry("ACP_ACTIVE")
+        self.conn.execute(
+            """UPDATE factory_account
+               SET last_error_code='OAUTH_FAILED', last_error_message='expired'
+               WHERE id=?""",
+            (account["id"],),
+        )
+
+        assigned = self.scheduler.assign_next("worker-01")
+
+        self.assertIsNone(assigned)
+        self.assertIsNone(self.repo.get_active_job_for_account(account["id"]))
+        saved = self.repo.get_account(account["id"])
+        self.assertEqual("OAUTH_FAILED", saved["last_error_code"])
+        self.assertEqual("READY", self.repo.get_worker("worker-01")["state"])
+
     def test_expired_lease_with_live_heartbeat_enters_reconciliation(self):
         assigned = self.scheduler.assign_next("worker-01")
         now = datetime.now(timezone.utc)
