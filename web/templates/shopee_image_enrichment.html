@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Shopee Affiliate</div>
     <h1>Shopee Product Pool</h1>
-    <p class="lede">Import CSV một lần; ACP tự enrich ảnh và đưa sản phẩm READY vào Threads Auto khi đủ điều kiện.</p>
+    <p class="lede">Import CSV một lần; ACP tự xếp việc enrich ảnh, rồi chỉ sản phẩm Shopee đủ điều kiện mới đi vào Threads Auto.</p>
   </div>
   <a class="btn btn--ghost" href="/sanpham/shopee-import">Import CSV</a>
 </div>
@@ -13,40 +13,128 @@
 {% if err %}<div class="alert alert--error"><strong>Không thể tiếp tục.</strong><span>{{ err }}</span></div>{% endif %}
 {% if message %}<div class="alert alert--success"><strong>✓</strong><span>{{ message }}</span></div>{% endif %}
 
-<section class="catalog-summary" aria-label="Tổng quan Shopee Product Pool">
+<section class="catalog-summary" aria-label="Tổng quan Shopee Product Pool" data-summary-total="{{ summary.total }}">
   <div class="catalog-stat"><span>Tổng sản phẩm</span><strong>{{ summary.total|num }}</strong></div>
-  <div class="catalog-stat"><span>Ảnh READY</span><strong>{{ summary.ready|num }}</strong></div>
+  <div class="catalog-stat"><span>Chưa dùng</span><strong>{{ summary.unused|num }}</strong></div>
   <div class="catalog-stat"><span>Auto eligible</span><strong>{{ summary.auto_eligible|num }}</strong></div>
-  <div class="catalog-stat"><span>Đã lên lịch</span><strong>{{ summary.auto_scheduled|num }}</strong></div>
-  <div class="catalog-stat"><span>Chờ duyệt</span><strong>{{ summary.auto_review|num }}</strong></div>
-  <div class="catalog-stat"><span>CSV quá hạn</span><strong>{{ summary.auto_stale|num }}</strong></div>
+  <div class="catalog-stat"><span>Đã lên lịch</span><strong>{{ summary.scheduled|num }}</strong></div>
+  <div class="catalog-stat"><span>Đã đăng</span><strong>{{ summary.published|num }}</strong></div>
+  <div class="catalog-stat"><span>Chờ duyệt</span><strong>{{ summary.review|num }}</strong></div>
+  <div class="catalog-stat"><span>Ảnh READY</span><strong>{{ summary.ready|num }}</strong></div>
+  <div class="catalog-stat"><span>CSV quá hạn</span><strong>{{ summary.stale|num }}</strong></div>
   <div class="catalog-stat"><span>Cần Helper</span><strong>{{ summary.needs_helper|num }}</strong></div>
   <div class="catalog-stat"><span>Lỗi ảnh</span><strong>{{ summary.failed|num }}</strong></div>
 </section>
 
-<div class="tabs" role="navigation" aria-label="Lọc trạng thái enrich ảnh">
-  <a class="tab {{ 'tab--active' if status_filter == 'all' }}" href="{{ url_for('shopee_image_enrichment.page', status='all') }}">Tất cả</a>
-  <a class="tab {{ 'tab--active' if status_filter == 'missing' }}" href="{{ url_for('shopee_image_enrichment.page', status='missing') }}">Thiếu ảnh</a>
-  <a class="tab {{ 'tab--active' if status_filter == 'ready' }}" href="{{ url_for('shopee_image_enrichment.page', status='ready') }}">Đã có ảnh</a>
-  <a class="tab {{ 'tab--active' if status_filter == 'needs_helper' }}" href="{{ url_for('shopee_image_enrichment.page', status='needs_helper') }}">Cần Helper</a>
-  <a class="tab {{ 'tab--active' if status_filter == 'failed' }}" href="{{ url_for('shopee_image_enrichment.page', status='failed') }}">Lỗi</a>
-</div>
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="get" action="{{ url_for('shopee_image_enrichment.page') }}">
+    <div class="section-heading" style="align-items:flex-end;gap:12px;flex-wrap:wrap">
+      <div style="min-width:220px;flex:2">
+        <label for="pool-q">Tìm sản phẩm / shop</label>
+        <input id="pool-q" name="q" type="search" value="{{ filters.q }}" placeholder="Tên sản phẩm hoặc shop" style="width:100%">
+      </div>
+      <div style="min-width:180px;flex:1">
+        <label for="pool-niche">Ngách</label>
+        <select id="pool-niche" name="niche" style="width:100%">
+          <option value="all" {{ 'selected' if filters.niche == 'all' else '' }}>Tất cả ngách</option>
+          {% for option in niche_options %}
+          <option value="{{ option.code }}" {{ 'selected' if filters.niche == option.code else '' }}>{{ option.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="min-width:150px;flex:1">
+        <label for="pool-auto">Auto</label>
+        <select id="pool-auto" name="auto" style="width:100%">
+          {% for value, label in [
+            ('all','Tất cả'), ('eligible','Eligible'), ('waiting_image','Chờ ảnh'),
+            ('stale','CSV quá hạn'), ('ineligible','Không đủ điều kiện'),
+            ('review','Chờ duyệt'), ('scheduled','Đã lên lịch'), ('published','Đã đăng')
+          ] %}
+          <option value="{{ value }}" {{ 'selected' if filters.auto == value else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="min-width:150px;flex:1">
+        <label for="pool-image">Ảnh</label>
+        <select id="pool-image" name="image" style="width:100%">
+          {% for value, label in [
+            ('all','Tất cả'), ('ready','READY'), ('missing','Thiếu ảnh'),
+            ('pending','Đang chờ'), ('needs_helper','Cần Helper'), ('failed','Lỗi')
+          ] %}
+          <option value="{{ value }}" {{ 'selected' if filters.image == value else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="min-width:150px;flex:1">
+        <label for="pool-usage">Đã sử dụng</label>
+        <select id="pool-usage" name="usage" style="width:100%">
+          {% for value, label in [
+            ('all','Tất cả'), ('unused','Chưa dùng'), ('scheduled','Đã lên lịch'),
+            ('review','Chờ duyệt'), ('published','Đã đăng')
+          ] %}
+          <option value="{{ value }}" {{ 'selected' if filters.usage == value else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="min-width:100px">
+        <label for="pool-per-page">Mỗi trang</label>
+        <select id="pool-per-page" name="per_page">
+          {% for size in [20, 50, 100] %}<option value="{{ size }}" {{ 'selected' if filters.per_page == size else '' }}>{{ size }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn--primary" type="submit">Lọc</button>
+        <a class="btn btn--ghost" href="{{ url_for('shopee_image_enrichment.page') }}">Xóa lọc</a>
+      </div>
+    </div>
+  </form>
+</section>
+
+<section class="card" style="margin-bottom:16px">
+  <div class="section-heading">
+    <div>
+      <h2>Thống kê theo ngách</h2>
+      <p class="note">Một sản phẩm có thể thuộc nhiều ngách nên các tổng theo ngách có thể chồng lấp.</p>
+    </div>
+  </div>
+  <div class="catalog-summary" style="margin-bottom:0">
+    {% for stat in niche_stats %}
+    <a class="catalog-stat" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=stat.code, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page) }}" style="text-decoration:none">
+      <span>{{ stat.name }}</span>
+      <strong>{{ stat.total|num }}</strong>
+      <small class="note">Unused {{ stat.unused|num }} · Eligible {{ stat.auto_eligible|num }} · Scheduled {{ stat.scheduled|num }} · Published {{ stat.published|num }}</small>
+    </a>
+    {% endfor %}
+  </div>
+</section>
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <div class="section-heading">
     <div>
       <h2>Auto pipeline</h2>
-      <p class="note">READY products tự tham gia Threads Auto khi đủ niche, cooldown, quota và slot. Các nút dưới đây chỉ dùng để retry/recovery thủ công; mỗi lượt vẫn giới hạn 20 sản phẩm.</p>
+      <p class="note">Import mới tự tạo job enrich ngay cho sản phẩm PENDING. Recovery 60 phút và các nút dưới đây chỉ là đường dự phòng; mỗi batch vẫn tối đa 20 sản phẩm.</p>
     </div>
     <div class="form-actions">
       <form method="post" action="{{ url_for('shopee_image_enrichment.backfill') }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-        <input type="hidden" name="status" value="{{ status_filter }}">
+        <input type="hidden" name="q" value="{{ filters.q }}">
+        <input type="hidden" name="niche" value="{{ filters.niche }}">
+        <input type="hidden" name="auto" value="{{ filters.auto }}">
+        <input type="hidden" name="image" value="{{ filters.image }}">
+        <input type="hidden" name="usage" value="{{ filters.usage }}">
+        <input type="hidden" name="per_page" value="{{ filters.per_page }}">
+        <input type="hidden" name="page" value="{{ filters.page }}">
         <button class="btn btn--ghost" type="submit">Recovery: quét thiếu ảnh</button>
       </form>
       <form method="post" action="{{ url_for('shopee_image_enrichment.run_enrichment_batch') }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-        <input type="hidden" name="status" value="{{ status_filter }}">
+        <input type="hidden" name="q" value="{{ filters.q }}">
+        <input type="hidden" name="niche" value="{{ filters.niche }}">
+        <input type="hidden" name="auto" value="{{ filters.auto }}">
+        <input type="hidden" name="image" value="{{ filters.image }}">
+        <input type="hidden" name="usage" value="{{ filters.usage }}">
+        <input type="hidden" name="per_page" value="{{ filters.per_page }}">
+        <input type="hidden" name="page" value="{{ filters.page }}">
         <button class="btn btn--primary" type="submit">Recovery: enrich 20</button>
       </form>
     </div>
@@ -63,16 +151,18 @@
         <th>Giá</th>
         <th>Đã bán</th>
         <th>Hoa hồng</th>
-        <th>Trạng thái ảnh</th>
+        <th>Ảnh</th>
+        <th>Usage</th>
         <th>Auto</th>
         <th>Hành động</th>
       </tr>
     </thead>
     <tbody>
     {% for item in items %}
-      {% set state = item.enrichment_status or 'PENDING' %}
+      {% set state = item.enrichment_status or 'UNQUEUED' %}
       {% set auto = item.auto_state or 'WAITING_IMAGE' %}
-      <tr>
+      {% set usage = item.usage_state or 'UNUSED' %}
+      <tr data-product-id="{{ item.id }}" data-auto-state="{{ auto }}" data-usage-state="{{ usage }}" data-image-state="{{ state }}">
         <td style="width:88px">
           {% if item.main_image_url %}
             <img src="{{ item.main_image_url }}" alt="Ảnh {{ item.name }}" loading="lazy"
@@ -84,41 +174,59 @@
         <td>
           <strong>{{ item.name }}</strong>
           <div class="note">{{ item.shop_name or '—' }}</div>
+          {% if item.niche_codes %}<div class="note">{{ item.niche_codes|join(', ') }}</div>{% endif %}
           <div class="link-readout"><a href="{{ item.product_url }}" target="_blank" rel="noopener noreferrer">Mở Shopee</a></div>
         </td>
         <td>{{ item.current_price|vnd }}</td>
         <td>{{ item.sold_count|num }}</td>
         <td>
-          {% if item.commission_rate_percent is not none %}{{ item.commission_rate_percent }}%{% else %}—{% endif %}
-          <div class="note">{% if item.commission_amount is not none %}{{ item.commission_amount|vnd }}{% endif %}</div>
+          {% if item.commission_rate_percent is not none %}{{ item.commission_rate_percent }}%{% elif item.commission_rate is not none %}{{ item.commission_rate }}%{% else %}—{% endif %}
+          <div class="note">{% if item.commission_amount is not none %}{{ item.commission_amount|vnd }}{% elif item.commission_value is not none %}{{ item.commission_value|vnd }}{% endif %}</div>
         </td>
         <td>
           <span class="status-badge">{{ state }}</span>
-          {% if item.last_error %}<div class="note" title="{{ item.last_error_code or '' }}">{{ item.last_error }}</div>{% endif %}
+          {% if item.enrichment_error %}<div class="note" title="{{ item.enrichment_error_code or '' }}">{{ item.enrichment_error }}</div>{% endif %}
         </td>
+        <td><span class="status-badge">{{ usage }}</span></td>
         <td>
           <span class="status-badge">{{ auto }}</span>
           {% if auto == 'SCHEDULED' %}
             <div class="note">{{ item.auto_channel_handle or 'Threads' }}</div>
             {% if item.auto_scheduled_at %}<div class="note">{{ item.auto_scheduled_at }}</div>{% endif %}
+          {% elif auto == 'ELIGIBLE' %}
+            <div class="note">{{ item.auto_channel_handle or 'Có kênh Auto phù hợp' }}</div>
           {% elif auto == 'STALE' %}
             <div class="note">Import lại CSV mới để Auto dùng sản phẩm.</div>
           {% elif auto == 'REVIEW' %}
             <div class="note">Kiểm tra tại Chờ duyệt.</div>
+          {% elif auto == 'INELIGIBLE' %}
+            <div class="note">Không có kênh Auto đang bật mà sản phẩm vượt qua toàn bộ eligibility hiện tại.</div>
           {% endif %}
         </td>
         <td>
           <div class="form-actions" style="align-items:flex-start;flex-wrap:wrap">
-            {% if state in ('PENDING', 'PUBLIC_FETCH', 'DOWNLOADING') %}
+            {% if state in ('PENDING', 'PUBLIC_FETCH', 'DOWNLOADING', 'UNQUEUED') %}
             <form method="post" action="{{ url_for('shopee_image_enrichment.enrich_one', product_id=item.id) }}">
               <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="status" value="{{ status_filter }}">
+              <input type="hidden" name="q" value="{{ filters.q }}">
+              <input type="hidden" name="niche" value="{{ filters.niche }}">
+              <input type="hidden" name="auto" value="{{ filters.auto }}">
+              <input type="hidden" name="image" value="{{ filters.image }}">
+              <input type="hidden" name="usage" value="{{ filters.usage }}">
+              <input type="hidden" name="per_page" value="{{ filters.per_page }}">
+              <input type="hidden" name="page" value="{{ filters.page }}">
               <button class="btn btn--small btn--primary" type="submit">Enrich ảnh</button>
             </form>
             {% elif state == 'FAILED' %}
             <form method="post" action="{{ url_for('shopee_image_enrichment.retry_one', product_id=item.id) }}">
               <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="status" value="{{ status_filter }}">
+              <input type="hidden" name="q" value="{{ filters.q }}">
+              <input type="hidden" name="niche" value="{{ filters.niche }}">
+              <input type="hidden" name="auto" value="{{ filters.auto }}">
+              <input type="hidden" name="image" value="{{ filters.image }}">
+              <input type="hidden" name="usage" value="{{ filters.usage }}">
+              <input type="hidden" name="per_page" value="{{ filters.per_page }}">
+              <input type="hidden" name="page" value="{{ filters.page }}">
               <button class="btn btn--small btn--ghost" type="submit">Retry</button>
             </form>
             {% elif state == 'NEEDS_HELPER' %}
@@ -143,6 +251,20 @@
 {% else %}
 <section class="card"><p class="note">Không có sản phẩm phù hợp bộ lọc này.</p></section>
 {% endif %}
+
+<nav class="card" aria-label="Phân trang Product Pool" data-total-pages="{{ pagination.total_pages }}" style="margin-top:16px;padding:12px 16px">
+  <div class="section-heading" style="margin:0">
+    <span class="note">{{ pagination.total_filtered|num }} kết quả · Trang {{ pagination.page }}/{{ pagination.total_pages }}</span>
+    <div class="form-actions">
+      {% if pagination.has_prev %}
+      <a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page-1) }}">← Trước</a>
+      {% endif %}
+      {% if pagination.has_next %}
+      <a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page+1) }}">Sau →</a>
+      {% endif %}
+    </div>
+  </div>
+</nav>
 
 <script>
 (function () {
