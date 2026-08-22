@@ -6,6 +6,33 @@ Nguyên tắc nền: **chỉ tự động hoá những việc một publisher h�
 lấy dữ liệu qua datafeed chính thức, đăng bài qua Threads Graph API bằng tài khoản
 mình sở hữu, và đo doanh thu thật thay vì đếm số bài đăng.
 
+## Chuyển Account Factory giữa hai máy Ubuntu
+
+Luồng được hỗ trợ là **một máy ACTIVE tại một thời điểm**. Trước khi rời máy đang chạy:
+
+```bash
+./manage.sh handoff-out
+```
+
+Lần đầu trên máy còn lại:
+
+```bash
+git clone -b feat/account-factory-android git@github.com:luongdo03x-byte/acp-affiliate-pipeline.git
+cd acp-affiliate-pipeline
+./setup.sh
+```
+
+Các lần chuyển máy sau, trong clone đã có sẵn:
+
+```bash
+git pull --ff-only
+./setup.sh
+```
+
+State bền vững được chuyển bằng private GitHub Release tag `acp-portable-state`. Asset tar có chứa `.env.local` ở dạng **plaintext** bên trong archive, bao gồm `ACP_MASTER_KEY` và provider/app secrets; đây không phải lớp mã hoá thứ hai. Bất kỳ ai có quyền tải private release của repo đều có thể lấy các secret đó, vì vậy nên bảo vệ tài khoản GitHub bằng **2FA** và **passkey**. Không commit `.env.local` vào Git.
+
+`./setup.sh` restore DB/env/avatar, kiểm tra generation, Git/GitHub auth, SQLite, credential decrypt, OAuth config, AVD và callback trước khi resume/start. AVD/browser profile không được copy giữa máy; **Chrome Terms**, **OAuth consent**, OTP/CAPTCHA hoặc challenge bảo mật vẫn có thể cần người vận hành thao tác thủ công.
+
 ---
 
 ## Chạy trong 30 giây
@@ -58,9 +85,11 @@ những thứ không thể tự sinh an toàn được. Không cần điền gì
 nhập, `ACP_ADAPTER=mock`), đủ để xem dashboard/demo.
 
 **Muốn giữ nguyên kết nối Threads + catalog đã có (chuyển máy, không phải
-máy hoàn toàn mới)** — hai cách, chọn một:
+máy hoàn toàn mới)** — workflow Account Factory mới ở đầu README dùng private
+Release `acp-portable-state`. Cơ chế GPG/copy tay dưới đây chỉ còn là luồng legacy
+cho deployment ACP cũ, không phải workflow handoff Account Factory được khuyến nghị.
 
-1. **Mã hoá rồi commit vào git (khuyên dùng, không cần copy tay mỗi lần):**
+1. **Mã hoá rồi commit vào git (legacy):**
 
    ```bash
    ./manage.sh encrypt-secrets    # hỏi passphrase, tạo secrets/env.local.gpg
@@ -69,22 +98,11 @@ máy hoàn toàn mới)** — hai cách, chọn một:
    git push
    ```
 
-   `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 bằng `gpg`, an
-   toàn để commit — không phải secret dạng chữ thường. Passphrase không
-   bao giờ truyền qua đối số dòng lệnh (gpg tự hỏi qua pinentry) nên
-   không lộ qua shell history; **tự lưu passphrase ở nơi khác git** (mất
-   passphrase là mất luôn khả năng đọc lại). Máy mới chạy `./manage.sh
-   setup` sẽ tự thấy file này, hỏi passphrase, và giải mã ra
-   `shared/.env.local` — khỏi copy tay. **Mỗi lần sửa
-   `shared/.env.local` (đổi token, thêm key mới...) phải chạy lại
-   `encrypt-secrets` rồi commit** — file trong git không tự đồng bộ
-   theo file thật.
+   `secrets/env.local.gpg` là bản mã hoá đối xứng AES-256 bằng `gpg`. Passphrase
+   không truyền qua đối số dòng lệnh; tự lưu passphrase ở nơi khác git.
 
-2. **Copy tay ngoài git:** copy nguyên thư mục `shared/` (chứa
-   `.env.local` + CSDL) từ máy cũ sang máy mới bằng `scp`/`rsync`
-   **trước khi** chạy `setup` — không đi qua git. `setup` phát hiện
-   `.env.local` đã tồn tại thì giữ nguyên, không tạo mới, không cần
-   passphrase gì cả.
+2. **Copy tay ngoài git (legacy):** copy nguyên thư mục `shared/` bằng `scp`/`rsync`
+   trước khi chạy setup.
 
 ### Vòng đời hằng ngày
 
