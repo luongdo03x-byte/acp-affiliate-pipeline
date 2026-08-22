@@ -10,6 +10,7 @@ BACKUP_DIR="$BASE/backups"
 RELEASES_DIR="$BASE/releases"
 APP_PID="$RUN_DIR/acp.pid"
 NGROK_PID="$RUN_DIR/ngrok.pid"
+FACTORY_PID="$RUN_DIR/account-factory.pid"
 PREVIOUS_FILE="$RUN_DIR/previous_release"
 SCRIPT_REAL="$(readlink -f "$0")"
 
@@ -27,6 +28,9 @@ Cách dùng:
   ./manage.sh start
   ./manage.sh stop
   ./manage.sh restart
+  ./manage.sh factory-start
+  ./manage.sh factory-stop
+  ./manage.sh handoff-out
   ./manage.sh status
   ./manage.sh test
   ./manage.sh upgrade <file.zip> <version>
@@ -299,6 +303,51 @@ cmd_restart() {
     cmd_start
 }
 
+require_factory_ownership() {
+    local release="$1"
+    (
+        cd "$release"
+        "$release/.venv/bin/python" - "$SHARED/machine.json" <<'PY'
+from pathlib import Path
+import sys
+from core.factory_v2.portable_state import require_active_ownership
+try:
+    require_active_ownership(Path(sys.argv[1]))
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+    )
+}
+
+cmd_factory_start() {
+    local release
+    release="$(current_release)"
+    [[ -f "$release/account_factory_server.py" ]] || die "Thiếu account_factory_server.py trong $release"
+    [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
+
+    require_factory_ownership "$release"
+
+    if pid_matches "$FACTORY_PID" "account_factory_server.py"; then
+        info "FACTORY_ALREADY_RUNNING pid=$(cat "$FACTORY_PID")"
+        return 0
+    fi
+
+    rm -f "$FACTORY_PID"
+    (
+        cd "$release"
+        ACP_BASE="$BASE" nohup "$release/.venv/bin/python" "$release/account_factory_server.py" \
+            >>"$LOG_DIR/account-factory.log" 2>&1 &
+        echo $! >"$FACTORY_PID"
+    )
+    info "FACTORY_STARTED pid=$(cat "$FACTORY_PID")"
+}
+
+cmd_factory_stop() {
+    stop_pid "$FACTORY_PID" "account_factory_server.py" "Account Factory"
+    info "FACTORY_STOPPED"
+}
+
 cmd_status() {
     local release version
     release="$(current_release)"
@@ -312,8 +361,14 @@ cmd_status() {
         info "ACP     : STOPPED"
     fi
 
+    if pid_matches "$FACTORY_PID" "account_factory_server.py"; then
+        info "Factory : RUNNING (pid $(cat "$FACTORY_PID"))"
+    else
+        info "Factory : STOPPED"
+    fi
+
     if pid_matches "$NGROK_PID" "ngrok http"; then
-        info "ngrok   : RUNNING (pid $(cat "$NGROK_PID"))"
+        info "ngrok   : RUNNING (pid $(cat "$NGROK_PID")) url=$ngrok_url"
     else
         info "ngrok   : STOPPED"
     fi
@@ -524,6 +579,8 @@ case "${1:-}" in
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
+    factory-start) cmd_factory_start ;;
+    factory-stop) cmd_factory_stop ;;
     status) cmd_status ;;
     test) cmd_test ;;
     upgrade) shift; cmd_upgrade "$@" ;;
