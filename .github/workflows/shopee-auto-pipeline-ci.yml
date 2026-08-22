@@ -2,10 +2,13 @@ name: Shopee Auto Pipeline CI
 
 on:
   push:
-    branches: ["feat/shopee-auto-pipeline", "feat/shopee-product-pool-v2"]
+    branches: ["feat/shopee-auto-pipeline", "feat/shopee-product-pool-v2", "feat/reviewer-caption-engine-v2"]
   pull_request:
     paths:
       - "core/__init__.py"
+      - "core/content.py"
+      - "core/reviewer_caption.py"
+      - "core/reviewer_caption_runtime.py"
       - "core/shopee_auto_runtime.py"
       - "core/shopee_csv_import.py"
       - "core/shopee_import_runtime.py"
@@ -20,6 +23,7 @@ on:
       - "web/templates/shopee_csv_import.html"
       - "web/templates/shopee_image_enrichment.html"
       - "ops/acp-auto-schedule.service"
+      - "tests/test_reviewer_caption_v2.py"
       - "tests/test_shopee_auto_pipeline.py"
       - "tests/test_shopee_csv_web.py"
       - "tests/test_shopee_image_enrichment_web.py"
@@ -62,6 +66,7 @@ jobs:
             if [ "$install_exit" -eq 0 ]; then
               echo "== Focused tests =="
               python -m unittest \
+                acp.tests.test_reviewer_caption_v2 \
                 acp.tests.test_shopee_product_pool_v2 \
                 acp.tests.test_shopee_product_pool_v2_edges \
                 acp.tests.test_shopee_import_trigger_resilience \
