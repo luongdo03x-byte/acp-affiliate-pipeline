@@ -184,7 +184,7 @@ def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
             "H2_SOSANH": f"Giá {price}, lượt mua {sold}: con số khá đáng chú ý.",
             "H3_KHANHIEM": f"Khoan lướt, con số {sold} lượt mua khá đáng nhìn.",
             "H4_CAUHOI": f"{sold} lượt mua ở mức {price}, có đáng xem không?",
-            "H5_XAHOI": f"{sold} lượt mua ở mức {price} — mình chú ý nhất chỗ này.",
+            "H5_XAHOI": f"{sold} lượt mua ở mức {price} — mình chú ý.",
             "H6_HANGMOI": f"Lướt tới {sold} lượt mua là mình dừng lại.",
             "H7_TIETKIEM": f"Mức {price} đi cùng {sold} lượt mua, mình note lại.",
             "H8_CANHBAO": f"Khoan lướt qua con số {sold} lượt mua này.",
@@ -198,7 +198,7 @@ def _hook_set(signals: ReviewerSignals) -> dict[str, str]:
             "H2_SOSANH": f"Không cần tên dài, {point} mới là điểm chính.",
             "H3_KHANHIEM": f"Khoan lướt, phần {point} khá đáng nhìn.",
             "H4_CAUHOI": f"Ai thích kiểu {point} không?",
-            "H5_XAHOI": f"{point.capitalize()} là điểm mình để ý nhất ở mẫu này.",
+            "H5_XAHOI": f"{point.capitalize()} là điểm mình để ý nhất.",
             "H6_HANGMOI": f"Lướt thấy {point}, mình dừng lại xem.",
             "H7_TIETKIEM": f"Mức {price} với phần {point}, mình để lại đây.",
             "H8_CANHBAO": f"Khoan lướt nếu bạn đang tìm kiểu {point}.",
@@ -241,8 +241,6 @@ def select_hook(signals: ReviewerSignals, hook_code: str = None) -> str:
 
 
 def _detail_line(signals: ReviewerSignals) -> str:
-    # The main FEATURE angle already states the feature in the hook. For other
-    # angles, allow one concrete supporting detail from the title, then stop.
     if signals.angle == "FEATURE":
         return ""
     if signals.feature:
