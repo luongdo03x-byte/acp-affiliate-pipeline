@@ -55,6 +55,69 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
         (self.base / "acp").symlink_to(release, target_is_directory=True)
         return release
 
+    def _install_handoff_fakes(self, release, *, rogue_worker=False):
+        log = self.root / "handoff.log"
+        fake_bin = self.root / "handoff-bin"
+        fake_bin.mkdir(exist_ok=True)
+
+        fake_python = release / ".venv" / "bin" / "python"
+        fake_python.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'python:%s\\n' \"$*\" >>\"${ACP_TEST_HANDOFF_LOG:?}\"\n"
+            "if [[ \"$*\" == *'core.factory_v2.portable_cli resume'* ]]; then\n"
+            "  printf 'RESUME_RECONCILED leases=0 oauth=0 gated=0\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [[ \"$*\" == *'core.factory_v2.portable_cli handoff-out'* ]]; then\n"
+            "  printf 'HANDOFF_OK generation=4\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/usr/bin/env bash\n"
+            "case \"$*\" in\n"
+            "  *remote*origin*|*remote.origin.url*) printf 'git@github.com:luongdo03x-byte/acp-affiliate-pipeline.git\\n' ;;\n"
+            "  *rev-parse*HEAD*) printf 'abc123\\n' ;;\n"
+            "  *branch*--show-current*) printf 'feat/account-factory-android\\n' ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+
+        fake_pgrep = fake_bin / "pgrep"
+        fake_pgrep.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'pgrep:%s\\n' \"$*\" >>\"${ACP_TEST_HANDOFF_LOG:?}\"\n"
+            "if [[ \"${ACP_TEST_ROGUE_WORKER:-0}\" == 1 && \"$*\" == *account_factory_worker.py* ]]; then\n"
+            "  printf '4242 python workers/account_factory_worker.py --worker-id worker:test\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        fake_pgrep.chmod(0o755)
+
+        fake_adb = fake_bin / "adb"
+        fake_adb.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'adb:%s\\n' \"$*\" >>\"${ACP_TEST_HANDOFF_LOG:?}\"\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_adb.chmod(0o755)
+
+        env = self._env()
+        env["ACP_TEST_HANDOFF_LOG"] = str(log)
+        env["ACP_TEST_ROGUE_WORKER"] = "1" if rogue_worker else "0"
+        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        return log, env
+
     def test_usage_exposes_portable_factory_commands(self):
         result = subprocess.run(
             ["bash", str(self.manage), "--help"],
@@ -110,6 +173,67 @@ class FactoryV2ManagePortableTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, msg=result.stderr)
         self.assertIn("Factory : STOPPED", result.stdout)
+
+    def test_handoff_out_quiesces_resumes_then_exports_without_stopping_emulator(self):
+        release = self._seed_release(ownership="ACTIVE")
+        log, env = self._install_handoff_fakes(release)
+
+        result = subprocess.run(
+            ["bash", str(self.manage), "handoff-out"],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(0, result.returncode, msg=result.stdout + result.stderr)
+        self.assertIn("FACTORY_STOPPED", result.stdout)
+        self.assertIn("ACP_STOPPED", result.stdout)
+        self.assertIn("RESUME_RECONCILED leases=0 oauth=0 gated=0", result.stdout)
+        self.assertIn("HANDOFF_OK generation=4", result.stdout)
+
+        lines = log.read_text(encoding="utf-8").splitlines()
+        pgrep_indexes = [i for i, line in enumerate(lines) if line.startswith("pgrep:")]
+        resume_index = next(
+            i for i, line in enumerate(lines)
+            if "core.factory_v2.portable_cli resume" in line
+        )
+        handoff_index = next(
+            i for i, line in enumerate(lines)
+            if "core.factory_v2.portable_cli handoff-out" in line
+        )
+        self.assertTrue(pgrep_indexes, lines)
+        self.assertLess(max(pgrep_indexes), resume_index)
+        self.assertLess(resume_index, handoff_index)
+        handoff_line = lines[handoff_index]
+        self.assertIn(f"--base {self.base}", handoff_line)
+        self.assertIn("--repo luongdo03x-byte/acp-affiliate-pipeline", handoff_line)
+        self.assertIn("--git-commit abc123", handoff_line)
+        self.assertIn("--git-branch feat/account-factory-android", handoff_line)
+        self.assertFalse(any(line.startswith("adb:") for line in lines), lines)
+
+    def test_handoff_out_fails_closed_when_worker_process_remains(self):
+        release = self._seed_release(ownership="ACTIVE")
+        log, env = self._install_handoff_fakes(release, rogue_worker=True)
+
+        result = subprocess.run(
+            ["bash", str(self.manage), "handoff-out"],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("FACTORY_NOT_QUIESCENT", result.stdout + result.stderr)
+        lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        self.assertFalse(
+            any("core.factory_v2.portable_cli resume" in line for line in lines),
+            lines,
+        )
+        self.assertFalse(
+            any("core.factory_v2.portable_cli handoff-out" in line for line in lines),
+            lines,
+        )
+        self.assertFalse(any(line.startswith("adb:") for line in lines), lines)
 
 
 if __name__ == "__main__":
