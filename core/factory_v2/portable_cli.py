@@ -12,6 +12,7 @@ import sys
 import tempfile
 from typing import TextIO
 
+from .portable_crypto import decrypt_portable_bundle, encrypt_portable_bundle
 from .portable_doctor import require_portable_doctor
 from .portable_release import GitHubReleaseTransport
 from .portable_resume import reconcile_for_portable_resume
@@ -29,6 +30,9 @@ from .portable_state import (
 )
 
 
+_PORTABLE_BUNDLE_KEY_ENV = "ACP_PORTABLE_BUNDLE_KEY"
+
+
 def _output_stream(out: TextIO | None) -> TextIO:
     return out if out is not None else sys.stdout
 
@@ -42,6 +46,13 @@ def _generation_assets(assets: list[dict]) -> list[int]:
         if generation is not None:
             generations.append(generation)
     return generations
+
+
+def _portable_bundle_key() -> str:
+    value = str(os.environ.get(_PORTABLE_BUNDLE_KEY_ENV) or "").strip()
+    if not value:
+        raise RuntimeError("PORTABLE_BUNDLE_KEY_REQUIRED")
+    return value
 
 
 def _read_env_values(path: Path) -> dict[str, str]:
@@ -88,7 +99,8 @@ def handoff_out(
     transport=None,
     out: TextIO | None = None,
 ) -> int:
-    """Publish one immutable state generation, then relinquish local ownership."""
+    """Publish one immutable encrypted state generation, then relinquish local ownership."""
+    bundle_key = _portable_bundle_key()
     base = Path(base)
     shared = base / "shared"
     machine_path = shared / "machine.json"
@@ -108,18 +120,20 @@ def handoff_out(
         temp_root = Path(tmp_name)
         snapshot = temp_root / "acp-live.db"
         snapshot_sqlite(shared / "var" / "acp-live.db", snapshot)
-        archive = build_bundle(
+        plain_archive = build_bundle(
             snapshot_db=snapshot,
             env_path=shared / ".env.local",
             avatar_dir=shared / "avatars",
-            output_dir=temp_root / "bundle",
+            output_dir=temp_root / "plain",
             generation=generation,
             source_machine_id=state.machine_id,
             source_git_commit=git_commit,
             source_branch=git_branch,
         )
-        transport.upload(archive)
-        transport.verify_remote_asset(archive)
+        encrypted_archive = temp_root / "encrypted" / plain_archive.name
+        encrypt_portable_bundle(plain_archive, encrypted_archive, bundle_key)
+        transport.upload(encrypted_archive)
+        transport.verify_remote_asset(encrypted_archive)
         prune = getattr(transport, "prune_keep_latest", None)
         if callable(prune):
             prune(keep=5)
@@ -140,7 +154,8 @@ def handoff_in(
     out: TextIO | None = None,
     machine_id: str,
 ) -> int:
-    """Restore the newest remote generation and claim this machine ACTIVE."""
+    """Restore the newest encrypted remote generation and claim this machine ACTIVE."""
+    bundle_key = _portable_bundle_key()
     base = Path(base)
     machine_path = base / "shared" / "machine.json"
     transport = transport or GitHubReleaseTransport(repo)
@@ -163,10 +178,13 @@ def handoff_in(
             return remote_generation
 
     with tempfile.TemporaryDirectory(prefix="acp-portable-in-") as tmp_name:
-        archive = transport.download_generation(remote_generation, Path(tmp_name))
-        manifest = validate_bundle(archive, expected_generation=remote_generation)
+        temp_root = Path(tmp_name)
+        encrypted_archive = transport.download_generation(remote_generation, temp_root / "encrypted")
+        plain_archive = temp_root / "plain" / encrypted_archive.name
+        decrypt_portable_bundle(encrypted_archive, plain_archive, bundle_key)
+        manifest = validate_bundle(plain_archive, expected_generation=remote_generation)
         restore_bundle(
-            archive,
+            plain_archive,
             base=base,
             expected_generation=remote_generation,
         )
