@@ -1,8 +1,14 @@
 """Encrypted per-account credentials for Account Factory V2."""
 from __future__ import annotations
 
+from cryptography.exceptions import InvalidTag
+
 from core.crypto import decrypt, encrypt
 from core.db import now
+
+
+class CredentialDecryptError(RuntimeError):
+    """Stored account credential cannot be decrypted with the active master key."""
 
 
 def store_account_password(conn, account_id: str, password: str) -> None:
@@ -35,7 +41,10 @@ def get_account_password(conn, account_id: str) -> str | None:
     ).fetchone()
     if row is None:
         return None
-    return decrypt(row["password_encrypted"])
+    try:
+        return decrypt(row["password_encrypted"])
+    except InvalidTag as exc:
+        raise CredentialDecryptError("CREDENTIAL_DECRYPT_FAILED") from exc
 
 
 def has_account_password(conn, account_id: str) -> bool:
