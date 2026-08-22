@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -180,13 +181,39 @@ def resume(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="portable_cli")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    handoff_out_parser = commands.add_parser("handoff-out")
+    handoff_out_parser.add_argument("--base", type=Path, required=True)
+    handoff_out_parser.add_argument("--repo", required=True)
+    handoff_out_parser.add_argument("--git-commit", required=True)
+    handoff_out_parser.add_argument("--git-branch", required=True)
+
+    handoff_in_parser = commands.add_parser("handoff-in")
+    handoff_in_parser.add_argument("--base", type=Path, required=True)
+    handoff_in_parser.add_argument("--repo", required=True)
+
     doctor_parser = commands.add_parser("doctor")
     doctor_parser.add_argument("--base", type=Path, required=True)
     doctor_parser.add_argument("--repo-root", type=Path, required=True)
+
     resume_parser = commands.add_parser("resume")
     resume_parser.add_argument("--base", type=Path, required=True)
+
     args = parser.parse_args(argv)
-    if args.command == "doctor":
+    if args.command == "handoff-out":
+        handoff_out(
+            base=args.base,
+            repo=args.repo,
+            git_commit=args.git_commit,
+            git_branch=args.git_branch,
+        )
+    elif args.command == "handoff-in":
+        handoff_in(
+            base=args.base,
+            repo=args.repo,
+            machine_id=socket.gethostname(),
+        )
+    elif args.command == "doctor":
         doctor(base=args.base, repo_root=args.repo_root)
     else:
         resume(base=args.base)
