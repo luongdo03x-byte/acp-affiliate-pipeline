@@ -200,6 +200,24 @@ class PortableDoctorReadinessTests(unittest.TestCase):
         self.assertTrue(social_only["OAUTH_CONFIG"].ok)
         self.assertEqual("OK", social_only["OAUTH_CONFIG"].code)
 
+    def test_doctor_fails_closed_when_factory_schema_is_incomplete(self):
+        git_env = self._install_fake_git()
+        self._install_fake_gh(authenticated=True)
+        self._write_machine()
+        self._write_env(oauth=True)
+        self._seed_db()
+
+        db_path = self.var / "acp-live.db"
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        conn.execute("DROP TABLE factory_resource_sample")
+        conn.close()
+
+        checks = self._by_name(self._run(extra_env=git_env))
+
+        self.assertIn("FACTORY_SCHEMA", checks)
+        self.assertFalse(checks["FACTORY_SCHEMA"].ok)
+        self.assertEqual("FACTORY_SCHEMA_INVALID", checks["FACTORY_SCHEMA"].code)
+
 
 if __name__ == "__main__":
     unittest.main()
