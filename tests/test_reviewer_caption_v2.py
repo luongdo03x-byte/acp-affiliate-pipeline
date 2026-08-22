@@ -51,6 +51,7 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertLessEqual(len(nonempty[0].split()), 12)
         self.assertIn("40", caption)
         self.assertIn(AFFILIATE, caption)
+        self.assertIn(content.DISCLOSURE_DEFAULT, caption)
         self.assertNotIn(product["name"], caption)
         self.assertLessEqual(len(caption), 500)
         for phrase in (
@@ -141,6 +142,7 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
 
         self.assertTrue(caption.startswith("118,7k mà 40k+ lượt mua"))
         self.assertIn(AFFILIATE, caption)
+        self.assertIn(content.DISCLOSURE_DEFAULT, caption)
 
     def test_llm_rewrite_falls_back_when_it_invents_first_hand_experience(self):
         unsafe = (
