@@ -12,6 +12,8 @@ on:
       - "web/factory_v2.py"
       - "workers/account_factory_worker.py"
       - "account_factory_server.py"
+      - "manage.sh"
+      - "setup.sh"
       - "tests/test_account_factory.py"
       - "tests/test_factory_v2_*.py"
       - "android/account-factory/**"
@@ -26,6 +28,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: Shell syntax
+        run: |
+          bash -n manage.sh
+          bash -n setup.sh
       - name: Account Factory backend tests
         env:
           ACP_ADAPTER: mock
@@ -82,7 +88,17 @@ jobs:
             tests.test_factory_v2_instagram_regressions \
             tests.test_factory_v2_threads_flow \
             tests.test_factory_v2_threads_activation_regressions \
-            tests.test_factory_v2_avd_worker_agent -v
+            tests.test_factory_v2_avd_worker_agent \
+            tests.test_factory_v2_portable_state \
+            tests.test_factory_v2_portable_release \
+            tests.test_factory_v2_portable_doctor \
+            tests.test_factory_v2_portable_doctor_readiness \
+            tests.test_factory_v2_portable_resume \
+            tests.test_factory_v2_portable_cli \
+            tests.test_factory_v2_manage_portable \
+            tests.test_factory_v2_portable_setup \
+            tests.test_factory_v2_portable_setup_prereq \
+            tests.test_factory_v2_portable_setup_rollback -v
 
   android:
     runs-on: ubuntu-latest
