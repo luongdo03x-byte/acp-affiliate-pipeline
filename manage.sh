@@ -378,8 +378,11 @@ cmd_handoff_out() {
     cmd_stop
     require_factory_quiescent
 
-    "$release/.venv/bin/python" -m core.factory_v2.portable_cli resume \
-        --base "$BASE"
+    (
+        cd "$release"
+        "$release/.venv/bin/python" -m core.factory_v2.portable_cli resume \
+            --base "$BASE"
+    )
 
     remote="$(git -C "$release" remote get-url origin 2>/dev/null || true)"
     repo="$(github_repo_slug "$remote" 2>/dev/null || true)"
@@ -388,11 +391,14 @@ cmd_handoff_out() {
     git_branch="$(git -C "$release" branch --show-current 2>/dev/null || true)"
     [[ -n "$git_commit" && -n "$git_branch" ]] || die "GIT_METADATA_UNAVAILABLE"
 
-    "$release/.venv/bin/python" -m core.factory_v2.portable_cli handoff-out \
-        --base "$BASE" \
-        --repo "$repo" \
-        --git-commit "$git_commit" \
-        --git-branch "$git_branch"
+    (
+        cd "$release"
+        "$release/.venv/bin/python" -m core.factory_v2.portable_cli handoff-out \
+            --base "$BASE" \
+            --repo "$repo" \
+            --git-commit "$git_commit" \
+            --git-branch "$git_branch"
+    )
 }
 
 cmd_status() {
