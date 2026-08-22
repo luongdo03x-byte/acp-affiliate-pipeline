@@ -79,6 +79,67 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertIn("129.000đ", caption)
         self.assertIn(AFFILIATE, caption)
 
+    def test_llm_rewrite_is_used_when_it_keeps_real_facts_and_short_structure(self):
+        rewritten = (
+            "118,7k mà 40k+ lượt mua, mình dừng lại xem.\n"
+            "Form rộng + cạp chun là điểm mình để ý.\n"
+            "Ai đang tìm kiểu này xem thêm ↓\n"
+            f"{AFFILIATE}"
+        )
+        content.set_llm(lambda _prompt: rewritten)
+
+        caption = content.generate(
+            _product(),
+            "spec_highlight",
+            AFFILIATE,
+            hook_code="H5_XAHOI",
+            rng=random.Random(4),
+        )
+
+        self.assertTrue(caption.startswith("118,7k mà 40k+ lượt mua"))
+        self.assertIn(AFFILIATE, caption)
+
+    def test_llm_rewrite_falls_back_when_it_invents_first_hand_experience(self):
+        unsafe = (
+            "Mình đã dùng quần này 2 tuần và cực thích.\n"
+            "Form rộng dễ mặc.\n"
+            "Xem ở đây ↓\n"
+            f"{AFFILIATE}"
+        )
+        content.set_llm(lambda _prompt: unsafe)
+
+        caption = content.generate(
+            _product(),
+            "spec_highlight",
+            AFFILIATE,
+            hook_code="H5_XAHOI",
+            rng=random.Random(5),
+        )
+
+        self.assertNotIn("mình đã dùng", caption.lower())
+        self.assertNotIn("2 tuần", caption.lower())
+        self.assertIn("40k+", caption)
+
+    def test_llm_rewrite_falls_back_when_it_invents_a_new_number(self):
+        unsafe = (
+            "99k cho mẫu này thì quá hời.\n"
+            "Form rộng + cạp chun là điểm mình để ý.\n"
+            "Xem thêm ↓\n"
+            f"{AFFILIATE}"
+        )
+        content.set_llm(lambda _prompt: unsafe)
+
+        caption = content.generate(
+            _product(),
+            "spec_highlight",
+            AFFILIATE,
+            hook_code="H5_XAHOI",
+            rng=random.Random(6),
+        )
+
+        self.assertNotIn("99k", caption.lower())
+        self.assertIn("118,7k", caption)
+
     def test_non_shopee_product_keeps_legacy_generation_path(self):
         product = _product(
             provider="LEGACY",
