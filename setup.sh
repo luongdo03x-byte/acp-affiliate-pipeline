@@ -12,6 +12,8 @@ die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 [[ -f "$REPO_ROOT/requirements.txt" ]] || die "Thiếu requirements.txt trong $REPO_ROOT"
 [[ -f "$REPO_ROOT/manage.sh" ]] || die "Thiếu manage.sh trong $REPO_ROOT"
 
+[[ -n "${ACP_PORTABLE_BUNDLE_KEY:-}" ]] || die "PORTABLE_BUNDLE_KEY_REQUIRED"
+
 if [[ ! -x "$PYTHON" ]]; then
     command -v python3 >/dev/null 2>&1 || die "Thiếu python3 để tạo virtualenv"
     python3 -m venv "$REPO_ROOT/.venv"

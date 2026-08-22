@@ -130,6 +130,7 @@ class FactoryV2PortableSetupTests(unittest.TestCase):
 
         env = os.environ.copy()
         env["ACP_BASE"] = str(self.base)
+        env["ACP_PORTABLE_BUNDLE_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         env["ACP_TEST_SETUP_LOG"] = str(self.log)
         env["ACP_TEST_PYTHON_HOOK"] = str(python_hook)
         env["ACP_TEST_SAME_GENERATION"] = "1" if same_generation else "0"

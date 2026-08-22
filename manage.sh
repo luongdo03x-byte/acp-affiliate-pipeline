@@ -45,6 +45,10 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $1"
 }
 
+require_portable_bundle_key() {
+    [[ -n "${ACP_PORTABLE_BUNDLE_KEY:-}" ]] || die "PORTABLE_BUNDLE_KEY_REQUIRED"
+}
+
 current_release() {
     [[ -e "$ACTIVE" || -L "$ACTIVE" ]] || die "Không tìm thấy bản đang chạy: $ACTIVE"
     readlink -f "$ACTIVE"
@@ -380,6 +384,7 @@ cmd_handoff_out() {
     release="$(current_release)"
     [[ -x "$release/.venv/bin/python" ]] || die "Thiếu virtualenv: $release/.venv"
 
+    require_portable_bundle_key
     require_factory_ownership "$release"
 
     remote="$(git -C "$release" remote get-url origin 2>/dev/null || true)"

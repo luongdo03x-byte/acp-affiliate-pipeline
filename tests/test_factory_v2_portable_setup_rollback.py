@@ -77,6 +77,7 @@ class FactoryV2PortableSetupRollbackTests(unittest.TestCase):
 
         env = os.environ.copy()
         env["ACP_BASE"] = str(self.base)
+        env["ACP_PORTABLE_BUNDLE_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         env["ACP_TEST_ROLLBACK_LOG"] = str(self.log)
         return env
 
