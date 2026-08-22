@@ -128,6 +128,40 @@ class PortableCliCommandTests(unittest.TestCase):
         self.assertEqual(0, rc)
         resume_mock.assert_called_once_with(base=base)
 
+    def test_main_dispatches_handoff_out_and_handoff_in(self):
+        _, _, main = self._remaining_api()
+        base = self.root / "ACP"
+
+        with patch.object(self.module, "handoff_out") as handoff_out_mock:
+            rc = main([
+                "handoff-out",
+                "--base", str(base),
+                "--repo", "o/r",
+                "--git-commit", "abc123",
+                "--git-branch", "feat/account-factory-android",
+            ])
+        self.assertEqual(0, rc)
+        handoff_out_mock.assert_called_once_with(
+            base=base,
+            repo="o/r",
+            git_commit="abc123",
+            git_branch="feat/account-factory-android",
+        )
+
+        with patch("socket.gethostname", return_value="weekend-machine"):
+            with patch.object(self.module, "handoff_in") as handoff_in_mock:
+                rc = main([
+                    "handoff-in",
+                    "--base", str(base),
+                    "--repo", "o/r",
+                ])
+        self.assertEqual(0, rc)
+        handoff_in_mock.assert_called_once_with(
+            base=base,
+            repo="o/r",
+            machine_id="weekend-machine",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
