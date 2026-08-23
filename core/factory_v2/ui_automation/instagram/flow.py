@@ -44,6 +44,7 @@ _CHECKPOINT_RESUMABLE = frozenset({
     "IG_AVATAR_SETUP",
     "IG_AVATAR_SOURCE_MENU",
     "ANDROID_MEDIA_PERMISSION",
+    "ANDROID_MEDIA_PICKER_INITIAL",
     "ANDROID_MEDIA_PICKER",
     "IG_AVATAR_CROP",
 })
@@ -519,7 +520,7 @@ class InstagramFlow:
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
             return FlowResult("running", detected.kind, last_safe_step="ANDROID_MEDIA_PERMISSION")
-        if detected.kind == "ANDROID_MEDIA_PICKER":
+        if detected.kind == "ANDROID_MEDIA_PICKER_INITIAL":
             if not str(profile.get("avatar_file") or "").strip():
                 return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
             if self.driver.find(MEDIA_PICKER_PHOTO) is None:
@@ -527,6 +528,14 @@ class InstagramFlow:
             action = self._attempt(lambda: self.driver.tap(MEDIA_PICKER_PHOTO))
             if action.status != "completed":
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult(
+                "running",
+                detected.kind,
+                last_safe_step="ANDROID_MEDIA_PICKER_INITIAL",
+            )
+        if detected.kind == "ANDROID_MEDIA_PICKER":
+            if not str(profile.get("avatar_file") or "").strip():
+                return FlowResult("needs_confirmation", detected.kind, "MISSING_AVATAR")
 
             confirm = None
             confirm_text = ""
