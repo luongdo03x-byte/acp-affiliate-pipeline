@@ -23,6 +23,37 @@ THREADS_TERMS_MARKER = Selector(
     text_contains_all=("threads", "terms"),
     require_enabled=False,
 )
+ACCOUNT_PICKER_MARKER = Selector(
+    semantic="threads_account_picker_marker",
+    texts=("Log into Threads",),
+    require_enabled=False,
+)
+OTHER_ACCOUNTS = Selector(
+    semantic="threads_other_accounts",
+    texts=("2 others", "1 other", "More accounts"),
+    require_clickable=True,
+)
+NOTIFICATION_PROMPT = Selector(
+    semantic="threads_notification_prompt",
+    text_contains_all=("allow threads", "notifications"),
+    require_enabled=False,
+)
+NOTIFICATION_DENY = Selector(
+    semantic="threads_notification_deny",
+    texts=("Don’t allow", "Don't allow", "Không cho phép"),
+    require_clickable=True,
+)
+FOLLOW_SUGGESTIONS_MARKER = Selector(
+    semantic="threads_follow_suggestions_marker",
+    text_contains_all=("follow suggestions", "instagram activity"),
+    require_enabled=False,
+)
+FOLLOW_SUGGESTIONS_CLOSE = Selector(
+    semantic="threads_follow_suggestions_close",
+    content_descs=("Close", "Đóng"),
+    texts=("Close", "Đóng"),
+    require_clickable=True,
+)
 DISPLAY_NAME_INPUT = Selector(
     semantic="display_name",
     resource_ids=("com.instagram.barcelona:id/name", "com.instagram.barcelona:id/full_name"),
