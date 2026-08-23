@@ -54,6 +54,11 @@ class ControlCenterUiTests(unittest.TestCase):
         self.assertNotIn('href="/sanpham" class="nav-item', body)
         self.assertNotIn('href="/sanpham/shopee-bulk" class="nav-item', body)
 
+    def test_hidden_legacy_product_routes_remain_registered(self):
+        routes = {rule.rule for rule in self.app.url_map.iter_rules()}
+        self.assertIn("/sanpham", routes)
+        self.assertIn("/sanpham/shopee-bulk", routes)
+
     def test_layout_loads_favicon_and_control_center_styles(self):
         response = self.client.get("/")
         body = response.data.decode("utf-8")
