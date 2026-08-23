@@ -67,15 +67,25 @@ def _regenerate_caption(conn, plan_id: str) -> tuple[bool, str | None]:
         template = conn.execute(
             "SELECT * FROM caption_template WHERE is_active=1 ORDER BY code LIMIT 1"
         ).fetchone()
-    if template is None:
+
+    # Reviewer Caption v2 is provider-scoped and ignores the legacy template
+    # code for Shopee. Existing/older auto posts may legitimately have no
+    # caption_template row, so do not defer them forever just because that
+    # legacy row is absent. Non-Shopee behavior keeps the old hard requirement.
+    if template is not None:
+        template_code = template["code"]
+    elif str(product["provider"] or "") == "SHOPEE_AFFILIATE":
+        template_code = "reviewer_v2"
+    else:
         return False, "caption_template_missing"
+
     try:
         discount = pipeline.scoring.real_discount_depth(
             conn, product["id"], product["current_price"]
         )
         caption = pipeline.content.generate(
             product,
-            template["code"],
+            template_code,
             post["affiliate_link"],
             discount_pct=discount,
             hook_code=post["variant_code"],
