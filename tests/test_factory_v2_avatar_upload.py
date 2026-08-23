@@ -157,7 +157,7 @@ class FactoryV2AvatarUploadTests(unittest.TestCase):
         self.assertEqual("running", result.status)
         self.assertEqual([("tap", "allow_limited_photos")], driver.mutations)
 
-    def test_photo_picker_selects_one_photo_then_confirms_one(self):
+    def test_selected_photo_picker_confirms_one_without_deselecting(self):
         driver = AvatarStepDriver(
             "ANDROID_MEDIA_PICKER",
             {"media_picker_photo", "media_picker_confirm"},
@@ -168,7 +168,7 @@ class FactoryV2AvatarUploadTests(unittest.TestCase):
 
         self.assertEqual("running", result.status)
         self.assertEqual(
-            [("tap", "media_picker_photo"), ("tap", "media_picker_confirm")],
+            [("tap", "media_picker_confirm")],
             driver.mutations,
         )
 
@@ -182,7 +182,7 @@ class FactoryV2AvatarUploadTests(unittest.TestCase):
         result = InstagramFlow(driver).run({"avatar_file": "/tmp/avatar.png"})
 
         self.assertEqual("needs_confirmation", result.status)
-        self.assertEqual([("tap", "media_picker_photo")], driver.mutations)
+        self.assertEqual([], driver.mutations)
 
     def test_avatar_crop_done_completes_instagram(self):
         driver = AvatarStepDriver("IG_AVATAR_CROP", {"avatar_crop_done"})
