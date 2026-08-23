@@ -349,6 +349,21 @@ class WorkerAgent:
                         self.serial,
                         self.oauth_browser_package,
                     )
+                    self.avd.open_package(
+                        self.serial,
+                        self.oauth_browser_package,
+                    )
+                    prepared = self.browser_login_flow.prepare_browser()
+                    if str(getattr(prepared, "status", "needs_confirmation")) not in {
+                        "running",
+                        "completed",
+                    }:
+                        return self._flow_response("oauth_browser", prepared)
+                    self.avd.set_package_enabled(
+                        self.serial,
+                        _THREADS_PACKAGE,
+                        False,
+                    )
                     self.oauth_browser_account_id = account_id
                 self.avd.open_url(
                     self.serial,
@@ -369,6 +384,20 @@ class WorkerAgent:
                 username = ""
                 password = ""
                 return self._flow_response("oauth_browser", result)
+            if action == "RESTORE_OAUTH_APPS":
+                account_id = str(command.account_id or "").strip()
+                if not account_id:
+                    raise ValueError("account binding is required for OAuth cleanup")
+                if self.oauth_browser_account_id not in {None, account_id}:
+                    raise ValueError("browser account binding mismatch")
+                self.avd.set_package_enabled(
+                    self.serial,
+                    _THREADS_PACKAGE,
+                    True,
+                )
+                self.oauth_browser_account_id = None
+                self.last_progress_at = _now()
+                return {"ok": True}
             if action == "OPEN_PACKAGE":
                 self.avd.open_package(self.serial, str(command.payload["package"]))
                 self.last_progress_at = _now()
