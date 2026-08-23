@@ -789,7 +789,7 @@ class FactoryControllerRuntime:
 
         active_jobs = self.repo.conn.execute(
             """SELECT * FROM factory_job
-               WHERE state IN ('RUNNING','RECOVERING','WAITING_HUMAN')
+               WHERE state IN ('RUNNING','WAITING_HUMAN')
                  AND desired_action IN (
                      'PREPARE_INSTAGRAM','AUTOMATE_INSTAGRAM',
                      'PREPARE_THREADS','AUTOMATE_THREADS','OBSERVE_CHECKPOINT',

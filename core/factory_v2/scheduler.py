@@ -246,7 +246,13 @@ class Scheduler:
             with transaction(conn):
                 if heartbeat_live:
                     extended = _iso(now_dt + timedelta(seconds=self.live_heartbeat_seconds))
-                    next_state = "WAITING_HUMAN" if human_ambiguous else "RECOVERING"
+                    next_state = (
+                        "WAITING_HUMAN"
+                        if human_ambiguous
+                        else "RUNNING"
+                        if row["state"] == "RECOVERING"
+                        else "RECOVERING"
+                    )
                     conn.execute(
                         "UPDATE factory_job SET state=?, lease_expires_at=? WHERE id=?",
                         (next_state, extended, row["id"]),
