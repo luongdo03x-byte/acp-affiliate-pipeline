@@ -14,6 +14,7 @@ from . import control_center_schema as _control_center_schema  # noqa: F401,E402
 if __name__ == "acp.core":
     from . import shopee_import_runtime as _shopee_import_runtime  # noqa: E402
     from . import shopee_enrichment_jobs as _shopee_enrichment_jobs  # noqa: F401,E402
+    from . import shopee_bulk_enrichment as _shopee_bulk_enrichment  # noqa: F401,E402
     from . import shopee_auto_runtime as _shopee_auto_runtime  # noqa: E402
     from . import topic_jobs as _topic_jobs  # noqa: F401,E402
     from . import topic_runtime as _topic_runtime  # noqa: E402
