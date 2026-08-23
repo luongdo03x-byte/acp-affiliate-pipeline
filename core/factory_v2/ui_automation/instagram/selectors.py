@@ -91,8 +91,16 @@ AVATAR_SKIP = Selector(
 
 CHOOSE_FROM_LIBRARY = Selector(
     semantic="choose_from_library",
-    content_descs=("Choose from library", "Chọn từ thư viện"),
-    texts=("Choose from library", "Chọn từ thư viện"),
+    content_descs=(
+        "Choose from library",
+        "Choose from Gallery",
+        "Chọn từ thư viện",
+    ),
+    texts=(
+        "Choose from library",
+        "Choose from Gallery",
+        "Chọn từ thư viện",
+    ),
     require_clickable=True,
 )
 
@@ -135,6 +143,19 @@ AVATAR_CROP_DONE = Selector(
     resource_ids=("com.instagram.android:id/next_button_textview",),
     content_descs=("Done", "Xong"),
     texts=("Done", "Xong"),
+    require_clickable=True,
+)
+
+NAV_TIP_MARKER = Selector(
+    semantic="nav_tip_marker",
+    text_contains_all=("swipe", "reels", "messages"),
+    require_enabled=False,
+)
+
+NAV_TIP_GOT_IT = Selector(
+    semantic="nav_tip_got_it",
+    content_descs=("Got it",),
+    texts=("Got it",),
     require_clickable=True,
 )
 
