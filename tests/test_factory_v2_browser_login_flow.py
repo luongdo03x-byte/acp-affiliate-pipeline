@@ -87,6 +87,51 @@ class BrowserLoginFlowTests(unittest.TestCase):
         self.assertEqual(BROWSER_LOGIN, detected.kind)
         self.assertTrue(detected.automation_allowed)
 
+    def test_login_form_wins_over_auxiliary_permissions_marker(self):
+        xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+        <hierarchy rotation='0'>
+          <node index='0' text='Username, phone or email' resource-id='username'
+                class='android.widget.EditText' package='com.android.chrome'
+                content-desc='' clickable='true' enabled='true' bounds='[20,200][380,260]' />
+          <node index='1' text='' resource-id='password'
+                class='android.widget.EditText' package='com.android.chrome'
+                content-desc='' clickable='true' enabled='true' bounds='[20,280][380,340]' />
+          <node index='2' text='Log in' resource-id='login'
+                class='android.widget.Button' package='com.android.chrome'
+                content-desc='' clickable='true' enabled='true' bounds='[20,360][380,420]' />
+          <node index='3' text='' resource-id='com.android.chrome:id/permissions_helper'
+                class='android.view.View' package='com.android.chrome'
+                content-desc='' clickable='false' enabled='true' bounds='[0,0][1,1]' />
+        </hierarchy>"""
+        snapshot = UiHierarchyReader().parse(
+            xml,
+            package="com.android.chrome",
+            activity="ChromeActivity",
+        )
+
+        detected = build_browser_detector().detect(snapshot)
+
+        self.assertEqual(BROWSER_LOGIN, detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_consent_marker_without_allow_button_is_not_consent(self):
+        xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+        <hierarchy rotation='0'>
+          <node index='0' text='' resource-id='com.android.chrome:id/permissions_helper'
+                class='android.view.View' package='com.android.chrome'
+                content-desc='' clickable='false' enabled='true' bounds='[0,0][1,1]' />
+        </hierarchy>"""
+        snapshot = UiHierarchyReader().parse(
+            xml,
+            package="com.android.chrome",
+            activity="ChromeActivity",
+        )
+
+        detected = build_browser_detector().detect(snapshot)
+
+        self.assertEqual("UNKNOWN", detected.kind)
+        self.assertFalse(detected.automation_allowed)
+
     def test_login_form_in_non_chrome_package_is_never_automatable(self):
         detected = build_browser_detector().detect(
             self._snapshot_fixture("browser_login_form.xml", package="com.evil.fake")
