@@ -14,11 +14,14 @@ class FakeWorkerProcesses:
         self.last_worker_id = None
         self.last_command = None
         self.commands = []
+        self.open_url_response = None
 
     def request(self, worker_id, command):
         self.last_worker_id = worker_id
         self.last_command = command
         self.commands.append((worker_id, command))
+        if command.action == "OPEN_URL" and self.open_url_response is not None:
+            return self.open_url_response
         if command.action == "TRANSIENT_BROWSER_LOGIN":
             return {
                 "ok": True,
@@ -120,6 +123,30 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         actions = [command.action for _, command in self.processes.commands]
         self.assertEqual(["OPEN_URL"], actions)
         self.assertTrue(response["ok"])
+
+    def test_remote_oauth_open_does_not_type_secret_when_browser_prep_is_unverified(self):
+        job = self._leased_job("avd-oauth-unverified", "REMOTE_AVD")
+        account = self.repo.get_account(job["account_id"])
+        store_account_password(self.conn, account["id"], "example-secret")
+        self.processes.open_url_response = {
+            "ok": True,
+            "status": "needs_confirmation",
+            "result": {
+                "screen": "CHROME_FIRST_RUN",
+                "reason": "CHROME_FIRST_RUN_UNVERIFIED",
+            },
+        }
+
+        response = self.gateway.send(
+            job,
+            "OPEN_URL",
+            {"url": "https://threads.example/authorize?state=x"},
+        )
+
+        actions = [command.action for _, command in self.processes.commands]
+        self.assertEqual(["OPEN_URL"], actions)
+        self.assertEqual("needs_confirmation", response["status"])
+        self.assertNotIn("example-secret", repr(response))
 
     def test_local_gateway_queues_command_without_adb(self):
         job = self._leased_job("phone-1", "LOCAL_DEVICE")
