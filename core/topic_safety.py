@@ -48,7 +48,25 @@ def install() -> None:
     original_set_rules = topic_engine.set_channel_rules
 
     def set_channel_rules(conn, channel_id: str, includes, excludes) -> dict:
-        result = original_set_rules(conn, channel_id, includes, excludes)
+        # Explicit exclusion is authoritative. The UI normally prevents a useful
+        # reason to select both modes on one node, but repeated form values or a
+        # stale browser state must still resolve deterministically to EXCLUDE.
+        exclude_codes = []
+        seen_excludes = set()
+        for raw in excludes or []:
+            code = str(raw or "").strip()
+            if code and code not in seen_excludes:
+                exclude_codes.append(code)
+                seen_excludes.add(code)
+        include_codes = []
+        seen_includes = set()
+        for raw in includes or []:
+            code = str(raw or "").strip()
+            if code and code not in seen_excludes and code not in seen_includes:
+                include_codes.append(code)
+                seen_includes.add(code)
+
+        result = original_set_rules(conn, channel_id, include_codes, exclude_codes)
         safety_codes = _system_ancestor_codes(conn, result.get("includes") or [])
         conn.execute(
             "UPDATE channel SET niches=? WHERE id=?",
