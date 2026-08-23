@@ -1,6 +1,8 @@
 """Jinja context for Dynamic Topic trees and channel inheritance state."""
 from __future__ import annotations
 
+from flask import request
+
 from ..core import topic_engine
 from ..core.db import connect
 
@@ -30,6 +32,10 @@ def _channel_state(conn):
 def register_topic_ui(app):
     @app.context_processor
     def inject_dynamic_topics():
+        # The hierarchy and per-channel pool count can be expensive on a large
+        # catalog. Only /kenh renders them; Product Pool uses its own read model.
+        if request.path != "/kenh":
+            return {}
         conn = connect()
         try:
             topic_engine.ensure_system_topics(conn)
@@ -41,8 +47,8 @@ def register_topic_ui(app):
                 "channel_topic_pool": pool_counts,
             }
         except Exception:
-            # Pages unrelated to topics must remain available while an operator
-            # is still applying an additive schema migration.
+            # Keep the channel page available while an additive migration is
+            # still being applied; it can render an empty topic state safely.
             return {
                 "dynamic_topic_tree": [],
                 "channel_topic_state": {},
