@@ -6,7 +6,7 @@ import time
 from ..driver import ActionResult
 from ..hierarchy import UiHierarchyReader
 from ..selectors import normalize_ui_text
-from .screens import BROWSER_LOGIN, CHROME_FIRST_RUN
+from .screens import BROWSER_LOGIN, CHROME_AD_PRIVACY, CHROME_FIRST_RUN
 
 _USERNAME_HINTS = (
     "username",
@@ -17,6 +17,7 @@ _USERNAME_HINTS = (
 )
 _LOGIN_BUTTONS = frozenset({"log in", "login", "sign in"})
 _CHROME_FIRST_RUN_SKIP = "use without an account"
+_CHROME_AD_PRIVACY_CONFIRM = "got it"
 _CLEAR_KEYSTROKES = 96
 
 
@@ -89,6 +90,23 @@ class BrowserSecretDriver:
         self.adb.tap(*buttons[0].bounds.center)
         return ActionResult("completed", before=CHROME_FIRST_RUN)
 
+    def tap_got_it(self) -> ActionResult:
+        snapshot = self.snapshot()
+        detected = self.detector.detect(snapshot)
+        if detected.kind != CHROME_AD_PRIVACY:
+            return ActionResult("postcondition_failed", before=detected.kind)
+        buttons = tuple(
+            node
+            for node in snapshot.nodes
+            if node.clickable
+            and node.enabled
+            and normalize_ui_text(node.text or node.content_desc) == _CHROME_AD_PRIVACY_CONFIRM
+        )
+        if len(buttons) != 1:
+            return ActionResult("postcondition_failed", before=detected.kind)
+        self.adb.tap(*buttons[0].bounds.center)
+        return ActionResult("completed", before=CHROME_AD_PRIVACY)
+
     def _login_nodes(self):
         snapshot = self.snapshot()
         detected = self.detector.detect(snapshot)
@@ -143,8 +161,6 @@ class BrowserSecretDriver:
         detected, _, password_node, _ = self._login_nodes()
         if password_node is None:
             return ActionResult("postcondition_failed", before=detected.kind)
-        # Never let a low-level ADB exception carry password-related command
-        # context back across the worker protocol.
         try:
             self._replace_text(password_node, str(value))
         except (RuntimeError, ValueError):
