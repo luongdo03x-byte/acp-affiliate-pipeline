@@ -66,9 +66,12 @@ def build_instagram_detector() -> ScreenDetector:
         ScreenSignature("APP_CRASH", "*", (_text("app_crash", "Instagram keeps stopping", "Instagram has stopped"),), 1, 0.99, False, 34),
         ScreenSignature("ANDROID_MEDIA_PERMISSION", _PERMISSION_PACKAGE, (MEDIA_PERMISSION_MESSAGE, ALLOW_LIMITED_PHOTOS), 2, 0.99, False, 49),
         ScreenSignature("ANDROID_MEDIA_PERMISSION", _GOOGLE_PERMISSION_PACKAGE, (MEDIA_PERMISSION_MESSAGE, ALLOW_LIMITED_PHOTOS), 2, 0.99, False, 50),
+        # Selected state must outrank the thumbnail-only signature because the
+        # latter is intentionally a subset of the selected picker hierarchy.
         ScreenSignature("ANDROID_MEDIA_PICKER", _MEDIA_PICKER_PACKAGE, (MEDIA_PICKER_PHOTO, MEDIA_PICKER_CONFIRM), 2, 0.99, False, 51),
-        ScreenSignature("IG_AVATAR_SOURCE_MENU", PACKAGE, (CHOOSE_FROM_LIBRARY, TAKE_PHOTO), 2, 0.99, False, 52),
-        ScreenSignature("IG_AVATAR_CROP", PACKAGE, (AVATAR_CROP_DONE,), 1, 0.99, False, 53),
+        ScreenSignature("ANDROID_MEDIA_PICKER_INITIAL", _MEDIA_PICKER_PACKAGE, (MEDIA_PICKER_PHOTO,), 1, 0.99, False, 52),
+        ScreenSignature("IG_AVATAR_SOURCE_MENU", PACKAGE, (CHOOSE_FROM_LIBRARY, TAKE_PHOTO), 2, 0.99, False, 53),
+        ScreenSignature("IG_AVATAR_CROP", PACKAGE, (AVATAR_CROP_DONE,), 1, 0.99, False, 54),
         ScreenSignature("IG_NAV_TIP", PACKAGE, (NAV_TIP_MARKER, NAV_TIP_GOT_IT), 2, 0.99, False, 57),
         ScreenSignature("IG_ACCOUNT_SWITCHER", PACKAGE, (ADD_ACCOUNT,), 1, 0.98, False, 58),
         ScreenSignature("IG_EXISTING_PROFILE", PACKAGE, (PROFILE, ACCOUNT_SWITCHER), 2, 0.97, False, 59),
