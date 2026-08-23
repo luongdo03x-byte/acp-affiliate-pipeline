@@ -129,6 +129,13 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         account = self.repo.list_accounts(batch["id"])[0]
         if with_credential:
             store_account_password(self.conn, account["id"], "example-secret")
+        else:
+            # create_batch may seed ACP_DEFAULT_ACCOUNT_PASSWORD from the caller's
+            # environment; this case must remain deterministic regardless of shell state.
+            self.conn.execute(
+                "DELETE FROM factory_account_credential WHERE account_id=?",
+                (account["id"],),
+            )
         worker = self.repo.insert_worker({
             "id": "avd-1",
             "runner_type": "REMOTE_AVD",
