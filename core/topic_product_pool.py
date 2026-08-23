@@ -12,14 +12,6 @@ from datetime import datetime, timezone
 from . import pipeline, shopee_product_pool as legacy, topic_engine
 
 
-def _positive_int(value, default: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return number if number > 0 else default
-
-
 def _normalize(conn, values) -> dict:
     values = values or {}
     base_values = dict(values)
@@ -53,11 +45,7 @@ def _topic_auto_state(conn, item, usage, channels, now_utc):
         return {"state": "STALE", "channel_handle": None, "scheduled_at": None}
     for channel in channels:
         eligible, _reason = pipeline.current_auto_product_eligibility(
-            conn,
-            item,
-            channel,
-            now_utc,
-            require_auto_schedule=True,
+            conn, item, channel, now_utc, require_auto_schedule=True
         )
         if eligible:
             return {"state": "ELIGIBLE", "channel_handle": channel["handle"], "scheduled_at": None}
@@ -80,7 +68,6 @@ def _project(conn, now_utc):
         item["published_at_effective"] = usage.get("published_at")
         item["topic_codes"] = topic_engine.product_topic_codes(conn, str(item["id"]))
         item["topic_paths"] = topic_engine.topic_paths_for_product(conn, str(item["id"]))
-        # Compatibility for older template/tests.
         item["niche_codes"] = [code for code in item["topic_codes"] if code in legacy.niche.NICHES]
         projected.append(item)
     return projected
@@ -98,10 +85,14 @@ def _matches(item, filters):
 def _flat_options(tree, depth=0):
     out = []
     for item in tree:
+        label = ("— " * depth) + item["name"]
         out.append({
             "code": item["code"],
-            "name": item["name"],
-            "label": ("— " * depth) + item["name"],
+            # Existing Product Pool template renders option.name, so expose the
+            # indented hierarchy there without rewriting the large template.
+            "name": label,
+            "raw_name": item["name"],
+            "label": label,
             "depth": depth,
             "topic_type": item["topic_type"],
         })
@@ -120,13 +111,9 @@ def _topic_stats(items, options):
 
 def _page_params(filters: dict, page: int) -> dict:
     return {
-        "q": filters["q"],
-        "niche": filters["niche"],
-        "auto": filters["auto"],
-        "image": filters["image"],
-        "usage": filters["usage"],
-        "per_page": filters["per_page"],
-        "page": page,
+        "q": filters["q"], "niche": filters["niche"], "auto": filters["auto"],
+        "image": filters["image"], "usage": filters["usage"],
+        "per_page": filters["per_page"], "page": page,
     }
 
 
