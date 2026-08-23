@@ -164,16 +164,11 @@ def confirm():
             # Import is already committed. Image/topic triggers are independent
             # follow-ups: neither may roll back or invite a repeated import.
             touched_product_ids = list(result.get("touched_product_ids") or [])
-            queue_result = {"queued": 0, "duplicate": 0, "skipped": 0}
-            enrichment_trigger_failed = False
-            try:
-                queue_result = queue_pending_products(conn, touched_product_ids)
-            except Exception as exc:
-                enrichment_trigger_failed = True
-                current_app.logger.warning(
-                    "Shopee immediate enrichment trigger failed: error_type=%s", type(exc).__name__
-                )
 
+            # Queue topic discovery first at its lower worker priority so the
+            # existing immediate enrichment job remains the newest import job
+            # (backward-compatible observability) while the worker still runs
+            # enrichment before topic discovery.
             topic_result = {"queued": 0, "duplicate": 0}
             topic_trigger_failed = False
             try:
@@ -182,6 +177,16 @@ def confirm():
                 topic_trigger_failed = True
                 current_app.logger.warning(
                     "Shopee topic discovery trigger failed: error_type=%s", type(exc).__name__
+                )
+
+            queue_result = {"queued": 0, "duplicate": 0, "skipped": 0}
+            enrichment_trigger_failed = False
+            try:
+                queue_result = queue_pending_products(conn, touched_product_ids)
+            except Exception as exc:
+                enrichment_trigger_failed = True
+                current_app.logger.warning(
+                    "Shopee immediate enrichment trigger failed: error_type=%s", type(exc).__name__
                 )
 
             display_result = {key: value for key, value in result.items() if key != "touched_product_ids"}
