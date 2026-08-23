@@ -1,7 +1,8 @@
 import sqlite3
 import unittest
+from unittest.mock import patch
 
-from core.factory_v2.account_credentials import store_account_password
+from core.factory_v2.account_credentials import CredentialDecryptError, store_account_password
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.runner_gateway import RunnerGateway
 from core.factory_v2.scheduler import Scheduler
@@ -129,6 +130,23 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         actions = [command.action for _, command in self.processes.commands]
         self.assertEqual(["OPEN_URL"], actions)
         self.assertTrue(response["ok"])
+
+    def test_remote_oauth_decrypt_failure_restores_threads_before_reraising(self):
+        job = self._leased_job("avd-oauth-decrypt-fail", "REMOTE_AVD")
+
+        with patch(
+            "core.factory_v2.runner_gateway.get_account_password",
+            side_effect=CredentialDecryptError("CREDENTIAL_DECRYPT_FAILED"),
+        ):
+            with self.assertRaises(CredentialDecryptError):
+                self.gateway.send(
+                    job,
+                    "OPEN_URL",
+                    {"url": "https://threads.example/authorize?state=x"},
+                )
+
+        actions = [command.action for _, command in self.processes.commands]
+        self.assertEqual(["OPEN_URL", "RESTORE_OAUTH_APPS"], actions)
 
     def test_remote_oauth_open_does_not_type_secret_when_browser_prep_is_unverified(self):
         job = self._leased_job("avd-oauth-unverified", "REMOTE_AVD")
