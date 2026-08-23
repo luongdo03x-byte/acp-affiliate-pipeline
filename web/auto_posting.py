@@ -9,7 +9,7 @@ from flask import Blueprint, redirect, render_template, request, url_for
 
 from ..adapters import factory
 from ..core import auto_post_plans, pipeline
-from ..core.db import audit, connect, now
+from ..core.db import audit, connect
 from ..core.system_settings import (
     PUBLISH_WORKER_ENABLED,
     publish_worker_enabled,
