@@ -159,10 +159,13 @@ NAV_TIP_GOT_IT = Selector(
     require_clickable=True,
 )
 
+# Final signup consent is intentionally exact. Generic "Sign up" / "Create
+# account" controls appear elsewhere and must never be accepted from this
+# selector alone; the detector additionally requires a terms marker.
 FINAL_SIGNUP_SUBMIT = Selector(
     semantic="final_signup_submit",
     content_descs=("I agree",),
-    texts=("Create account", "Sign up", "I agree", "Đăng ký", "Tạo tài khoản"),
+    texts=("I agree",),
     require_clickable=True,
 )
 
