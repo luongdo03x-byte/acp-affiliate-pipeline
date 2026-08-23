@@ -356,7 +356,7 @@
   document.querySelectorAll(".js-helper-start").forEach(function (button) {
     button.addEventListener("click", function () {
       var productId = button.dataset.productId;
-      var note = document.querySelector('.js-helper-note[data-product-id="' + productId + '"]');
+      var note = document.querySelector(".js-helper-note[data-product-id='" + productId + "']");
       button.disabled = true;
       if (note) note.textContent = "Đang tạo phiên Helper...";
 
