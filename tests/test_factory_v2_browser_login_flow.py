@@ -16,6 +16,30 @@ from core.factory_v2.ui_automation.hierarchy import UiBounds, UiHierarchyReader,
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
+_LIVE_THREADS_LOGIN_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation='0'>
+  <node index='0' text='Threads • Log in' resource-id='' class='android.webkit.WebView'
+        package='com.android.chrome' content-desc='' clickable='false' enabled='true'
+        bounds='[0,290][1080,2276]' />
+  <node index='1' text='Log in with Instagram' resource-id='' class='android.widget.TextView'
+        package='com.android.chrome' content-desc='' clickable='false' enabled='true'
+        bounds='[338,939][742,988]' />
+  <node index='2' text='' resource-id='' class='android.widget.EditText'
+        package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+        bounds='[74,1035][1006,1186]' />
+  <node index='3' text='' resource-id='' class='android.widget.EditText'
+        package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+        password='true' bounds='[74,1205][1006,1357]' />
+  <node index='4' text='Log in' resource-id='' class='android.widget.Button'
+        package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+        bounds='[74,1395][1006,1555]' />
+  <node index='5'
+        text='threads.com/login?next=https%3A%2F%2Fwww.threads.com%2Foauth%2Fauthorize'
+        resource-id='com.android.chrome:id/url_bar' class='android.widget.EditText'
+        package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+        bounds='[220,144][651,282]' />
+</hierarchy>"""
+
 
 class FakeDriver:
     def __init__(self, screens):
@@ -43,6 +67,14 @@ class FakeDriver:
     def tap_login(self):
         self.actions.append("login")
         return ActionResult("completed", before=BROWSER_LOGIN)
+
+
+class LiveLoginAdb:
+    def foreground(self):
+        return "com.android.chrome", "ChromeActivity"
+
+    def dump_hierarchy(self):
+        return _LIVE_THREADS_LOGIN_XML
 
 
 class ExplodingPasswordDriver(BrowserSecretDriver):
@@ -86,6 +118,30 @@ class BrowserLoginFlowTests(unittest.TestCase):
         detected = self._detect_fixture("browser_login_form.xml")
         self.assertEqual(BROWSER_LOGIN, detected.kind)
         self.assertTrue(detected.automation_allowed)
+
+    def test_live_threads_login_ignores_chrome_url_bar_and_missing_placeholders(self):
+        snapshot = UiHierarchyReader().parse(
+            _LIVE_THREADS_LOGIN_XML,
+            package="com.android.chrome",
+            activity="ChromeActivity",
+        )
+
+        detected = build_browser_detector().detect(snapshot)
+
+        self.assertEqual(BROWSER_LOGIN, detected.kind)
+        self.assertTrue(detected.automation_allowed)
+
+    def test_secret_driver_uses_two_web_fields_not_chrome_url_bar(self):
+        driver = BrowserSecretDriver(LiveLoginAdb(), build_browser_detector())
+
+        detected, username_node, password_node, login_button = driver._login_nodes()
+
+        self.assertEqual(BROWSER_LOGIN, detected.kind)
+        self.assertEqual(1035, username_node.bounds.top)
+        self.assertEqual(1205, password_node.bounds.top)
+        self.assertEqual("", username_node.resource_id)
+        self.assertEqual("", password_node.resource_id)
+        self.assertEqual("Log in", login_button.text)
 
     def test_login_form_wins_over_auxiliary_permissions_marker(self):
         xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
