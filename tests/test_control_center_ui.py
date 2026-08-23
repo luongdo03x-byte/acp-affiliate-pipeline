@@ -59,14 +59,18 @@ class ControlCenterUiTests(unittest.TestCase):
         self.assertIn("/sanpham", routes)
         self.assertIn("/sanpham/shopee-bulk", routes)
 
-    def test_layout_loads_favicon_and_control_center_styles(self):
+    def test_layout_loads_favicon_and_control_center_assets(self):
         response = self.client.get("/")
         body = response.data.decode("utf-8")
         self.assertIn("favicon.svg", body)
         self.assertIn("control_center.css", body)
+        self.assertIn("control_center.js", body)
         icon = self.client.get("/static/favicon.svg")
         self.assertEqual(icon.status_code, 200)
         self.assertIn(b"<svg", icon.data)
+        script = self.client.get("/static/control_center.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn(b"data-enrich-all-progress", script.data)
 
     def test_product_pool_shows_background_enrich_all_controls_and_progress(self):
         response = self.client.get("/sanpham/shopee")
