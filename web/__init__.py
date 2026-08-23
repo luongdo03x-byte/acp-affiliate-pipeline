@@ -9,6 +9,7 @@ from . import shopee_image_enrichment as _shopee_image_enrichment
 from ..core import topic_product_pool as _topic_product_pool
 from .auto_posting import register_auto_posting_routes
 from .enrich_all_ui import register_enrich_all_ui
+from .topic_admin import register_topic_admin
 from .topic_ui import register_topic_ui
 from .shopee_bulk import register_shopee_bulk_routes
 from .shopee_csv_import import register_shopee_csv_import_routes
@@ -31,6 +32,7 @@ _base_create_app = _server.create_app
 def create_app():
     app = _base_create_app()
     register_topic_ui(app)
+    register_topic_admin(app)
     register_shopee_helper_hardening(app)
     register_shopee_product_intel(app)
     register_shopee_polish(app)
