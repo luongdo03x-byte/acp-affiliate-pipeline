@@ -2,7 +2,7 @@ import unittest
 
 from core.factory_v2.ui_automation.driver import ActionResult
 from core.factory_v2.ui_automation.hierarchy import UiBounds, UiNode, UiSnapshot
-from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
+from core.factory_v2.ui_automation.instagram.flow import InstagramFlow, _AFTER_USERNAME
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
 from core.factory_v2.ui_automation.instagram.selectors import CHOOSE_FROM_LIBRARY
 from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
@@ -92,6 +92,9 @@ class PilotUiRegressionTests(unittest.TestCase):
         self.assertEqual("running", result.status)
         self.assertEqual("IG_NAV_TIP", result.screen)
         self.assertEqual("nav_tip_got_it", driver.mutations[0][1])
+
+    def test_instagram_username_can_transition_to_accounts_center_consent(self):
+        self.assertIn("IG_ACCOUNTS_CENTER_CONSENT", _AFTER_USERNAME)
 
     def test_threads_account_picker_selects_unique_generated_username(self):
         snapshot = UiSnapshot(
