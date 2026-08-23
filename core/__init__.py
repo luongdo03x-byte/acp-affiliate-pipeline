@@ -17,6 +17,7 @@ if __name__ == "acp.core":
     from . import shopee_bulk_enrichment as _shopee_bulk_enrichment  # noqa: F401,E402
     from . import shopee_auto_runtime as _shopee_auto_runtime  # noqa: E402
     from . import topic_jobs as _topic_jobs  # noqa: F401,E402
+    from . import topic_safety as _topic_safety  # noqa: E402
     from . import topic_runtime as _topic_runtime  # noqa: E402
     from . import reviewer_caption_runtime as _reviewer_caption_runtime  # noqa: E402
     from . import auto_post_reconcile as _auto_post_reconcile  # noqa: E402
@@ -25,6 +26,7 @@ if __name__ == "acp.core":
 
     _shopee_import_runtime.install()
     _shopee_auto_runtime.install()
+    _topic_safety.install()
     _topic_runtime.install()
     _reviewer_caption_runtime.install()
     _auto_post_reconcile.install()
