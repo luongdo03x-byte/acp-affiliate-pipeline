@@ -572,6 +572,15 @@ class FactoryControllerRuntime:
         with transaction(self.repo.conn):
             self.scheduler.release_job_in_transaction(job_id, final_state)
 
+    def _restore_oauth_apps(self, job) -> None:
+        if not self._is_remote(job):
+            return
+        restored = self._command(job, "RESTORE_OAUTH_APPS")
+        if _pending(restored):
+            raise RuntimeError("OAuth app cleanup is still pending")
+        if isinstance(restored, dict) and restored.get("ok") is False:
+            raise RuntimeError("OAuth app cleanup failed")
+
     def _start_activation(self, job, account) -> None:
         try:
             activation = self._activation()
@@ -602,6 +611,7 @@ class FactoryControllerRuntime:
             )
         except CredentialDecryptError:
             current = self.repo.get_account(account["id"]) or account
+            self._restore_oauth_apps(job)
             self._transition_remote_terminal(
                 job,
                 current,
@@ -637,14 +647,17 @@ class FactoryControllerRuntime:
         if updated["stage"] == AccountStage.ACP_CONNECTING.value:
             return
         if updated["stage"] == AccountStage.ACP_ACTIVE.value:
+            self._restore_oauth_apps(job)
             self._resolve_activation_checkpoint(account["id"], "ACP_ACTIVE")
             self._release_preserving_account(job["id"], "COMPLETED")
             return
         if updated["stage"] == AccountStage.RETRY_PENDING.value:
+            self._restore_oauth_apps(job)
             self._resolve_activation_checkpoint(account["id"], "OAUTH_FAILED")
             self._release_preserving_account(job["id"], "FAILED")
             return
         if updated["stage"] == AccountStage.ERROR.value:
+            self._restore_oauth_apps(job)
             self._resolve_activation_checkpoint(
                 account["id"], updated.get("last_error_code") or "ERROR"
             )
