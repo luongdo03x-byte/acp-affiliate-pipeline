@@ -30,8 +30,13 @@
 .topic-exclude { display:flex; align-items:center; gap:6px; min-width:76px; padding:7px 9px; border:1px solid var(--border); border-radius:9px; color:var(--text-faint); font-size:11px; cursor:pointer; }
 .topic-exclude:has(input:checked) { color:#FCA5A5; border-color:rgba(239,68,68,.24); background:var(--danger-soft); }
 .topic-exclude input { width:auto; min-height:auto; }
-
 .topic-paths { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+.topic-admin-panel > summary { cursor:pointer; list-style:none; }
+.topic-admin-panel > summary::-webkit-details-marker { display:none; }
+.topic-admin-panel > summary::before { content:"▸"; display:inline-block; margin-right:8px; color:var(--accent); transition:transform .14s ease; }
+.topic-admin-panel[open] > summary::before { transform:rotate(90deg); }
+.topic-admin-form { display:grid; grid-template-columns:minmax(120px,1fr) auto; gap:6px; align-items:center; min-width:210px; }
+.topic-admin-form input, .topic-admin-form select { min-height:32px; padding:5px 8px; font-size:11px; }
 
 @media (max-width: 900px) {
   .enrich-status-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -44,4 +49,5 @@
   .auto-plan-image { width:72px; height:72px; }
   .topic-tree-row { grid-template-columns:1fr; }
   .topic-exclude { width:max-content; }
+  .topic-admin-form { grid-template-columns:1fr; }
 }
