@@ -283,13 +283,29 @@ def install() -> None:
     if _INSTALLED:
         return
 
+    original_candidates = pipeline._candidate_products_for_channel
     original_eligibility = pipeline.current_auto_product_eligibility
     original_prepare = pipeline._prepare_auto_sales_post_artifacts
     original_preflight = auto_scheduler.preflight_auto_target
 
     def candidates(conn, channel, limit: int, now_utc=None):
         current = now_utc or datetime.now(timezone.utc)
-        return _shopee_auto_candidates(conn, channel, limit, current)
+        safe_limit = max(0, int(limit))
+        if safe_limit <= 0:
+            return []
+        existing = original_candidates(conn, channel, safe_limit, now_utc=current)
+        shopee = _shopee_auto_candidates(conn, channel, safe_limit, current)
+        combined = []
+        seen = set()
+        for item in list(existing or []) + list(shopee or []):
+            product_id = _row_get(item.get("product") if isinstance(item, dict) else None, "id")
+            if product_id and product_id in seen:
+                continue
+            if product_id:
+                seen.add(product_id)
+            combined.append(item)
+        combined.sort(key=lambda item: -float(item.get("score") or 0.0))
+        return combined[:safe_limit]
 
     def eligibility(conn, product, channel, now_utc, *, require_auto_schedule=True,
                     exclude_post_id=None, slot_at=None):
