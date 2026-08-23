@@ -7,6 +7,7 @@ without growing the server monolith further.
 from . import server as _server
 from . import shopee_image_enrichment as _shopee_image_enrichment
 from ..core import topic_product_pool as _topic_product_pool
+from .auto_posting import register_auto_posting_routes
 from .enrich_all_ui import register_enrich_all_ui
 from .topic_ui import register_topic_ui
 from .shopee_bulk import register_shopee_bulk_routes
@@ -37,6 +38,7 @@ def create_app():
     register_shopee_csv_import_routes(app)
     register_shopee_image_enrichment_routes(app)
     register_enrich_all_ui(app)
+    register_auto_posting_routes(app)
     return app
 
 
