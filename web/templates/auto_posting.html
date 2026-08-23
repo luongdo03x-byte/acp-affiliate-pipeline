@@ -13,6 +13,87 @@
 {% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
 {% if message %}<div class="alert alert--success"><strong>✓</strong><span>{{ message }}</span></div>{% endif %}
 
+<section class="card card--elevated auto-system-card">
+  <div class="section-heading section-heading--spaced auto-system-heading">
+    <div>
+      <div class="eyebrow">Auto System</div>
+      <h2>Điều khiển tự động</h2>
+      <p class="note">Scheduler tạo plan trước 48 giờ; Publish Worker chỉ đăng khi tới giờ. Hai phần được điều khiển độc lập.</p>
+    </div>
+    <form method="post" action="{{ url_for('auto_posting.run_scheduler_now') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button class="btn btn--primary" type="submit">Tạo lịch 48h ngay</button>
+    </form>
+  </div>
+
+  <div class="auto-system-grid">
+    <div class="auto-system-row">
+      <div>
+        <strong>Lập lịch tự động</strong>
+        <div class="note">{{ system_state.auto_enabled_count }}/{{ system_state.account_count }} account đang bật Auto</div>
+      </div>
+      <span class="status-badge {{ 'status-badge--success' if system_state.scheduler_enabled else 'status-badge--warning' }}">{{ 'ON' if system_state.scheduler_enabled else 'OFF' }}</span>
+    </div>
+
+    <div class="auto-system-row">
+      <div>
+        <strong>Publish Worker</strong>
+        <div class="note">OFF = vẫn tạo plan nhưng không tự đăng khi tới giờ.</div>
+      </div>
+      <form method="post" action="{{ url_for('auto_posting.toggle_publish_worker') }}" class="auto-toggle-form">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="{{ '0' if system_state.publish_worker_enabled else '1' }}">
+        <button class="btn btn--small {{ 'btn--danger' if system_state.publish_worker_enabled else 'btn--primary' }}" type="submit">
+          {{ 'Tắt Worker' if system_state.publish_worker_enabled else 'Bật Worker' }}
+        </button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="card card--elevated auto-accounts-card">
+  <div class="section-heading section-heading--spaced">
+    <div>
+      <h2>Tài khoản Auto</h2>
+      <p class="note">Bật Auto cho account cần scheduler tự lấp lịch. Thay đổi cấu hình giờ/chủ đề chi tiết vẫn thực hiện tại trang Kênh.</p>
+    </div>
+    <a class="btn btn--ghost btn--small" href="/kenh">Cấu hình Kênh</a>
+  </div>
+
+  {% if accounts %}
+  <div class="auto-account-list">
+    {% for account in accounts %}
+    <div class="auto-account-row">
+      <div class="auto-account-main">
+        <div class="auto-account-title">
+          <strong>{{ account.handle }}</strong>
+          <span class="mono-sub">{{ account.code }}</span>
+        </div>
+        <div class="note">
+          {{ account.daily_post_target }} bài/ngày
+          {% if account.posting_slots_list %} · {{ account.posting_slots_list|join(' · ') }}{% endif %}
+          · {{ account.posting_timezone }}
+        </div>
+        <div class="note">Topic: {{ account.topic_summary }}{% if account.topic_excludes %} · Loại: {{ account.topic_excludes }}{% endif %}</div>
+      </div>
+      <div class="auto-account-actions">
+        <span class="status-badge {{ 'status-badge--success' if account.auto_schedule_enabled else 'status-badge--warning' }}">Auto {{ 'ON' if account.auto_schedule_enabled else 'OFF' }}</span>
+        <form method="post" action="{{ url_for('auto_posting.toggle_channel_auto', channel_id=account.id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="enabled" value="{{ '0' if account.auto_schedule_enabled else '1' }}">
+          <button class="btn btn--small {{ 'btn--danger' if account.auto_schedule_enabled else 'btn--primary' }}" type="submit">
+            {{ 'Tắt Auto' if account.auto_schedule_enabled else 'Bật Auto' }}
+          </button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">Chưa có account Threads ACTIVE/enabled. Thêm hoặc kích hoạt account tại trang Kênh.</div>
+  {% endif %}
+</section>
+
 <div class="kpi-grid kpi-grid--4">
   <div class="kpi-card"><div class="kpi-label">Plan 48h</div><div class="kpi-value">{{ counts.total }}</div><div class="kpi-meta">tất cả account</div></div>
   <div class="kpi-card"><div class="kpi-label">READY</div><div class="kpi-value">{{ counts.ready }}</div><div class="kpi-meta">đã có nội dung</div></div>
@@ -97,6 +178,6 @@
 {% endfor %}
 
 {% if not groups %}
-<div class="empty-state">Chưa có Auto plan trong {{ horizon_hours }} giờ tới. Khi scheduler tạo target Auto, plan sẽ xuất hiện ở đây ngay.</div>
+<div class="empty-state">Chưa có Auto plan trong {{ horizon_hours }} giờ tới. Bật Auto cho account phía trên rồi bấm “Tạo lịch 48h ngay”; scheduler cũng sẽ tiếp tục tự lấp lịch theo timer hiện có.</div>
 {% endif %}
 {% endblock %}

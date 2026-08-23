@@ -283,7 +283,7 @@ class ChannelAutomationWebTests(unittest.TestCase):
             "posting_slots": ["09:30", "12:30", "20:30"],
         })
         self.assertEqual(save.status_code, 200)
-        self.assertIn("Đã cập nhật nhóm sản phẩm cho @legacy-threads.", save.text)
+        self.assertIn("Đã cập nhật chủ đề sản phẩm cho @legacy-threads.", save.text)
 
         conn = db.connect()
         try:
@@ -363,7 +363,7 @@ class ChannelAutomationWebTests(unittest.TestCase):
         finally:
             conn.close()
 
-        self.assertEqual(actions, ["set_niches"])
+        self.assertEqual(actions, ["set_topic_rules"])
 
     def test_ops_page_shows_auto_schedule_summary_with_sanitized_reasons(self):
         now_utc = datetime(2026, 8, 20, 1, 0, tzinfo=timezone.utc)

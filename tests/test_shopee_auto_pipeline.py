@@ -109,6 +109,24 @@ class ShopeeAutoPipelineTests(unittest.TestCase):
         rows = pipeline._shopee_auto_candidates(self.conn, self._channel(), 20, self.now)
         self.assertEqual([row["product"]["id"] for row in rows], ["sp1"])
 
+    def test_shopee_runtime_preserves_existing_non_shopee_candidates(self):
+        legacy = self._insert_product(
+            product_id="legacy-tech",
+            provider="LEGACY",
+            name="Tai nghe bluetooth gaming",
+            commission_value=25000,
+            affiliate_url="https://example.com/affiliate",
+            affiliate_status="READY",
+            has_inventory=1,
+            category_code="cong-nghe",
+            rating=4.8,
+            review_count=120,
+        )
+        rows = pipeline._candidate_products_for_channel(
+            self.conn, self._channel(), limit=20, now_utc=self.now
+        )
+        self.assertIn(legacy["id"], [row["product"]["id"] for row in rows])
+
     def test_shopee_candidate_requires_ready_image(self):
         self._insert_product()
         self.conn.execute(

@@ -1,13 +1,20 @@
 """Operator-facing 48-hour Auto Posting Control Center."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, redirect, render_template, request, url_for
 
-from ..core import auto_post_plans
-from ..core.db import connect
+from ..adapters import factory
+from ..core import auto_post_plans, pipeline
+from ..core.db import audit, connect
+from ..core.system_settings import (
+    PUBLISH_WORKER_ENABLED,
+    publish_worker_enabled,
+    set_system_setting,
+)
 
 bp = Blueprint("auto_posting", __name__)
 
@@ -45,6 +52,64 @@ def _localize(item: dict) -> dict:
         row["scheduled_local"] = row.get("scheduled_at") or "—"
         row["scheduled_input"] = ""
     return row
+
+
+def _parse_slots(raw) -> list[str]:
+    try:
+        values = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(value) for value in values if str(value or "").strip()]
+
+
+def _channel_topic_summary(conn, channel) -> tuple[str, str]:
+    """Human-readable routing summary without changing routing semantics."""
+    rules = conn.execute(
+        """SELECT r.rule_mode, t.name
+           FROM channel_topic_rule r
+           JOIN topic t ON t.id=r.topic_id
+           WHERE r.channel_id=? AND t.status='ACTIVE'
+           ORDER BY r.rule_mode, t.name""",
+        (channel["id"],),
+    ).fetchall()
+    includes = [row["name"] for row in rules if row["rule_mode"] == "INCLUDE"]
+    excludes = [row["name"] for row in rules if row["rule_mode"] == "EXCLUDE"]
+    if includes:
+        included = " · ".join(includes)
+    else:
+        try:
+            legacy_codes = json.loads(channel["niches"] or "[]")
+        except (TypeError, ValueError):
+            legacy_codes = []
+        if legacy_codes:
+            names = []
+            for code in legacy_codes:
+                topic = conn.execute(
+                    "SELECT name FROM topic WHERE code=? AND status='ACTIVE'", (str(code),)
+                ).fetchone()
+                names.append(topic["name"] if topic else str(code))
+            included = " · ".join(names)
+        else:
+            included = "Tất cả chủ đề"
+    excluded = " · ".join(excludes)
+    return included, excluded
+
+
+def _auto_accounts(conn) -> list[dict]:
+    rows = conn.execute(
+        """SELECT id,code,handle,status,enabled,niches,auto_schedule_enabled,
+                  daily_post_target,daily_post_cap,posting_timezone,posting_slots
+           FROM channel
+           WHERE platform='threads' AND status='ACTIVE' AND enabled=1
+           ORDER BY handle, code"""
+    ).fetchall()
+    accounts = []
+    for row in rows:
+        item = dict(row)
+        item["posting_slots_list"] = _parse_slots(row["posting_slots"])
+        item["topic_summary"], item["topic_excludes"] = _channel_topic_summary(conn, row)
+        accounts.append(item)
+    return accounts
 
 
 def _redirect(message: str | None = None, err: str | None = None):
@@ -88,6 +153,14 @@ def page():
             "regenerating": sum(1 for p in plans if p["state"] == "REGENERATING"),
             "publishing": sum(1 for p in plans if p["state"] == "PUBLISHING"),
         }
+        accounts = _auto_accounts(conn)
+        auto_enabled_count = sum(1 for account in accounts if account["auto_schedule_enabled"])
+        system_state = {
+            "scheduler_enabled": auto_enabled_count > 0,
+            "auto_enabled_count": auto_enabled_count,
+            "account_count": len(accounts),
+            "publish_worker_enabled": publish_worker_enabled(conn),
+        }
     finally:
         conn.close()
     return render_template(
@@ -95,10 +168,97 @@ def page():
         page="auto-posting",
         groups=grouped,
         counts=counts,
+        accounts=accounts,
+        system_state=system_state,
         horizon_hours=48,
         message=request.args.get("message"),
         err=request.args.get("err"),
         pending_review=_pending_review_count(),
+    )
+
+
+@bp.post("/auto-posting/channel/<channel_id>/auto-toggle")
+def toggle_channel_auto(channel_id):
+    enabled_raw = str(request.form.get("enabled") or "").strip()
+    if enabled_raw not in ("0", "1"):
+        return _redirect(err="Trạng thái Auto không hợp lệ.")
+    conn = connect()
+    try:
+        channel = conn.execute(
+            "SELECT id,platform,status,enabled,handle FROM channel WHERE id=?", (str(channel_id),)
+        ).fetchone()
+        if not channel or channel["platform"] != "threads":
+            return _redirect(err="Chỉ kênh Threads mới dùng được Auto Posting.")
+        if channel["status"] != "ACTIVE" or not int(channel["enabled"] or 0):
+            return _redirect(err="Kênh Threads chưa ACTIVE/enabled nên chưa thể bật Auto.")
+        enabled = int(enabled_raw)
+        conn.execute(
+            "UPDATE channel SET auto_schedule_enabled=? WHERE id=?", (enabled, channel["id"])
+        )
+        audit(
+            conn,
+            "channel",
+            channel["id"],
+            "auto_schedule_toggled",
+            actor="operator",
+            detail={"enabled": bool(enabled)},
+        )
+    finally:
+        conn.close()
+    return _redirect(message=f"Auto Posting cho {channel['handle']} đã {'BẬT' if enabled else 'TẮT'}.")
+
+
+@bp.post("/auto-posting/worker-toggle")
+def toggle_publish_worker():
+    enabled_raw = str(request.form.get("enabled") or "").strip()
+    if enabled_raw not in ("0", "1"):
+        return _redirect(err="Trạng thái Publish Worker không hợp lệ.")
+    conn = connect()
+    try:
+        enabled = enabled_raw == "1"
+        set_system_setting(
+            conn,
+            PUBLISH_WORKER_ENABLED,
+            "1" if enabled else "0",
+            actor="operator",
+        )
+    finally:
+        conn.close()
+    return _redirect(message=f"Publish Worker đã {'BẬT' if enabled else 'TẮT'}.")
+
+
+@bp.post("/auto-posting/run-scheduler")
+def run_scheduler_now():
+    conn = connect()
+    try:
+        campaign = conn.execute(
+            """SELECT code FROM campaign
+               WHERE is_active=1
+               ORDER BY CASE WHEN code='gd2026' THEN 0 ELSE 1 END, created_at, code
+               LIMIT 1"""
+        ).fetchone()
+        if not campaign:
+            return _redirect(err="Chưa có campaign đang hoạt động để tạo lịch Auto.")
+        try:
+            ctx = factory.build_context()
+            stats = pipeline.fill_auto_schedule(
+                conn,
+                campaign["code"],
+                now_utc=datetime.now(timezone.utc),
+                ctx=ctx,
+            )
+        except Exception:
+            return _redirect(err="Không tạo được lịch Auto. Kiểm tra cấu hình sản phẩm/kênh tại Vận hành.")
+    finally:
+        conn.close()
+    scheduled = int(stats.get("scheduled", 0) or 0)
+    review = int(stats.get("review", 0) or 0)
+    skipped = int(stats.get("skipped", 0) or 0)
+    return _redirect(
+        message=(
+            f"Đã chạy scheduler 48h: tạo {scheduled} slot, "
+            f"chờ duyệt {review}, bỏ qua {skipped}. Không publish ngay."
+        )
     )
 
 
