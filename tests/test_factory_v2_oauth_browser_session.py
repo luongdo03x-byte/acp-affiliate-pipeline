@@ -36,6 +36,14 @@ class FakeFlow:
         return FlowResult("running", "UNKNOWN")
 
 
+class FakeBrowserFlow:
+    def prepare_browser(self):
+        return FlowResult("running", "BROWSER_READY")
+
+    def run(self, username, password):
+        return FlowResult("running", "LOGIN_SUCCEEDED")
+
+
 class FakeAvd:
     adb = "adb"
     runner = SimpleNamespace(
@@ -47,6 +55,12 @@ class FakeAvd:
 
     def reset_browser_session(self, serial, browser_package):
         self.events.append(("reset", serial, browser_package))
+
+    def open_package(self, serial, package):
+        self.events.append(("open_package", serial, package))
+
+    def set_package_enabled(self, serial, package, enabled):
+        self.events.append(("package_enabled", serial, package, bool(enabled)))
 
     def open_url(self, serial, url, *, browser_package=None):
         self.events.append(("open", serial, url, browser_package))
@@ -62,6 +76,7 @@ class OAuthBrowserSessionTests(unittest.TestCase):
             avd=avd,
             instagram_flow=FakeFlow(),
             threads_flow=FakeFlow(),
+            browser_login_flow=FakeBrowserFlow(),
         )
         return agent, avd
 
@@ -78,9 +93,13 @@ class OAuthBrowserSessionTests(unittest.TestCase):
         self.assertEqual(
             [
                 ("reset", "emulator-5554", "com.android.chrome"),
+                ("open_package", "emulator-5554", "com.android.chrome"),
+                ("package_enabled", "emulator-5554", "com.instagram.barcelona", False),
                 ("open", "emulator-5554", url_1, "com.android.chrome"),
                 ("open", "emulator-5554", url_1_retry, "com.android.chrome"),
                 ("reset", "emulator-5554", "com.android.chrome"),
+                ("open_package", "emulator-5554", "com.android.chrome"),
+                ("package_enabled", "emulator-5554", "com.instagram.barcelona", False),
                 ("open", "emulator-5554", url_2, "com.android.chrome"),
             ],
             avd.events,
@@ -121,6 +140,27 @@ class OAuthBrowserSessionTests(unittest.TestCase):
                     "-a", "android.intent.action.VIEW",
                     "-d", "https://threads.net/oauth/authorize?state=one",
                     "-p", "com.android.chrome",
+                ), 20),
+            ],
+            runner.calls,
+        )
+
+    def test_avd_can_disable_and_restore_threads_app_for_oauth(self):
+        runner = FakeRunner()
+        manager = AvdManager(runner=runner, adb_path="adb", emulator_path="emulator")
+
+        manager.set_package_enabled("emulator-5554", "com.instagram.barcelona", False)
+        manager.set_package_enabled("emulator-5554", "com.instagram.barcelona", True)
+
+        self.assertEqual(
+            [
+                ((
+                    "adb", "-s", "emulator-5554", "shell", "pm", "disable-user",
+                    "--user", "0", "com.instagram.barcelona",
+                ), 20),
+                ((
+                    "adb", "-s", "emulator-5554", "shell", "pm", "enable",
+                    "--user", "0", "com.instagram.barcelona",
                 ), 20),
             ],
             runner.calls,
