@@ -120,6 +120,24 @@ class AvdManager:
     def reset_browser_session(self, serial: str, browser_package: str) -> None:
         self.reset_app_session(serial, browser_package)
 
+    def set_package_enabled(self, serial: str, package: str, enabled: bool) -> None:
+        package = _validate_browser_package(package)
+        command = "enable" if enabled else "disable-user"
+        self._checked(
+            [
+                self.adb,
+                "-s",
+                serial,
+                "shell",
+                "pm",
+                command,
+                "--user",
+                "0",
+                package,
+            ],
+            timeout=20,
+        )
+
     def open_url(
         self,
         serial: str,
