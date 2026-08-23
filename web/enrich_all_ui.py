@@ -1,7 +1,7 @@
 """Web controls for background Shopee Enrich All."""
 from __future__ import annotations
 
-from flask import Blueprint, redirect, request, url_for
+from flask import Blueprint, jsonify, redirect, request, url_for
 
 from ..core import shopee_bulk_enrichment
 from ..core.db import connect
@@ -57,11 +57,24 @@ def retry_failed():
     )
 
 
+@bp.get("/sanpham/shopee/enrichment/all/status")
+def progress_status():
+    conn = connect()
+    try:
+        return jsonify(shopee_bulk_enrichment.status(conn))
+    finally:
+        conn.close()
+
+
 def register_enrich_all_ui(app):
     app.register_blueprint(bp)
 
     @app.context_processor
     def inject_enrich_all_status():
+        # Only Product Pool renders this widget. Avoid one extra DB connection
+        # on every unrelated dashboard page.
+        if request.path != "/sanpham/shopee":
+            return {}
         conn = connect()
         try:
             return {"enrich_all": shopee_bulk_enrichment.status(conn)}
