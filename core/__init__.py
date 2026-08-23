@@ -20,6 +20,7 @@ if __name__ == "acp.core":
     from . import topic_runtime as _topic_runtime  # noqa: E402
     from . import reviewer_caption_runtime as _reviewer_caption_runtime  # noqa: E402
     from . import auto_post_reconcile as _auto_post_reconcile  # noqa: E402
+    from . import auto_post_attribution as _auto_post_attribution  # noqa: E402
     from . import auto_post_runtime as _auto_post_runtime  # noqa: E402
 
     _shopee_import_runtime.install()
@@ -27,4 +28,5 @@ if __name__ == "acp.core":
     _topic_runtime.install()
     _reviewer_caption_runtime.install()
     _auto_post_reconcile.install()
+    _auto_post_attribution.install()
     _auto_post_runtime.install()
