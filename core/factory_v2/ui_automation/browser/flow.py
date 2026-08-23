@@ -7,6 +7,7 @@ from .screens import (
     CHROME_FIRST_RUN,
     OAUTH_CONSENT,
     SECURITY_CHALLENGE,
+    UNKNOWN,
 )
 
 
@@ -21,18 +22,44 @@ class BrowserLoginFlow:
         if wait_for is None:
             screen = self.driver.detect_screen()
         else:
+            # reset_browser_session clears Chrome app data, so a fresh OAuth browser
+            # must positively reach the first-run screen before we trust it. Do not
+            # treat a transient UNKNOWN while Chrome is still starting as ready.
             screen = wait_for(
                 (CHROME_FIRST_RUN,),
+                self.load_timeout,
+            )
+        if screen.kind != CHROME_FIRST_RUN:
+            return FlowResult(
+                "needs_confirmation",
+                screen.kind or UNKNOWN,
+                "CHROME_FIRST_RUN_UNVERIFIED",
+            )
+
+        tap_skip = getattr(self.driver, "tap_use_without_account", None)
+        if tap_skip is None or tap_skip().status != "completed":
+            return FlowResult(
+                "needs_confirmation",
+                CHROME_FIRST_RUN,
+                "CHROME_FIRST_RUN_UNVERIFIED",
+            )
+
+        # The tap itself is not enough: Chrome can keep rendering the welcome page
+        # for a short time. Verify that first-run really disappeared before opening
+        # the OAuth URL, otherwise the intent can be swallowed by the welcome UI.
+        if wait_for is None:
+            after = self.driver.detect_screen()
+        else:
+            after = wait_for(
+                (UNKNOWN,),
                 min(self.load_timeout, 3.0),
             )
-        if screen.kind == CHROME_FIRST_RUN:
-            tap_skip = getattr(self.driver, "tap_use_without_account", None)
-            if tap_skip is None or tap_skip().status != "completed":
-                return FlowResult(
-                    "needs_confirmation",
-                    CHROME_FIRST_RUN,
-                    "CHROME_FIRST_RUN_UNVERIFIED",
-                )
+        if after.kind == CHROME_FIRST_RUN:
+            return FlowResult(
+                "needs_confirmation",
+                CHROME_FIRST_RUN,
+                "CHROME_FIRST_RUN_UNVERIFIED",
+            )
         return FlowResult("running", "BROWSER_READY")
 
     def _wait_for_browser_state(self, timeout: float):
