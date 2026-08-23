@@ -183,9 +183,10 @@ class Scheduler:
                 """UPDATE factory_worker
                    SET state='READY', current_account_id=NULL, current_job_id=NULL,
                        processed_count=processed_count + CASE WHEN ?='COMPLETED' THEN 1 ELSE 0 END,
+                       recovery_count=CASE WHEN ?='COMPLETED' THEN 0 ELSE recovery_count END,
                        last_progress_at=?
                    WHERE id=? AND current_job_id=?""",
-                (final_state, finished_at, job["worker_id"], job_id),
+                (final_state, final_state, finished_at, job["worker_id"], job_id),
             )
 
     def release_job_in_transaction(self, job_id: str, final_state: str) -> None:
@@ -214,9 +215,10 @@ class Scheduler:
             """UPDATE factory_worker
                SET state='READY', current_account_id=NULL, current_job_id=NULL,
                    processed_count=processed_count + CASE WHEN ?='COMPLETED' THEN 1 ELSE 0 END,
+                   recovery_count=CASE WHEN ?='COMPLETED' THEN 0 ELSE recovery_count END,
                    last_progress_at=?
                WHERE id=? AND current_job_id=?""",
-            (final_state, finished_at, job["worker_id"], job_id),
+            (final_state, final_state, finished_at, job["worker_id"], job_id),
         )
 
     def reconcile_expired_leases(self, now_iso: str) -> list[str]:
