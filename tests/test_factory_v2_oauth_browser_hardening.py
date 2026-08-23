@@ -63,14 +63,25 @@ class FakeAvd:
 class FirstRunDriver:
     def __init__(self):
         self.actions = []
+        self.wait_calls = 0
 
     def wait_for(self, screens, timeout):
-        self.actions.append(("wait_for", tuple(screens)))
-        return DetectedScreen("CHROME_FIRST_RUN", 0.99, ("use_without_account",))
+        self.wait_calls += 1
+        self.actions.append(("wait_for", tuple(screens), float(timeout)))
+        if self.wait_calls == 1:
+            return DetectedScreen("CHROME_FIRST_RUN", 0.99, ("use_without_account",))
+        return DetectedScreen("UNKNOWN", 0.0, ())
 
     def tap_use_without_account(self):
         self.actions.append(("tap", "use_without_account"))
         return ActionResult("completed", before="CHROME_FIRST_RUN", after="UNKNOWN")
+
+
+class StalledFirstRunDriver(FirstRunDriver):
+    def wait_for(self, screens, timeout):
+        self.wait_calls += 1
+        self.actions.append(("wait_for", tuple(screens), float(timeout)))
+        return DetectedScreen("CHROME_FIRST_RUN", 0.99, ("use_without_account",))
 
 
 class OAuthBrowserHardeningTests(unittest.TestCase):
@@ -112,13 +123,29 @@ class OAuthBrowserHardeningTests(unittest.TestCase):
 
     def test_prepare_browser_skips_chrome_first_run_before_oauth_navigation(self):
         driver = FirstRunDriver()
-        flow = BrowserLoginFlow(driver)
+        flow = BrowserLoginFlow(driver, load_timeout=8.0)
 
         result = flow.prepare_browser()
 
         self.assertEqual("running", result.status)
         self.assertEqual("BROWSER_READY", result.screen)
-        self.assertEqual(("tap", "use_without_account"), driver.actions[-1])
+        self.assertEqual(
+            ("wait_for", ("CHROME_FIRST_RUN",), 8.0),
+            driver.actions[0],
+        )
+        self.assertEqual(("tap", "use_without_account"), driver.actions[1])
+        self.assertEqual("wait_for", driver.actions[2][0])
+        self.assertIn("UNKNOWN", driver.actions[2][1])
+
+    def test_prepare_browser_fails_closed_if_first_run_does_not_exit_after_tap(self):
+        driver = StalledFirstRunDriver()
+        flow = BrowserLoginFlow(driver, load_timeout=8.0)
+
+        result = flow.prepare_browser()
+
+        self.assertEqual("needs_confirmation", result.status)
+        self.assertEqual("CHROME_FIRST_RUN", result.screen)
+        self.assertEqual("CHROME_FIRST_RUN_UNVERIFIED", result.reason)
 
     def test_open_url_prepares_chrome_and_disables_threads_before_navigation(self):
         agent, avd, browser_flow = self.make_agent()
