@@ -113,6 +113,12 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
 
     def test_remote_oauth_open_without_credential_stays_manual(self):
         job = self._leased_job("avd-oauth-manual", "REMOTE_AVD")
+        # create_batch may seed ACP_DEFAULT_ACCOUNT_PASSWORD from the caller's
+        # shell. This test intentionally covers the no-credential path.
+        self.conn.execute(
+            "DELETE FROM factory_account_credential WHERE account_id=?",
+            (job["account_id"],),
+        )
 
         response = self.gateway.send(
             job,
