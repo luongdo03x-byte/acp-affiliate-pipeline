@@ -191,6 +191,7 @@ class WorkerAgent:
         self.oauth_browser_account_id = None
         self.oauth_browser_package = _OAUTH_BROWSER_PACKAGE
         self.threads_account_id = None
+        self.avatar_stage_key = None
 
         if instagram_flow is None:
             instagram_flow = InstagramFlow(
@@ -238,10 +239,13 @@ class WorkerAgent:
         match = re.search(r"mCurrentFocus=.*? ([A-Za-z0-9_.]+)/", result.stdout)
         return match.group(1) if match else None
 
-    def _stage_avatar(self, profile: dict[str, str]) -> None:
+    def _stage_avatar(self, profile: dict[str, str], account_id: str | None) -> None:
         avatar_file = profile.get("avatar_file")
         if not avatar_file:
             return
+        account = str(account_id or "").strip()
+        if not account:
+            raise ValueError("account binding is required for avatar staging")
         try:
             source = resolve_avatar_source(
                 avatar_file,
@@ -255,7 +259,21 @@ class WorkerAgent:
         suffix = source.suffix.lower()
         if suffix not in _AVATAR_EXTENSIONS:
             raise ValueError("invalid profile field: avatar_file")
-        self.adb_client.push_file(source, f"{_AVATAR_DEVICE_DIR}/avatar{suffix}")
+
+        source = source.resolve()
+        stage_key = (account, str(source))
+        if self.avatar_stage_key == stage_key:
+            return
+
+        stage_avatar = getattr(self.adb_client, "stage_avatar", None)
+        if callable(stage_avatar):
+            stage_avatar(source, account)
+        else:
+            # Compatibility path for older injected/fake ADB clients. Real AVD
+            # workers use AdbClient.stage_avatar so stale MediaStore rows are
+            # cleaned and filenames are account-specific.
+            self.adb_client.push_file(source, f"{_AVATAR_DEVICE_DIR}/avatar{suffix}")
+        self.avatar_stage_key = stage_key
 
     def _flow_response(self, flow_name: str, result) -> dict:
         screen = _safe_text(getattr(result, "screen", None)) or "UNKNOWN"
@@ -377,7 +395,7 @@ class WorkerAgent:
                 return self._prepare_instagram()
             if action == "AUTOMATE_INSTAGRAM":
                 profile = _safe_profile(command.payload)
-                self._stage_avatar(profile)
+                self._stage_avatar(profile, command.account_id)
                 return self._flow_response(
                     "instagram",
                     self.instagram_flow.run(profile, account_id=command.account_id),
