@@ -4,12 +4,15 @@ from __future__ import annotations
 from ..detector import DetectedScreen
 from ..selectors import normalize_ui_text
 
+CHROME_FIRST_RUN = "CHROME_FIRST_RUN"
 BROWSER_LOGIN = "BROWSER_LOGIN"
 OAUTH_CONSENT = "OAUTH_CONSENT"
 SECURITY_CHALLENGE = "SECURITY_CHALLENGE"
 UNKNOWN = "UNKNOWN"
 
 _BROWSER_PACKAGE = "com.android.chrome"
+_CHROME_FIRST_RUN_TITLE = "welcome to chrome"
+_CHROME_FIRST_RUN_SKIP = "use without an account"
 _USERNAME_HINTS = (
     "username",
     "user name",
@@ -75,6 +78,25 @@ class BrowserScreenDetector:
                 0.99,
                 ("oauth_consent",),
                 True,
+            )
+
+        first_run_skip = tuple(
+            node
+            for node in snapshot.nodes
+            if node.clickable
+            and node.enabled
+            and normalize_ui_text(node.text or node.content_desc) == _CHROME_FIRST_RUN_SKIP
+        )
+        first_run_context = any(
+            normalize_ui_text(node.text or node.content_desc) == _CHROME_FIRST_RUN_TITLE
+            for node in snapshot.nodes
+        )
+        if first_run_context and len(first_run_skip) == 1:
+            return DetectedScreen(
+                CHROME_FIRST_RUN,
+                0.99,
+                ("welcome_to_chrome", "use_without_account"),
+                False,
             )
 
         edit_nodes = tuple(
