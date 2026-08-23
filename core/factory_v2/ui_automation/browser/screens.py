@@ -5,6 +5,7 @@ from ..detector import DetectedScreen
 from ..selectors import normalize_ui_text
 
 CHROME_FIRST_RUN = "CHROME_FIRST_RUN"
+CHROME_AD_PRIVACY = "CHROME_AD_PRIVACY"
 BROWSER_LOGIN = "BROWSER_LOGIN"
 OAUTH_CONSENT = "OAUTH_CONSENT"
 SECURITY_CHALLENGE = "SECURITY_CHALLENGE"
@@ -13,6 +14,8 @@ UNKNOWN = "UNKNOWN"
 _BROWSER_PACKAGE = "com.android.chrome"
 _CHROME_FIRST_RUN_TITLE = "welcome to chrome"
 _CHROME_FIRST_RUN_SKIP = "use without an account"
+_CHROME_AD_PRIVACY_TITLE = "enhanced ad privacy in chrome"
+_CHROME_AD_PRIVACY_CONFIRM = "got it"
 _USERNAME_HINTS = (
     "username",
     "user name",
@@ -96,6 +99,25 @@ class BrowserScreenDetector:
                 CHROME_FIRST_RUN,
                 0.99,
                 ("welcome_to_chrome", "use_without_account"),
+                False,
+            )
+
+        privacy_confirm = tuple(
+            node
+            for node in snapshot.nodes
+            if node.clickable
+            and node.enabled
+            and normalize_ui_text(node.text or node.content_desc) == _CHROME_AD_PRIVACY_CONFIRM
+        )
+        privacy_context = any(
+            normalize_ui_text(node.text or node.content_desc) == _CHROME_AD_PRIVACY_TITLE
+            for node in snapshot.nodes
+        )
+        if privacy_context and len(privacy_confirm) == 1:
+            return DetectedScreen(
+                CHROME_AD_PRIVACY,
+                0.99,
+                ("enhanced_ad_privacy", "got_it"),
                 False,
             )
 
