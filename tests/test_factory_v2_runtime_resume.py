@@ -34,6 +34,15 @@ class FakeWorkerProcesses:
         return {"ok": True}
 
 
+class FailingWorkerProcesses:
+    def __init__(self):
+        self.actions = []
+
+    def request(self, worker_id, command):
+        self.actions.append(command.action)
+        raise RuntimeError("runner unavailable")
+
+
 class FactoryV2RuntimeResumeTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", isolation_level=None)
@@ -86,6 +95,38 @@ class FactoryV2RuntimeResumeTests(unittest.TestCase):
             ["AUTOMATE_THREADS"],
             self.worker_processes.actions,
         )
+
+    def test_recovering_job_does_not_hot_loop_runner_command_before_supervisor_recovery(self):
+        failing = FailingWorkerProcesses()
+        runtime = FactoryControllerRuntime(
+            self.repo,
+            self.service,
+            self.scheduler,
+            FakeSupervisor(),
+            failing,
+        )
+        self.service.create_batch("Runner recovery", count=1, seed=62)
+
+        runtime.tick()
+        worker = self.repo.get_worker("worker-01")
+        job = self.conn.execute(
+            "SELECT * FROM factory_job WHERE worker_id='worker-01' ORDER BY leased_at DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual("RECOVERING", worker["state"])
+        self.assertEqual("RECOVERING", job["state"])
+        self.assertEqual(1, worker["recovery_count"])
+        self.assertEqual(1, len(failing.actions))
+
+        runtime.tick()
+        worker = self.repo.get_worker("worker-01")
+        job = self.conn.execute(
+            "SELECT * FROM factory_job WHERE id=?",
+            (job["id"],),
+        ).fetchone()
+        self.assertEqual("RECOVERING", worker["state"])
+        self.assertEqual("RECOVERING", job["state"])
+        self.assertEqual(1, worker["recovery_count"])
+        self.assertEqual(1, len(failing.actions))
 
 
 if __name__ == "__main__":
