@@ -84,6 +84,21 @@ class StalledFirstRunDriver(FirstRunDriver):
         return DetectedScreen("CHROME_FIRST_RUN", 0.99, ("use_without_account",))
 
 
+class PrivacyBootstrapDriver(FirstRunDriver):
+    def wait_for(self, screens, timeout):
+        self.wait_calls += 1
+        self.actions.append(("wait_for", tuple(screens), float(timeout)))
+        if self.wait_calls == 1:
+            return DetectedScreen("CHROME_FIRST_RUN", 0.99, ("use_without_account",))
+        if self.wait_calls == 2:
+            return DetectedScreen("CHROME_AD_PRIVACY", 0.99, ("got_it",))
+        return DetectedScreen("UNKNOWN", 0.0, ())
+
+    def tap_got_it(self):
+        self.actions.append(("tap", "got_it"))
+        return ActionResult("completed", before="CHROME_AD_PRIVACY", after="UNKNOWN")
+
+
 class OAuthBrowserHardeningTests(unittest.TestCase):
     def make_agent(self):
         avd = FakeAvd()
@@ -121,6 +136,31 @@ class OAuthBrowserHardeningTests(unittest.TestCase):
         self.assertFalse(detected.protected)
         self.assertTrue(detected.automation_allowed)
 
+    def test_chrome_ad_privacy_is_detected_only_with_exact_got_it(self):
+        xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+        <hierarchy rotation='0'>
+          <node index='0' text='Enhanced ad privacy in Chrome' resource-id='' class='android.widget.TextView'
+                package='com.android.chrome' content-desc='' clickable='false' enabled='true'
+                bounds='[0,0][400,100]' />
+          <node index='1' text='Settings' resource-id='' class='android.widget.Button'
+                package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+                bounds='[20,700][190,780]' />
+          <node index='2' text='Got it' resource-id='' class='android.widget.Button'
+                package='com.android.chrome' content-desc='' clickable='true' enabled='true'
+                bounds='[210,700][380,780]' />
+        </hierarchy>"""
+        snapshot = UiHierarchyReader().parse(
+            xml,
+            package="com.android.chrome",
+            activity="ChromeActivity",
+        )
+
+        detected = build_browser_detector().detect(snapshot)
+
+        self.assertEqual("CHROME_AD_PRIVACY", detected.kind)
+        self.assertFalse(detected.protected)
+        self.assertTrue(detected.automation_allowed)
+
     def test_prepare_browser_skips_chrome_first_run_before_oauth_navigation(self):
         driver = FirstRunDriver()
         flow = BrowserLoginFlow(driver, load_timeout=8.0)
@@ -136,6 +176,19 @@ class OAuthBrowserHardeningTests(unittest.TestCase):
         self.assertEqual(("tap", "use_without_account"), driver.actions[1])
         self.assertEqual("wait_for", driver.actions[2][0])
         self.assertIn("UNKNOWN", driver.actions[2][1])
+
+    def test_prepare_browser_clears_ad_privacy_after_first_run(self):
+        driver = PrivacyBootstrapDriver()
+        flow = BrowserLoginFlow(driver, load_timeout=8.0)
+
+        result = flow.prepare_browser()
+
+        self.assertEqual("running", result.status)
+        self.assertEqual("BROWSER_READY", result.screen)
+        self.assertIn(("tap", "use_without_account"), driver.actions)
+        self.assertIn(("tap", "got_it"), driver.actions)
+        self.assertEqual("wait_for", driver.actions[-1][0])
+        self.assertIn("UNKNOWN", driver.actions[-1][1])
 
     def test_prepare_browser_fails_closed_if_first_run_does_not_exit_after_tap(self):
         driver = StalledFirstRunDriver()
