@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from core.db import now, ulid
 
-from .account_credentials import get_account_password
+from .account_credentials import CredentialDecryptError, get_account_password
 from .models import RunnerType
 from .worker_protocol import WorkerCommand
 
@@ -75,6 +75,17 @@ class RunnerGateway:
             ),
         )
 
+    def _restore_oauth_apps_after_open_failure(self, job: dict) -> None:
+        self.worker_processes.request(
+            job["worker_id"],
+            WorkerCommand(
+                command_id=ulid(),
+                action="RESTORE_OAUTH_APPS",
+                account_id=job["account_id"],
+                payload={"job_id": job["id"]},
+            ),
+        )
+
     def _remote_oauth_login_after_open(self, job: dict, opened: dict) -> dict:
         if not isinstance(opened, dict) or opened.get("ok") is False:
             return opened
@@ -84,7 +95,11 @@ class RunnerGateway:
         account = self.repo.get_account(job["account_id"])
         if account is None:
             return opened
-        password = get_account_password(self.repo.conn, account["id"])
+        try:
+            password = get_account_password(self.repo.conn, account["id"])
+        except CredentialDecryptError:
+            self._restore_oauth_apps_after_open_failure(job)
+            raise
         if password is None:
             return opened
         return self.send_transient_login_secret(
