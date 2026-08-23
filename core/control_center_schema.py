@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS auto_post_plan (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_post_plan_target
     ON auto_post_plan(publish_target_id)
     WHERE publish_target_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_post_plan_live_slot
+    ON auto_post_plan(channel_id, scheduled_at)
+    WHERE state IN ('PLANNED','READY','REGENERATING','PUBLISHING');
 CREATE INDEX IF NOT EXISTS idx_auto_post_plan_window
     ON auto_post_plan(channel_id, scheduled_at, state);
 """
