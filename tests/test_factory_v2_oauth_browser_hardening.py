@@ -175,7 +175,7 @@ class OAuthBrowserHardeningTests(unittest.TestCase):
         )
         self.assertEqual(("tap", "use_without_account"), driver.actions[1])
         self.assertEqual("wait_for", driver.actions[2][0])
-        self.assertIn("UNKNOWN", driver.actions[2][1])
+        self.assertIn("CHROME_AD_PRIVACY", driver.actions[2][1])
 
     def test_prepare_browser_clears_ad_privacy_after_first_run(self):
         driver = PrivacyBootstrapDriver()
