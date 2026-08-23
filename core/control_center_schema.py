@@ -58,20 +58,22 @@ CREATE INDEX IF NOT EXISTS idx_channel_topic_rule_channel
     ON channel_topic_rule(channel_id, rule_mode);
 
 CREATE TABLE IF NOT EXISTS auto_post_plan (
-    id                  TEXT PRIMARY KEY,
-    channel_id          TEXT NOT NULL REFERENCES channel(id),
-    scheduled_at        TEXT NOT NULL,
-    product_id          TEXT REFERENCES product(id),
-    post_id             TEXT REFERENCES post(id),
-    publish_target_id   TEXT REFERENCES publish_target(id),
-    state               TEXT NOT NULL DEFAULT 'PLANNED',
-    content_revision    INTEGER NOT NULL DEFAULT 1,
-    generated_at        TEXT NOT NULL,
-    last_reconciled_at  TEXT,
-    replacement_count   INTEGER NOT NULL DEFAULT 0,
-    last_change_reason  TEXT,
-    created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    id                      TEXT PRIMARY KEY,
+    channel_id              TEXT NOT NULL REFERENCES channel(id),
+    scheduled_at            TEXT NOT NULL,
+    product_id              TEXT REFERENCES product(id),
+    post_id                 TEXT REFERENCES post(id),
+    publish_target_id       TEXT REFERENCES publish_target(id),
+    state                   TEXT NOT NULL DEFAULT 'PLANNED',
+    content_revision        INTEGER NOT NULL DEFAULT 1,
+    generated_at            TEXT NOT NULL,
+    last_reconciled_at      TEXT,
+    replacement_count       INTEGER NOT NULL DEFAULT 0,
+    last_change_reason      TEXT,
+    product_price_snapshot  INTEGER,
+    product_image_snapshot  TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_post_plan_target
     ON auto_post_plan(publish_target_id)
