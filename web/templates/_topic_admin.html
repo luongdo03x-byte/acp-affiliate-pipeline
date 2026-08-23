@@ -1,0 +1,62 @@
+{% macro preserve_filters() -%}
+  {% if filters is defined %}
+  <input type="hidden" name="q" value="{{ filters.q }}">
+  <input type="hidden" name="niche" value="{{ filters.niche }}">
+  <input type="hidden" name="auto" value="{{ filters.auto }}">
+  <input type="hidden" name="image" value="{{ filters.image }}">
+  <input type="hidden" name="usage" value="{{ filters.usage }}">
+  <input type="hidden" name="per_page" value="{{ filters.per_page }}">
+  <input type="hidden" name="page" value="{{ filters.page }}">
+  {% endif %}
+{%- endmacro %}
+
+{% if dynamic_topics_admin %}
+<details class="card topic-admin-panel" style="margin-top:16px">
+  <summary><strong>Quản lý chủ đề tự động</strong> <span class="note">· đổi tên / merge / xóa topic AUTO</span></summary>
+  <p class="note">Mã topic được giữ ổn định khi đổi tên. Merge chuyển cả sản phẩm, alias và routing kênh. Xóa là soft-delete để không mất lịch sử audit.</p>
+  <div class="table-scroll" style="margin-top:12px">
+    <table class="data-table">
+      <thead><tr><th>Chủ đề</th><th>Nhánh cha</th><th>Confidence</th><th>Sản phẩm</th><th>Đổi tên</th><th>Merge vào</th><th>Xóa</th></tr></thead>
+      <tbody>
+      {% for topic in dynamic_topics_admin %}
+        <tr>
+          <td>
+            <strong>{{ topic.name }}</strong>
+            <span class="mono-sub">{{ topic.code }} · {{ topic.topic_type }}</span>
+            {% if topic.duplicate_name %}<span class="tag warn">Có thể trùng: {{ topic.duplicate_name }}</span>{% endif %}
+          </td>
+          <td>{{ topic.parent_name or '—' }}</td>
+          <td>{% if topic.confidence is not none %}{{ '%.0f'|format(topic.confidence * 100) }}%{% else %}—{% endif %}</td>
+          <td>{{ topic.product_count|num }}</td>
+          <td>
+            <form method="post" action="{{ url_for('topic_admin.rename', topic_id=topic.id) }}" class="topic-admin-form">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">{{ preserve_filters() }}
+              <input type="text" name="name" value="{{ topic.name }}" required aria-label="Tên mới cho {{ topic.name }}">
+              <button class="btn btn--small btn--ghost" type="submit">Đổi tên</button>
+            </form>
+          </td>
+          <td>
+            {% if topic.merge_targets %}
+            <form method="post" action="{{ url_for('topic_admin.merge', topic_id=topic.id) }}" class="topic-admin-form">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">{{ preserve_filters() }}
+              <select name="target_id" required aria-label="Merge {{ topic.name }} vào">
+                <option value="">Chọn topic đích</option>
+                {% for target in topic.merge_targets %}<option value="{{ target.id }}">{{ target.name }}</option>{% endfor %}
+              </select>
+              <button class="btn btn--small btn--ghost" type="submit">Merge vào</button>
+            </form>
+            {% else %}<span class="note">Không có topic cùng nhánh</span>{% endif %}
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('topic_admin.delete', topic_id=topic.id) }}" onsubmit="return confirm('Xóa chủ đề này khỏi routing? Lịch sử audit vẫn được giữ.');">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}">{{ preserve_filters() }}
+              <button class="btn btn--small btn--danger" type="submit">Xóa</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}

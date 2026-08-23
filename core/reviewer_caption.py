@@ -309,7 +309,7 @@ def _rewrite_prompt(product, draft: str) -> str:
         "- 1-3 dòng nội dung ngắn trước URL; toàn bộ tối đa 380 ký tự.\n"
         "- Dòng đầu tối đa 12 từ và phải nghe như phản ứng tự nhiên.\n"
         "- Chỉ một điểm chính: giá, size hoặc một chi tiết thật trong tên sản phẩm.\n"
-        "- KHÔNG nhắc số lượt mua, số đã bán, sold count hay social proof kiểu đó dưới bất kỳ hình thức nào.\n"
+        "- KHÔNG nhắc số lượt mua, số đã bán hoặc bất kỳ social proof bằng số nào.\n"
         "- Không bịa đã mua, đã mặc, đã dùng hay đã thử sản phẩm.\n"
         "- Không thêm công dụng, thông số, giảm giá, urgency hay số liệu ngoài dữ liệu được đưa.\n"
         "- Tránh giọng máy móc: mình chú ý, mình note lại, đáng chú ý, khoan lướt, listing, detail.\n"

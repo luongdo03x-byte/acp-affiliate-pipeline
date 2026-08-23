@@ -21,6 +21,7 @@ from ..core.shopee_csv_import import (
     preview_rows_against_db,
 )
 from ..core.shopee_enrichment_jobs import queue_pending_products
+from ..core.topic_jobs import queue_discovery
 
 
 bp = Blueprint("shopee_csv_import", __name__)
@@ -46,20 +47,12 @@ def _safe_filename(value: str) -> str:
 
 def _summary(rows, *, files: int) -> dict:
     counts = {
-        "files": int(files),
-        "rows": len(rows or []),
-        "new": 0,
-        "updated": 0,
-        "unchanged": 0,
-        "duplicate": 0,
-        "error": 0,
+        "files": int(files), "rows": len(rows or []), "new": 0, "updated": 0,
+        "unchanged": 0, "duplicate": 0, "error": 0,
     }
     mapping = {
-        "NEW": "new",
-        "UPDATED": "updated",
-        "UNCHANGED": "unchanged",
-        "DUPLICATE_IN_UPLOAD": "duplicate",
-        "ERROR": "error",
+        "NEW": "new", "UPDATED": "updated", "UNCHANGED": "unchanged",
+        "DUPLICATE_IN_UPLOAD": "duplicate", "ERROR": "error",
     }
     for result in rows or []:
         key = mapping.get(result.status)
@@ -75,17 +68,8 @@ def _audit_detail(summary: dict) -> dict:
 
 def _safe_audit(conn, batch_id: str, action: str, detail: dict) -> None:
     try:
-        audit(
-            conn,
-            "shopee_csv_import",
-            batch_id,
-            action,
-            actor="operator",
-            detail=_audit_detail(detail),
-        )
+        audit(conn, "shopee_csv_import", batch_id, action, actor="operator", detail=_audit_detail(detail))
     except sqlite3.DatabaseError:
-        # Audit failure must not cause a confirmed idempotent import to be
-        # repeated. Log only the event type; never raw rows, URLs, or tokens.
         current_app.logger.warning("Shopee CSV audit write failed: %s", action)
 
 
@@ -162,8 +146,6 @@ def confirm():
     if not token:
         return _render(err="Thiếu phiên preview.", status=410)
 
-    # Serialize confirmation so the same one-time token cannot be imported by
-    # two concurrent requests while still remaining retryable after DB failure.
     with _confirm_lock:
         batch = peek_preview(token)
         if batch is None:
@@ -174,35 +156,44 @@ def confirm():
             result = import_rows(conn, batch["rows"])
         except sqlite3.DatabaseError:
             return _render(
-                rows=batch["rows"],
-                summary=batch["summary"],
-                preview_token=token,
+                rows=batch["rows"], summary=batch["summary"], preview_token=token,
                 err="Không thể import vào Product Pool. Dữ liệu chưa được xác nhận; hãy thử lại.",
                 status=500,
             )
         else:
-            # The import transaction is already complete here. Queueing is a
-            # follow-up trigger only: a queue failure must never roll back or
-            # invite the operator to repeat a successful import.
+            # Import is already committed. Image/topic triggers are independent
+            # follow-ups: neither may roll back or invite a repeated import.
             touched_product_ids = list(result.get("touched_product_ids") or [])
+
+            # Queue topic discovery first at its lower worker priority so the
+            # existing immediate enrichment job remains the newest import job
+            # (backward-compatible observability) while the worker still runs
+            # enrichment before topic discovery.
+            topic_result = {"queued": 0, "duplicate": 0}
+            topic_trigger_failed = False
+            try:
+                topic_result = queue_discovery(conn, touched_product_ids)
+            except Exception as exc:
+                topic_trigger_failed = True
+                current_app.logger.warning(
+                    "Shopee topic discovery trigger failed: error_type=%s", type(exc).__name__
+                )
+
             queue_result = {"queued": 0, "duplicate": 0, "skipped": 0}
-            trigger_failed = False
+            enrichment_trigger_failed = False
             try:
                 queue_result = queue_pending_products(conn, touched_product_ids)
             except Exception as exc:
-                trigger_failed = True
+                enrichment_trigger_failed = True
                 current_app.logger.warning(
-                    "Shopee immediate enrichment trigger failed: error_type=%s",
-                    type(exc).__name__,
+                    "Shopee immediate enrichment trigger failed: error_type=%s", type(exc).__name__
                 )
 
-            display_result = {
-                key: value
-                for key, value in result.items()
-                if key != "touched_product_ids"
-            }
+            display_result = {key: value for key, value in result.items() if key != "touched_product_ids"}
             display_result["enrichment_queued"] = int(queue_result.get("queued", 0) or 0)
-            display_result["enrichment_trigger_failed"] = trigger_failed
+            display_result["enrichment_trigger_failed"] = enrichment_trigger_failed
+            display_result["topic_discovery_queued"] = int(topic_result.get("queued", 0) or 0)
+            display_result["topic_trigger_failed"] = topic_trigger_failed
 
             audit_summary = dict(display_result)
             audit_summary["files"] = batch["summary"].get("files", 0)

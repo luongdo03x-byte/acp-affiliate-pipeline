@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Shopee Affiliate</div>
     <h1>Shopee Product Pool</h1>
-    <p class="lede">Import CSV một lần; ACP tự xếp việc enrich ảnh, rồi chỉ sản phẩm Shopee đủ điều kiện mới đi vào Threads Auto.</p>
+    <p class="lede">Import CSV một lần; ACP tự phân loại chủ đề, enrich ảnh nền, rồi chỉ sản phẩm Shopee đủ điều kiện mới đi vào Threads Auto.</p>
   </div>
   <a class="btn btn--ghost" href="/sanpham/shopee-import">Import CSV</a>
 </div>
@@ -26,6 +26,55 @@
   <div class="catalog-stat"><span>Lỗi ảnh</span><strong>{{ summary.failed|num }}</strong></div>
 </section>
 
+<section class="card card--elevated enrich-bulk-card" data-enrich-all-progress data-status-url="{{ url_for('shopee_enrich_all.progress_status') }}">
+  <div class="enrich-bulk-head">
+    <div>
+      <div class="eyebrow">Background queue</div>
+      <h2>Tiến độ enrich ảnh</h2>
+      <p class="note">Bấm một lần để ACP tự xử lý toàn bộ sản phẩm thiếu ảnh theo batch nền. Có thể đóng trình duyệt; worker tiếp tục chạy.</p>
+    </div>
+    <div class="enrich-bulk-actions">
+      {% if enrich_all.state == 'RUNNING' %}
+      <form method="post" action="{{ url_for('shopee_enrich_all.pause') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--ghost" type="submit">Tạm dừng</button>
+      </form>
+      {% elif enrich_all.state == 'PAUSED' %}
+      <form method="post" action="{{ url_for('shopee_enrich_all.resume') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--primary" type="submit">Tiếp tục</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('shopee_enrich_all.start') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--primary" type="submit">▶ Enrich toàn bộ</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('shopee_enrich_all.retry_failed') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--ghost" type="submit" {{ 'disabled' if not enrich_all.failed else '' }}>Retry lỗi</button>
+      </form>
+      <span class="status-badge {{ 'status-badge--success' if enrich_all.state == 'COMPLETE' else ('status-badge--warning' if enrich_all.state == 'PAUSED' else 'status-badge--accent') }}" data-enrich-state>{{ enrich_all.state }}</span>
+    </div>
+  </div>
+  <div class="enrich-progress">
+    <div class="enrich-progress__track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ enrich_all.percent }}">
+      <span class="enrich-progress__bar" data-enrich-bar style="width:{{ enrich_all.percent }}%"></span>
+    </div>
+    <div class="enrich-progress__meta">
+      <span><strong data-enrich-processed>{{ enrich_all.processed|num }}</strong> / <span data-enrich-total>{{ enrich_all.total|num }}</span> đã xử lý</span>
+      <span data-enrich-percent>{{ enrich_all.percent }}%</span>
+    </div>
+  </div>
+  <div class="enrich-status-grid">
+    <div class="enrich-status-item"><span>READY</span><strong data-enrich-ready>{{ enrich_all.ready|num }}</strong></div>
+    <div class="enrich-status-item"><span>Pending</span><strong data-enrich-pending>{{ enrich_all.pending|num }}</strong></div>
+    <div class="enrich-status-item"><span>Đang xử lý</span><strong data-enrich-working>{{ enrich_all.working|num }}</strong></div>
+    <div class="enrich-status-item"><span>Cần Helper</span><strong data-enrich-helper>{{ enrich_all.needs_helper|num }}</strong></div>
+    <div class="enrich-status-item"><span>Failed</span><strong data-enrich-failed>{{ enrich_all.failed|num }}</strong></div>
+  </div>
+</section>
+
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="get" action="{{ url_for('shopee_image_enrichment.page') }}">
     <div class="section-heading" style="align-items:flex-end;gap:12px;flex-wrap:wrap">
@@ -34,11 +83,11 @@
         <input id="pool-q" name="q" type="search" value="{{ filters.q }}" placeholder="Tên sản phẩm hoặc shop" style="width:100%">
       </div>
       <div style="min-width:180px;flex:1">
-        <label for="pool-niche">Ngách</label>
+        <label for="pool-niche">Chủ đề</label>
         <select id="pool-niche" name="niche" style="width:100%">
-          <option value="all" {{ 'selected' if filters.niche == 'all' else '' }}>Tất cả ngách</option>
+          <option value="all" {{ 'selected' if filters.niche == 'all' else '' }}>Tất cả chủ đề</option>
           {% for option in niche_options %}
-          <option value="{{ option.code }}" {{ 'selected' if filters.niche == option.code else '' }}>{{ option.name }}</option>
+          <option value="{{ option.code }}" {{ 'selected' if filters.niche == option.code else '' }}>{{ option.label }}</option>
           {% endfor %}
         </select>
       </div>
@@ -93,8 +142,8 @@
 <section class="card" style="margin-bottom:16px">
   <div class="section-heading">
     <div>
-      <h2>Thống kê theo ngách</h2>
-      <p class="note">Một sản phẩm có thể thuộc nhiều ngách nên các tổng theo ngách có thể chồng lấp.</p>
+      <h2>Thống kê theo chủ đề</h2>
+      <p class="note">Một sản phẩm có thể thuộc nhiều chủ đề nên các tổng có thể chồng lấp. Topic con hiển thị theo cây cha → con.</p>
     </div>
   </div>
   <div class="catalog-summary" style="margin-bottom:0">
@@ -111,8 +160,8 @@
 <section class="card card--elevated" style="margin-bottom:16px">
   <div class="section-heading">
     <div>
-      <h2>Auto pipeline</h2>
-      <p class="note">Import mới tự tạo job enrich ngay cho sản phẩm PENDING. Recovery 60 phút và các nút dưới đây chỉ là đường dự phòng; mỗi batch vẫn tối đa 20 sản phẩm.</p>
+      <h2>Recovery thủ công</h2>
+      <p class="note">Enrich toàn bộ phía trên là flow chính. Hai nút này chỉ dùng để recovery khi cần kiểm tra một batch nhỏ; mỗi batch tối đa 20 sản phẩm.</p>
     </div>
     <div class="form-actions">
       <form method="post" action="{{ url_for('shopee_image_enrichment.backfill') }}">
@@ -135,7 +184,7 @@
         <input type="hidden" name="usage" value="{{ filters.usage }}">
         <input type="hidden" name="per_page" value="{{ filters.per_page }}">
         <input type="hidden" name="page" value="{{ filters.page }}">
-        <button class="btn btn--primary" type="submit">Recovery: enrich 20</button>
+        <button class="btn btn--ghost" type="submit">Recovery: enrich 20</button>
       </form>
     </div>
   </div>
@@ -165,8 +214,7 @@
       <tr data-product-id="{{ item.id }}" data-auto-state="{{ auto }}" data-usage-state="{{ usage }}" data-image-state="{{ state }}">
         <td style="width:88px">
           {% if item.main_image_url %}
-            <img src="{{ item.main_image_url }}" alt="Ảnh {{ item.name }}" loading="lazy"
-                 style="width:72px;height:72px;object-fit:cover;border-radius:10px">
+            <img src="{{ item.main_image_url }}" alt="Ảnh {{ item.name }}" loading="lazy" style="width:72px;height:72px;object-fit:cover;border-radius:10px">
           {% else %}
             <div class="image-placeholder" style="width:72px;height:72px">Chưa có ảnh</div>
           {% endif %}
@@ -174,7 +222,7 @@
         <td>
           <strong>{{ item.name }}</strong>
           <div class="note">{{ item.shop_name or '—' }}</div>
-          {% if item.niche_codes %}<div class="note">{{ item.niche_codes|join(', ') }}</div>{% endif %}
+          {% if item.topic_paths %}<div class="topic-paths">{% for path in item.topic_paths %}<span class="tag">{{ path }}</span>{% endfor %}</div>{% endif %}
           <div class="link-readout"><a href="{{ item.product_url }}" target="_blank" rel="noopener noreferrer">Mở Shopee</a></div>
         </td>
         <td>{{ item.current_price|vnd }}</td>
@@ -230,13 +278,7 @@
               <button class="btn btn--small btn--ghost" type="submit">Retry</button>
             </form>
             {% elif state == 'NEEDS_HELPER' %}
-            <button class="btn btn--small btn--primary js-helper-start"
-                    type="button"
-                    data-product-id="{{ item.id }}"
-                    data-token-url="{{ url_for('shopee_image_enrichment.helper_token', product_id=item.id) }}"
-                    data-complete-url="{{ url_for('shopee_image_enrichment.helper_complete', product_id=item.id) }}">
-              Mở Shopee &amp; dùng Helper
-            </button>
+            <button class="btn btn--small btn--primary js-helper-start" type="button" data-product-id="{{ item.id }}" data-token-url="{{ url_for('shopee_image_enrichment.helper_token', product_id=item.id) }}" data-complete-url="{{ url_for('shopee_image_enrichment.helper_complete', product_id=item.id) }}">Mở Shopee &amp; dùng Helper</button>
             <div class="note js-helper-note" data-product-id="{{ item.id }}"></div>
             {% else %}
               <span class="note">Ảnh đã sẵn sàng</span>
@@ -256,12 +298,8 @@
   <div class="section-heading" style="margin:0">
     <span class="note">{{ pagination.total_filtered|num }} kết quả · Trang {{ pagination.page }}/{{ pagination.total_pages }}</span>
     <div class="form-actions">
-      {% if pagination.has_prev %}
-      <a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page-1) }}">← Trước</a>
-      {% endif %}
-      {% if pagination.has_next %}
-      <a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page+1) }}">Sau →</a>
-      {% endif %}
+      {% if pagination.has_prev %}<a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page-1) }}">← Trước</a>{% endif %}
+      {% if pagination.has_next %}<a class="btn btn--small btn--ghost" href="{{ url_for('shopee_image_enrichment.page', q=filters.q, niche=filters.niche, auto=filters.auto, image=filters.image, usage=filters.usage, per_page=filters.per_page, page=pagination.page+1) }}">Sau →</a>{% endif %}
     </div>
   </div>
 </nav>
@@ -287,10 +325,38 @@
     window.dispatchEvent(new CustomEvent("acp:helper-token"));
   }
 
+  function updateEnrichProgress(data) {
+    var root = document.querySelector("[data-enrich-all-progress]");
+    if (!root || !data) return;
+    var setText = function (selector, value) { var node = root.querySelector(selector); if (node) node.textContent = value; };
+    var percent = Math.max(0, Math.min(100, Number(data.percent || 0)));
+    var bar = root.querySelector("[data-enrich-bar]");
+    if (bar) bar.style.width = percent + "%";
+    setText("[data-enrich-percent]", percent.toFixed(1).replace(/\.0$/, "") + "%");
+    setText("[data-enrich-processed]", data.processed || 0);
+    setText("[data-enrich-total]", data.total || 0);
+    setText("[data-enrich-ready]", data.ready || 0);
+    setText("[data-enrich-pending]", data.pending || 0);
+    setText("[data-enrich-working]", data.working || 0);
+    setText("[data-enrich-helper]", data.needs_helper || 0);
+    setText("[data-enrich-failed]", data.failed || 0);
+    setText("[data-enrich-state]", data.state || "IDLE");
+  }
+
+  var progressRoot = document.querySelector("[data-enrich-all-progress]");
+  if (progressRoot && progressRoot.dataset.statusUrl) {
+    setInterval(function () {
+      fetch(progressRoot.dataset.statusUrl, { headers: { "Accept": "application/json" } })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(updateEnrichProgress)
+        .catch(function () {});
+    }, 5000);
+  }
+
   document.querySelectorAll(".js-helper-start").forEach(function (button) {
     button.addEventListener("click", function () {
       var productId = button.dataset.productId;
-      var note = document.querySelector('.js-helper-note[data-product-id="' + productId + '"]');
+      var note = document.querySelector(".js-helper-note[data-product-id='" + productId + "']");
       button.disabled = true;
       if (note) note.textContent = "Đang tạo phiên Helper...";
 
@@ -315,9 +381,7 @@
             return;
           }
           fetch("/sanpham/affiliate/helper/status?token=" + encodeURIComponent(issued.token))
-            .then(function (response) {
-              return response.ok ? response.json() : { status: "expired" };
-            })
+            .then(function (response) { return response.ok ? response.json() : { status: "expired" }; })
             .then(function (state) {
               if (state.status === "ready") {
                 clearInterval(timer);

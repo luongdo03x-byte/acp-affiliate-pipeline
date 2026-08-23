@@ -1,8 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Kênh — ACP{% endblock %}
+{% macro render_topic_nodes(nodes, channel_id, depth=0) %}
+  {% set state = channel_topic_state.get(channel_id, {'includes': [], 'excludes': []}) %}
+  {% for topic in nodes %}
+    <div class="topic-tree-node" style="margin-left:{{ depth * 18 }}px">
+      <div class="topic-tree-row">
+        <label class="niche-tile topic-tree-main">
+          <input type="checkbox" name="niches" value="{{ topic.code }}" {{ 'checked' if topic.code in state.includes }}>
+          <span>
+            {{ topic.name }}
+            <small>{{ topic.topic_type }}{% if topic.product_count %} · {{ topic.product_count|num }} SP{% endif %}{% if topic.duplicate_candidate_of %} · có thể trùng{% endif %}</small>
+          </span>
+        </label>
+        <label class="topic-exclude" title="Loại riêng nhánh này dù topic cha đang được chọn">
+          <input type="checkbox" name="niches" value="!{{ topic.code }}" {{ 'checked' if topic.code in state.excludes }}>
+          <span>Loại</span>
+        </label>
+      </div>
+      {% if topic.children %}{{ render_topic_nodes(topic.children, channel_id, depth + 1) }}{% endif %}
+    </div>
+  {% endfor %}
+{% endmacro %}
 {% block content %}
 <div class="page-header">
-  <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Quản lý account theo nền tảng. Bật/tắt và ngách chỉ áp dụng cho lô nội dung sau.</p></div>
+  <div><div class="eyebrow">Channel routing</div><h1>Kênh</h1><p class="lede">Quản lý account theo nền tảng. Chọn topic cha sẽ tự nhận cả topic con hiện tại và topic con sinh thêm sau này; có thể loại riêng từng nhánh.</p></div>
   <div class="channel-meta">
     <a class="btn btn--primary" href="/kenh/threads/onboarding">Thêm Threads hàng loạt</a>
     <form method="get" action="/oauth/threads/start"><button class="btn btn--ghost" type="submit">Kết nối Threads đơn lẻ</button></form>
@@ -11,7 +32,7 @@
 </div>
 {% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
 {% if summary %}<div class="alert alert--success"><strong>Đã đồng bộ.</strong><span>{{ summary }}</span></div>{% endif %}
-{% if saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>Đã cập nhật nhóm sản phẩm cho {{ saved }}.</span></div>{% endif %}
+{% if saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>Đã cập nhật chủ đề sản phẩm cho {{ saved }}.</span></div>{% endif %}
 
 {% if has_meta_connection %}
 <form method="post" action="/kenh/meta/sync"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--ghost" type="submit">Đồng bộ lại</button></form>
@@ -27,16 +48,21 @@
     <div class="channel-meta">
       <span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ 'Cần kết nối lại' if c.status=='NEEDS_REAUTH' else c.status }}</span>
       <span class="tag {{ 'ok' if c.enabled else '' }}">{{ 'Đang bật' if c.enabled else 'Đã tắt' }}</span>
-      <span class="tag">{{ c.pool|num }} hợp lệ</span><span class="tag">đã đăng {{ c.published|num }}</span>
+      <span class="tag">{{ channel_topic_pool.get(c.id, c.pool)|num }} hợp lệ</span><span class="tag">đã đăng {{ c.published|num }}</span>
       <form method="post" action="/kenh/{{ c.id }}/{{ 'disable' if c.enabled else 'enable' }}"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">{{ 'Tắt' if c.enabled else 'Bật' }}</button></form>
     </div>
   </div>
   <form method="post">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}"><input type="hidden" name="channel_id" value="{{ c.id }}">
-    <div class="niche-grid">
-    {% for code, n in all_niches.items() %}
-      <label class="niche-tile"><input type="checkbox" name="niches" value="{{ code }}" {{ 'checked' if code in c.niches }}><span>{{ n.name }}{% if n.extra_banned_phrases %}<small>nhóm có điều kiện · +{{ n.extra_banned_phrases|length }} cụm cấm</small>{% endif %}</span></label>
-    {% endfor %}
+    <div class="section-heading section-heading--spaced">
+      <div><h3>Chủ đề sản phẩm</h3><p class="note">Tick topic cha = tự kế thừa mọi topic con hiện tại/tương lai. Tick “Loại” để chặn riêng một nhánh. Không chọn INCLUDE nào = nhận mọi chủ đề trừ các nhánh bị loại.</p></div>
+    </div>
+    <div class="topic-tree">
+      {% if dynamic_topic_tree %}
+        {{ render_topic_nodes(dynamic_topic_tree, c.id) }}
+      {% else %}
+        <div class="empty-state">Chưa có topic. Chạy schema upgrade / import CSV để khởi tạo.</div>
+      {% endif %}
     </div>
     {% if c.platform == 'threads' %}
     <div class="section-heading section-heading--spaced"><div><h3>Tự duyệt + lên lịch</h3><p class="note">Auto chỉ áp dụng cho Threads. Công tắc worker toàn hệ thống vẫn nằm riêng ở /vanhanh.</p></div></div>
@@ -48,7 +74,7 @@
     </div>
     <div class="field"><label for="posting-slots-{{ c.id }}">Posting slots</label><textarea id="posting-slots-{{ c.id }}" name="posting_slots" rows="3" placeholder="09:30&#10;12:30&#10;20:30">{{ c.posting_slots_text }}</textarea><small class="note">Mỗi dòng một slot HH:MM, từ 2 đến 3 slot, không trùng.</small></div>
     {% endif %}
-    <div class="channel-card__foot"><span class="note">Không chọn ô nào = kênh nhận mọi danh mục.</span><button class="btn btn--primary" type="submit">Lưu cho {{ c.handle }}</button></div>
+    <div class="channel-card__foot"><span class="note">Thay đổi chỉ áp dụng cho nội dung Auto tiếp theo; bài đã đăng không bị đổi.</span><button class="btn btn--primary" type="submit">Lưu cho {{ c.handle }}</button></div>
   </form>
 </section>
 {% endfor %}
