@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from ..flow_result import FlowResult
-from .screens import BROWSER_LOGIN, OAUTH_CONSENT, SECURITY_CHALLENGE
+from .screens import (
+    BROWSER_LOGIN,
+    CHROME_FIRST_RUN,
+    OAUTH_CONSENT,
+    SECURITY_CHALLENGE,
+)
 
 
 class BrowserLoginFlow:
@@ -10,6 +15,25 @@ class BrowserLoginFlow:
         self.driver = driver
         self.load_timeout = max(0.0, float(load_timeout))
         self.post_login_timeout = max(0.0, float(post_login_timeout))
+
+    def prepare_browser(self) -> FlowResult:
+        wait_for = getattr(self.driver, "wait_for", None)
+        if wait_for is None:
+            screen = self.driver.detect_screen()
+        else:
+            screen = wait_for(
+                (CHROME_FIRST_RUN,),
+                min(self.load_timeout, 3.0),
+            )
+        if screen.kind == CHROME_FIRST_RUN:
+            tap_skip = getattr(self.driver, "tap_use_without_account", None)
+            if tap_skip is None or tap_skip().status != "completed":
+                return FlowResult(
+                    "needs_confirmation",
+                    CHROME_FIRST_RUN,
+                    "CHROME_FIRST_RUN_UNVERIFIED",
+                )
+        return FlowResult("running", "BROWSER_READY")
 
     def _wait_for_browser_state(self, timeout: float):
         wait_for = getattr(self.driver, "wait_for", None)
