@@ -53,7 +53,9 @@ def build_instagram_detector() -> ScreenDetector:
         _protected("PASSWORD_REQUIRED", "password_marker", "Password", "Create a password", "Mật khẩu", priority=10),
         _protected("OTP_REQUIRED", "otp_marker", "Enter confirmation code", "Enter code", "Verification code", "Mã xác nhận", "Mã xác minh", priority=11),
         _protected("CAPTCHA_REQUIRED", "captcha_marker", "CAPTCHA", "I'm not a robot", "Verify you're human", priority=12),
-        ScreenSignature("IG_FINAL_SIGNUP_SUBMIT", PACKAGE, (FINAL_SIGNUP_SUBMIT, _text("signup_terms_marker", "By signing up, you agree to our Terms", "To sign up, read and agree to our terms and policies", "Terms", "Điều khoản")), 2, 0.98, True, 13),
+        # This one consent is explicitly approved for automation, but only when
+        # the exact I-agree control and a terms marker are both present.
+        ScreenSignature("IG_FINAL_SIGNUP_SUBMIT", PACKAGE, (FINAL_SIGNUP_SUBMIT, _text("signup_terms_marker", "By signing up, you agree to our Terms", "To sign up, read and agree to our terms and policies", "Terms", "Điều khoản")), 2, 0.98, False, 13),
         _protected("EMAIL_OR_PHONE_VERIFICATION", "contact_verification", "Confirm your email", "Confirm your phone number", "Verify your email", "Verify your phone number", "Xác nhận email của bạn", "Xác nhận số điện thoại của bạn", priority=14),
         _protected("SELFIE_OR_IDENTITY_CHECK", "identity_check", "Take a selfie", "Video selfie", "Confirm your identity", priority=15),
         _protected("SECURITY_CHALLENGE", "security_challenge", "Security check", "Suspicious login attempt", "Help us confirm it's you", priority=16),
