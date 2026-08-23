@@ -24,6 +24,7 @@ if __name__ == "acp.core":
     from . import auto_post_reconcile as _auto_post_reconcile  # noqa: E402
     from . import auto_post_attribution as _auto_post_attribution  # noqa: E402
     from . import auto_post_runtime as _auto_post_runtime  # noqa: E402
+    from . import auto_post_scheduler_runtime as _auto_post_scheduler_runtime  # noqa: E402
 
     _shopee_import_runtime.install()
     _shopee_auto_runtime.install()
@@ -34,3 +35,4 @@ if __name__ == "acp.core":
     _auto_post_reconcile.install()
     _auto_post_attribution.install()
     _auto_post_runtime.install()
+    _auto_post_scheduler_runtime.install()
