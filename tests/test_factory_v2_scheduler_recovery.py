@@ -81,6 +81,39 @@ class FactoryV2SchedulerRecoveryTests(unittest.TestCase):
         self.assertEqual("THREADS_CREATED", updated["last_safe_stage"])
         self.assertEqual("OAUTH_FAILED", updated["last_error_code"])
 
+    def test_expired_recovering_job_with_live_heartbeat_returns_to_running(self):
+        account = self._account_at_ig_created()
+        self.service.transition_account(
+            account["id"],
+            AccountStage.RETRY_PENDING,
+            error_code="WORKER_TIMEOUT",
+            error_message="worker lost",
+        )
+        job = self.scheduler.assign_next("worker-01")
+        self.assertIsNotNone(job)
+
+        self.conn.execute(
+            """UPDATE factory_job
+               SET state='RECOVERING', lease_expires_at='2026-08-23T09:00:00+00:00'
+               WHERE id=?""",
+            (job["id"],),
+        )
+        self.conn.execute(
+            """UPDATE factory_worker
+               SET state='RECOVERING', last_heartbeat_at='2026-08-23T09:00:20+00:00'
+               WHERE id='worker-01'"""
+        )
+
+        reconciled = self.scheduler.reconcile_expired_leases("2026-08-23T09:00:30+00:00")
+
+        refreshed_job = self.conn.execute(
+            "SELECT * FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone()
+        worker = self.repo.get_worker("worker-01")
+        self.assertEqual([job["id"]], reconciled)
+        self.assertEqual("RUNNING", refreshed_job["state"])
+        self.assertEqual("RUNNING", worker["state"])
+
 
 if __name__ == "__main__":
     unittest.main()
