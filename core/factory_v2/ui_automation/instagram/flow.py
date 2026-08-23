@@ -20,6 +20,7 @@ from .selectors import (
     DISPLAY_NAME_INPUT,
     MEDIA_PICKER_CONFIRM,
     MEDIA_PICKER_PHOTO,
+    NAV_TIP_GOT_IT,
     PROFILE,
     SIGN_UP,
     SIGNUP_CONTACT_INPUT,
@@ -30,6 +31,7 @@ from .selectors import (
 _EXISTING_SESSION_HOME = frozenset({"IG_HOME", "IG_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"IG_EXISTING_PROFILE", "IG_HOME", "IG_POSTCHECK_OK"})
 _CHECKPOINT_RESUMABLE = frozenset({
+    "IG_NAV_TIP",
     "IG_ACCOUNT_SWITCHER",
     "IG_SIGNUP_ENTRY",
     "IG_ACCOUNTS_CENTER_CONSENT",
@@ -137,6 +139,7 @@ _AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
     "IG_POSTCHECK_OK",
 )
 _AFTER_AVATAR_CROP = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_NAV_TIP",
     "IG_EXISTING_PROFILE",
     "IG_HOME",
     "IG_POSTCHECK_OK",
@@ -352,6 +355,13 @@ class InstagramFlow:
                 account_id=account_id,
                 crash_reopened=True,
             )
+        if detected.kind == "IG_NAV_TIP":
+            if self.driver.find(NAV_TIP_GOT_IT) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(NAV_TIP_GOT_IT))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step="IG_NAV_TIP")
         if detected.kind in _EXISTING_SESSION_HOME:
             if self.driver.find(PROFILE) is None:
                 return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
