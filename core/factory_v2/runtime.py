@@ -359,17 +359,30 @@ class FactoryControllerRuntime:
         if updates is None or updates == {}:
             return True
         if (
-            flow != "instagram"
-            or not isinstance(updates, dict)
+            not isinstance(updates, dict)
             or set(updates) != {"username"}
             or not isinstance(updates.get("username"), str)
         ):
             return False
+
+        selected = str(updates["username"] or "").strip()
+        if not selected:
+            return False
+        if flow == "threads":
+            current = str(account.get("username") or "").strip()
+            if not current or not selected.startswith(current):
+                return False
+            suffix = selected[len(current):]
+            if not suffix or not suffix.isdigit():
+                return False
+        elif flow != "instagram":
+            return False
+
         self.service.update_worker_selected_username(
             account["id"],
             job_id=job["id"],
             worker_id=job["worker_id"],
-            username=updates["username"],
+            username=selected,
         )
         return True
 
@@ -410,7 +423,7 @@ class FactoryControllerRuntime:
                     confirmation=True,
                     error_code="UI_CHANGED",
                     error_message=(
-                        "Instagram username synchronization failed; "
+                        "Social username synchronization failed; "
                         "verify the account username before continuing."
                     ),
                 )
