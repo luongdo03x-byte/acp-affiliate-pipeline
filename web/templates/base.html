@@ -50,7 +50,7 @@
       {% endif %}
     </div>
   </aside>
-  <div class="app-main"><main class="app-content">{% block content %}{% endblock %}</main></div>
+  <div class="app-main"><main class="app-content">{% block content %}{% endblock %}{% if page=='shopee-product-pool' %}{% include '_topic_admin.html' %}{% endif %}</main></div>
 </div>
 {% endif %}
 </body>
