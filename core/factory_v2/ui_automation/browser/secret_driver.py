@@ -6,7 +6,7 @@ import time
 from ..driver import ActionResult
 from ..hierarchy import UiHierarchyReader
 from ..selectors import normalize_ui_text
-from .screens import BROWSER_LOGIN
+from .screens import BROWSER_LOGIN, CHROME_FIRST_RUN
 
 _USERNAME_HINTS = (
     "username",
@@ -16,6 +16,7 @@ _USERNAME_HINTS = (
     "email",
 )
 _LOGIN_BUTTONS = frozenset({"log in", "login", "sign in"})
+_CHROME_FIRST_RUN_SKIP = "use without an account"
 _CLEAR_KEYSTROKES = 96
 
 
@@ -70,6 +71,23 @@ class BrowserSecretDriver:
             self._sleep(self.poll_interval)
             last = self.detect_screen()
         return last
+
+    def tap_use_without_account(self) -> ActionResult:
+        snapshot = self.snapshot()
+        detected = self.detector.detect(snapshot)
+        if detected.kind != CHROME_FIRST_RUN:
+            return ActionResult("postcondition_failed", before=detected.kind)
+        buttons = tuple(
+            node
+            for node in snapshot.nodes
+            if node.clickable
+            and node.enabled
+            and normalize_ui_text(node.text or node.content_desc) == _CHROME_FIRST_RUN_SKIP
+        )
+        if len(buttons) != 1:
+            return ActionResult("postcondition_failed", before=detected.kind)
+        self.adb.tap(*buttons[0].bounds.center)
+        return ActionResult("completed", before=CHROME_FIRST_RUN)
 
     def _login_nodes(self):
         snapshot = self.snapshot()
