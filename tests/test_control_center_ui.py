@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from acp.core import db
+from acp.core import db, topic_engine
 
 
 class ControlCenterUiTests(unittest.TestCase):
@@ -88,6 +88,24 @@ class ControlCenterUiTests(unittest.TestCase):
         body = response.data.decode("utf-8")
         self.assertIn("Chủ đề", body)
         self.assertIn("Thời trang nữ", body)
+
+    def test_product_pool_exposes_dynamic_topic_management(self):
+        conn = db.connect()
+        try:
+            parent = topic_engine.topic_by_code(conn, "thoi-trang-nu")
+            topic_engine.create_topic(
+                conn, code="do-mac-nha", name="Đồ mặc nhà", topic_type="AUTO",
+                parent_id=parent["id"], confidence=0.9,
+            )
+        finally:
+            conn.close()
+        response = self.client.get("/sanpham/shopee")
+        self.assertEqual(response.status_code, 200)
+        body = response.data.decode("utf-8")
+        self.assertIn("Quản lý chủ đề tự động", body)
+        self.assertIn("Đổi tên", body)
+        self.assertIn("Merge vào", body)
+        self.assertIn("Xóa", body)
 
 
 if __name__ == "__main__":
