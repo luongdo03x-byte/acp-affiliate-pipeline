@@ -69,20 +69,6 @@ class BrowserScreenDetector:
                     True,
                 )
 
-        allow_button = any(
-            node.clickable
-            and normalize_ui_text(node.text or node.content_desc) in {"allow", "authorize"}
-            for node in snapshot.nodes
-        )
-        consent_context = any(marker in joined for marker in _CONSENT_MARKERS)
-        if allow_button or consent_context:
-            return DetectedScreen(
-                OAUTH_CONSENT,
-                0.99,
-                ("oauth_consent",),
-                True,
-            )
-
         first_run_skip = tuple(
             node
             for node in snapshot.nodes
@@ -121,6 +107,10 @@ class BrowserScreenDetector:
                 False,
             )
 
+        # The login form has a much stronger signature than generic consent text:
+        # exactly two enabled EditTexts plus a username hint and an exact login
+        # button. Check it before consent so harmless Chrome/page metadata such as
+        # resource ids containing "permissions" cannot suppress credential entry.
         edit_nodes = tuple(
             node
             for node in snapshot.nodes
@@ -141,6 +131,21 @@ class BrowserScreenDetector:
                 0.99,
                 ("username_field", "password_field", "login_button"),
                 False,
+            )
+
+        allow_button = any(
+            node.clickable
+            and node.enabled
+            and normalize_ui_text(node.text or node.content_desc) in {"allow", "authorize"}
+            for node in snapshot.nodes
+        )
+        consent_context = any(marker in joined for marker in _CONSENT_MARKERS)
+        if allow_button and consent_context:
+            return DetectedScreen(
+                OAUTH_CONSENT,
+                0.99,
+                ("oauth_consent",),
+                True,
             )
 
         return DetectedScreen(UNKNOWN, 0.0, (), False)
