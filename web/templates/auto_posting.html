@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Auto Posting — ACP{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="eyebrow">48-hour control center</div>
+    <h1>Auto Posting</h1>
+    <p class="lede">ACP vẫn tự tạo và tự đăng. Trang này cho biết trước account nào sẽ đăng lúc nào, dùng sản phẩm/ảnh/caption nào và cho phép can thiệp trước khi worker chạy.</p>
+  </div>
+  <a class="btn btn--ghost" href="/vanhanh">Vận hành kỹ thuật</a>
+</div>
+
+{% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
+{% if message %}<div class="alert alert--success"><strong>✓</strong><span>{{ message }}</span></div>{% endif %}
+
+<div class="kpi-grid kpi-grid--4">
+  <div class="kpi-card"><div class="kpi-label">Plan 48h</div><div class="kpi-value">{{ counts.total }}</div><div class="kpi-meta">tất cả account</div></div>
+  <div class="kpi-card"><div class="kpi-label">READY</div><div class="kpi-value">{{ counts.ready }}</div><div class="kpi-meta">đã có nội dung</div></div>
+  <div class="kpi-card"><div class="kpi-label">Đang reconcile</div><div class="kpi-value">{{ counts.regenerating }}</div><div class="kpi-meta">ảnh / product / data</div></div>
+  <div class="kpi-card"><div class="kpi-label">Đang publish</div><div class="kpi-value">{{ counts.publishing }}</div><div class="kpi-meta">worker đang xử lý</div></div>
+</div>
+
+{% for group in groups %}
+<section class="auto-channel-section">
+  <div class="section-heading section-heading--spaced">
+    <div><h2>{{ group.channel_handle }}</h2><p class="note mono">{{ group.channel_code }} · {{ group.plans|length }} plan</p></div>
+  </div>
+  <div class="auto-plan-grid">
+  {% for plan in group.plans %}
+    <article class="card auto-plan-card" data-plan-id="{{ plan.id }}">
+      <div class="panel-header">
+        <div>
+          <strong>{{ plan.scheduled_local }}</strong>
+          <div class="mono-sub">rev {{ plan.content_revision }} · thay SP {{ plan.replacement_count }} lần</div>
+        </div>
+        <span class="tag {{ 'ok' if plan.state=='READY' else ('bad' if plan.state=='FAILED' else '') }}">{{ plan.state }}</span>
+      </div>
+
+      <div class="auto-plan-product">
+        {% set preview = plan.image_url_composited or plan.main_image_url %}
+        {% if preview %}<img src="{{ preview }}" alt="{{ plan.product_name or 'Ảnh sản phẩm' }}" loading="lazy" class="auto-plan-image">{% else %}<div class="image-placeholder auto-plan-image">Chưa có ảnh</div>{% endif %}
+        <div>
+          <strong>{{ plan.product_name or 'Không còn sản phẩm' }}</strong>
+          {% if plan.shop_name %}<div class="note">{{ plan.shop_name }}</div>{% endif %}
+          {% if plan.topic_paths %}<div class="auto-topic-list">{% for path in plan.topic_paths %}<span class="tag">{{ path }}</span>{% endfor %}</div>{% endif %}
+          {% if plan.current_price is not none %}<div class="note">{{ plan.current_price|vnd }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="auto-caption-preview"><pre>{{ plan.caption_final }}</pre></div>
+      <div class="link-readout"><a href="{{ plan.affiliate_link }}" target="_blank" rel="noopener noreferrer">{{ plan.affiliate_link }}</a></div>
+      {% if plan.last_change_reason %}<div class="note">Thay đổi gần nhất: <code>{{ plan.last_change_reason }}</code></div>{% endif %}
+
+      {% if plan.state in ('PLANNED','READY','REGENERATING') %}
+      <details class="auto-plan-action">
+        <summary>Sửa caption</summary>
+        <form method="post" action="/auto-posting/{{ plan.id }}/caption">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <textarea name="caption" rows="5" required>{{ plan.caption_final }}</textarea>
+          <button class="btn btn--small btn--primary" type="submit">Lưu caption</button>
+        </form>
+      </details>
+
+      <details class="auto-plan-action">
+        <summary>Đổi giờ</summary>
+        <form method="post" action="/auto-posting/{{ plan.id }}/time">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="timezone" value="{{ plan.posting_timezone }}">
+          <input type="datetime-local" name="scheduled_at" value="{{ plan.scheduled_input }}" required>
+          <button class="btn btn--small btn--primary" type="submit">Lưu giờ</button>
+        </form>
+      </details>
+
+      <details class="auto-plan-action">
+        <summary>Đổi sản phẩm</summary>
+        {% if plan.replacement_candidates %}
+        <form method="post" action="/auto-posting/{{ plan.id }}/product">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <select name="product_id" required>
+            <option value="">Chọn sản phẩm đủ điều kiện</option>
+            {% for candidate in plan.replacement_candidates %}<option value="{{ candidate.id }}">{{ candidate.name }} · {{ candidate.current_price|vnd }}</option>{% endfor %}
+          </select>
+          <button class="btn btn--small btn--primary" type="submit">Thay & tạo lại nội dung</button>
+        </form>
+        {% else %}<p class="note">Hiện chưa có sản phẩm thay thế đủ điều kiện cho slot này.</p>{% endif %}
+      </details>
+
+      <form method="post" action="/auto-posting/{{ plan.id }}/cancel" onsubmit="return confirm('Hủy plan này? Bài sẽ không được publish ở slot hiện tại.');">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <button class="btn btn--small btn--danger" type="submit">Hủy</button>
+      </form>
+      {% endif %}
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% endfor %}
+
+{% if not groups %}
+<div class="empty-state">Chưa có Auto plan trong {{ horizon_hours }} giờ tới. Khi scheduler tạo target Auto, plan sẽ xuất hiện ở đây ngay.</div>
+{% endif %}
+{% endblock %}
