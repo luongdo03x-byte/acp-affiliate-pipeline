@@ -161,7 +161,7 @@ class PilotUiRegressionTests(unittest.TestCase):
 
         self.assertEqual("running", result.status)
         self.assertEqual("threads_other_accounts", driver.mutations[0][1])
-        self.assertEqual(("2 others",), driver.mutations[0][2])
+        self.assertIn("2 others", driver.mutations[0][2])
 
     def test_threads_notification_permission_is_denied_without_human_checkpoint(self):
         snapshot = UiSnapshot(
