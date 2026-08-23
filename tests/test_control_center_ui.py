@@ -73,6 +73,15 @@ class ControlCenterUiTests(unittest.TestCase):
         self.assertIn("Retry lỗi", body)
         self.assertIn("data-enrich-all-progress", body)
 
+    def test_enrich_all_status_endpoint_returns_progress_payload(self):
+        response = self.client.get("/sanpham/shopee/enrichment/all/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["state"], "IDLE")
+        self.assertIn("percent", payload)
+        self.assertIn("processed", payload)
+        self.assertIn("pending", payload)
+
     def test_product_pool_topic_filter_renders_hierarchy_labels(self):
         response = self.client.get("/sanpham/shopee")
         self.assertEqual(response.status_code, 200)
