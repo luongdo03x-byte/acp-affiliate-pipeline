@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from acp.core import db, pipeline
 from acp.core import auto_post_plans
@@ -64,6 +65,16 @@ class AutoPostPlanTests(unittest.TestCase):
         db.DB_PATH = self.old_db_path
         self.tmp.cleanup()
 
+    def _mark_image_ready(self):
+        stamp = self.now.isoformat(timespec='seconds')
+        self.conn.execute(
+            """INSERT INTO shopee_image_enrichment_job
+               (product_id,status,created_at,updated_at)
+               VALUES ('p','READY',?,?)
+               ON CONFLICT(product_id) DO UPDATE SET status='READY', updated_at=excluded.updated_at""",
+            (stamp, stamp),
+        )
+
     def test_upsert_from_target_and_list_48h(self):
         plan = auto_post_plans.upsert_from_target(self.conn, 'post', 'target')
         self.assertEqual(plan['state'], 'READY')
@@ -98,6 +109,55 @@ class AutoPostPlanTests(unittest.TestCase):
         self.assertEqual(target['status'], 'CANCELLED')
         self.assertEqual(job['status'], 'DONE')
         self.assertEqual(saved['state'], 'CANCELLED')
+
+    def test_reconcile_price_change_updates_caption_price_without_regenerating_product(self):
+        self._mark_image_ready()
+        self.conn.execute("UPDATE post SET caption_body='giá 118,7k', caption_final='giá 118,7k' WHERE id='post'")
+        plan = auto_post_plans.upsert_from_target(self.conn, 'post', 'target')
+        self.conn.execute("UPDATE product SET current_price=129000 WHERE id='p'")
+        result = auto_post_plans.reconcile_plan(self.conn, plan['id'])
+        saved = self.conn.execute("SELECT caption_final, product_id FROM post WHERE id='post'").fetchone()
+        self.assertTrue(result['ok'])
+        self.assertEqual(saved['product_id'], 'p')
+        self.assertIn('129', saved['caption_final'])
+        self.assertNotIn('118,7k', saved['caption_final'])
+
+    def test_reconcile_image_change_refreshes_composited_image_only(self):
+        self._mark_image_ready()
+        plan = auto_post_plans.upsert_from_target(self.conn, 'post', 'target')
+        self.conn.execute("UPDATE product SET main_image_url='https://cdn.example/new-source.jpg' WHERE id='p'")
+
+        storage = mock.Mock()
+        storage.put.return_value = 'https://cdn.example/new-composite.jpg'
+        with mock.patch.object(pipeline.imaging, 'compose', return_value='/tmp/new-composite.jpg') as compose, \
+             mock.patch.object(pipeline.storage, 'get_storage', return_value=storage), \
+             mock.patch.object(pipeline.content, 'generate', side_effect=AssertionError('caption must not regenerate')):
+            result = auto_post_plans.reconcile_plan(self.conn, plan['id'])
+
+        saved = self.conn.execute("SELECT caption_final,image_url_composited FROM post WHERE id='post'").fetchone()
+        self.assertTrue(result['ok'])
+        self.assertEqual(saved['caption_final'], 'caption')
+        self.assertEqual(saved['image_url_composited'], 'https://cdn.example/new-composite.jpg')
+        compose.assert_called_once()
+
+    def test_reconcile_invalid_caption_regenerates_caption_for_same_product(self):
+        self._mark_image_ready()
+        plan = auto_post_plans.upsert_from_target(self.conn, 'post', 'target')
+
+        def validate(text, **kwargs):
+            return ['new rule'] if text == 'caption' else []
+
+        with mock.patch.object(pipeline.content, 'validate', side_effect=validate), \
+             mock.patch.object(pipeline.content, 'generate', return_value='caption mới\nhttps://s.shopee.vn/p'):
+            result = auto_post_plans.reconcile_plan(self.conn, plan['id'])
+
+        saved = self.conn.execute("SELECT caption_final,product_id FROM post WHERE id='post'").fetchone()
+        updated_plan = self.conn.execute("SELECT content_revision,last_change_reason FROM auto_post_plan WHERE id=?", (plan['id'],)).fetchone()
+        self.assertTrue(result['ok'])
+        self.assertEqual(saved['product_id'], 'p')
+        self.assertEqual(saved['caption_final'], 'caption mới\nhttps://s.shopee.vn/p')
+        self.assertEqual(updated_plan['last_change_reason'], 'caption_regenerated')
+        self.assertGreater(updated_plan['content_revision'], plan['content_revision'])
 
     def test_auto_approve_creates_plan_via_runtime_wrapper(self):
         # A second draft post exercises the installed pipeline.approve_post wrapper.
