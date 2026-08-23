@@ -16,6 +16,7 @@ _USERNAME_HINTS = (
     "email",
 )
 _LOGIN_BUTTONS = frozenset({"log in", "login", "sign in"})
+_CHROME_RESOURCE_PREFIX = "com.android.chrome:id/"
 _CHROME_FIRST_RUN_SKIP = "use without an account"
 _CHROME_AD_PRIVACY_CONFIRM = "got it"
 _CLEAR_KEYSTROKES = 96
@@ -116,7 +117,13 @@ class BrowserSecretDriver:
         edit_nodes = tuple(
             node
             for node in snapshot.nodes
-            if node.class_name.endswith("EditText") and node.enabled
+            if (
+                node.class_name.endswith("EditText")
+                and node.enabled
+                and not str(node.resource_id or "").startswith(
+                    _CHROME_RESOURCE_PREFIX
+                )
+            )
         )
         if len(edit_nodes) != 2:
             return detected, None, None, None
@@ -126,12 +133,27 @@ class BrowserSecretDriver:
             for node in edit_nodes
             if any(hint in _node_text(node) for hint in _USERNAME_HINTS)
         )
-        if len(username_candidates) != 1:
+        if len(username_candidates) > 1:
             return detected, None, None, None
-        username_node = username_candidates[0]
-        password_candidates = tuple(node for node in edit_nodes if node is not username_node)
-        if len(password_candidates) != 1:
-            return detected, None, None, None
+
+        if len(username_candidates) == 1:
+            username_node = username_candidates[0]
+            password_candidates = tuple(
+                node for node in edit_nodes if node is not username_node
+            )
+            if len(password_candidates) != 1:
+                return detected, None, None, None
+            password_node = password_candidates[0]
+        else:
+            ordered = tuple(
+                sorted(
+                    edit_nodes,
+                    key=lambda node: (node.bounds.top, node.bounds.left),
+                )
+            )
+            if ordered[0].bounds.top >= ordered[1].bounds.top:
+                return detected, None, None, None
+            username_node, password_node = ordered
 
         login_buttons = tuple(
             node
@@ -141,7 +163,7 @@ class BrowserSecretDriver:
         )
         if len(login_buttons) != 1:
             return detected, None, None, None
-        return detected, username_node, password_candidates[0], login_buttons[0]
+        return detected, username_node, password_node, login_buttons[0]
 
     def _replace_text(self, node, value: str) -> None:
         self.adb.tap(*node.bounds.center)

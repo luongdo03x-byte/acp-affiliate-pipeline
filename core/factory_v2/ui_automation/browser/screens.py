@@ -12,10 +12,12 @@ SECURITY_CHALLENGE = "SECURITY_CHALLENGE"
 UNKNOWN = "UNKNOWN"
 
 _BROWSER_PACKAGE = "com.android.chrome"
+_CHROME_RESOURCE_PREFIX = "com.android.chrome:id/"
 _CHROME_FIRST_RUN_TITLE = "welcome to chrome"
 _CHROME_FIRST_RUN_SKIP = "use without an account"
 _CHROME_AD_PRIVACY_TITLE = "enhanced ad privacy in chrome"
 _CHROME_AD_PRIVACY_CONFIRM = "got it"
+_THREADS_LOGIN_HEADING = "log in with instagram"
 _USERNAME_HINTS = (
     "username",
     "user name",
@@ -50,6 +52,29 @@ def _node_text(node) -> str:
         )
         if part
     )
+
+
+def _is_web_edit_node(node) -> bool:
+    return (
+        node.class_name.endswith("EditText")
+        and node.enabled
+        and not str(node.resource_id or "").startswith(_CHROME_RESOURCE_PREFIX)
+    )
+
+
+def _threads_login_context(snapshot) -> bool:
+    webview_login_title = any(
+        node.class_name.endswith("WebView")
+        and "threads" in normalize_ui_text(node.text or node.content_desc)
+        and "log in" in normalize_ui_text(node.text or node.content_desc)
+        for node in snapshot.nodes
+    )
+    instagram_heading = any(
+        normalize_ui_text(node.text or node.content_desc)
+        == _THREADS_LOGIN_HEADING
+        for node in snapshot.nodes
+    )
+    return webview_login_title and instagram_heading
 
 
 class BrowserScreenDetector:
@@ -112,20 +137,24 @@ class BrowserScreenDetector:
         # button. Check it before consent so harmless Chrome/page metadata such as
         # resource ids containing "permissions" cannot suppress credential entry.
         edit_nodes = tuple(
-            node
-            for node in snapshot.nodes
-            if node.class_name.endswith("EditText") and node.enabled
+            node for node in snapshot.nodes if _is_web_edit_node(node)
         )
         username_hint = any(
-            any(hint in text for hint in _USERNAME_HINTS)
-            for text in node_texts
+            any(hint in _node_text(node) for hint in _USERNAME_HINTS)
+            for node in edit_nodes
         )
+        threads_login_context = _threads_login_context(snapshot)
         login_button = any(
             node.clickable
+            and node.enabled
             and normalize_ui_text(node.text or node.content_desc) in _LOGIN_BUTTONS
             for node in snapshot.nodes
         )
-        if len(edit_nodes) == 2 and username_hint and login_button:
+        if (
+            len(edit_nodes) == 2
+            and (username_hint or threads_login_context)
+            and login_button
+        ):
             return DetectedScreen(
                 BROWSER_LOGIN,
                 0.99,
