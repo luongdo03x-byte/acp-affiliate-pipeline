@@ -39,6 +39,7 @@ class AdbClient:
         "/sdcard/Pictures/ACP/avatar.png",
         "/sdcard/Pictures/ACP/avatar.webp",
     })
+    _AVATAR_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
     _HIERARCHY_DEVICE_PATH = "/sdcard/acp-window.xml"
 
     def __init__(self, serial: str, *, adb_path: str | None = None, runner=None):
@@ -182,6 +183,38 @@ class AdbClient:
             "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
             "-d", f"file://{destination}",
         ])
+
+    def stage_avatar(self, source, account_id: str) -> str:
+        source_path = Path(source).resolve()
+        if not source_path.is_file():
+            raise ValueError("ADB avatar source must be an existing file")
+        suffix = source_path.suffix.lower()
+        if suffix not in self._AVATAR_EXTENSIONS:
+            raise ValueError("unsupported avatar extension")
+
+        account = str(account_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,96}", account):
+            raise ValueError("invalid avatar account id")
+
+        destination = f"{self._AVATAR_DEVICE_DIR}/{account}_avatar{suffix}"
+
+        # Delete MediaStore rows before removing the backing files. Android's
+        # photo picker may otherwise retain a stale thumbnail for an overwritten
+        # filename even after a media-scan broadcast.
+        self._run([
+            "shell", "content", "delete",
+            "--uri", "content://media/external/images/media",
+            "--where", "relative_path='Pictures/ACP/'",
+        ])
+        self._run(["shell", "rm", "-rf", self._AVATAR_DEVICE_DIR])
+        self._run(["shell", "mkdir", "-p", self._AVATAR_DEVICE_DIR])
+        self._run(["push", str(source_path), destination], timeout=60)
+        self._run([
+            "shell", "am", "broadcast",
+            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+            "-d", f"file://{destination}",
+        ])
+        return destination
 
     def open_package(self, package: str) -> None:
         package = str(package or "").strip()
