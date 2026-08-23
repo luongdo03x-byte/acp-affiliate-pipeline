@@ -76,6 +76,11 @@ class RunnerGateway:
         )
 
     def _remote_oauth_login_after_open(self, job: dict, opened: dict) -> dict:
+        if not isinstance(opened, dict) or opened.get("ok") is False:
+            return opened
+        status = str(opened.get("status") or "").strip().lower()
+        if status in {"waiting_human", "needs_confirmation", "retry_pending", "error"}:
+            return opened
         account = self.repo.get_account(job["account_id"])
         if account is None:
             return opened
