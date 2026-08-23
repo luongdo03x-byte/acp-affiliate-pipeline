@@ -4,11 +4,25 @@ from __future__ import annotations
 from ..flow_result import FlowResult
 from ..selectors import Selector
 from .screens import PACKAGE
-from .selectors import BIO_INPUT, CONTINUE, CONTINUE_WITH_INSTAGRAM, DISPLAY_NAME_INPUT
+from .selectors import (
+    BIO_INPUT,
+    CONTINUE,
+    CONTINUE_WITH_INSTAGRAM,
+    DISPLAY_NAME_INPUT,
+    FOLLOW_SUGGESTIONS_CLOSE,
+    NOTIFICATION_DENY,
+    OTHER_ACCOUNTS,
+)
 
 _SUCCESS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
 _CHECKPOINT_SUCCESSORS = frozenset({"THREADS_HOME", "THREADS_POSTCHECK_OK"})
-_CHECKPOINT_RESUMABLE = frozenset({"THREADS_ONBOARDING", "THREADS_PROFILE_SETUP"})
+_CHECKPOINT_RESUMABLE = frozenset({
+    "THREADS_ACCOUNT_PICKER",
+    "THREADS_NOTIFICATION_PERMISSION",
+    "THREADS_FOLLOW_SUGGESTIONS",
+    "THREADS_ONBOARDING",
+    "THREADS_PROFILE_SETUP",
+})
 _THREADS_PROTECTED = (
     "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED",
     "THREADS_LEGAL_CONSENT",
@@ -19,9 +33,14 @@ _THREADS_ERRORS = (
     "NETWORK_ERROR", "RATE_LIMITED", "ACTION_BLOCKED", "ACCOUNT_DISABLED", "APP_CRASH",
 )
 _AFTER_ONBOARDING = _THREADS_PROTECTED + _THREADS_ERRORS + (
+    "THREADS_ACCOUNT_PICKER",
+    "THREADS_NOTIFICATION_PERMISSION",
+    "THREADS_FOLLOW_SUGGESTIONS",
     "THREADS_PROFILE_SETUP", "THREADS_HOME", "THREADS_POSTCHECK_OK",
 )
 _AFTER_PROFILE = _THREADS_PROTECTED + _THREADS_ERRORS + (
+    "THREADS_NOTIFICATION_PERMISSION",
+    "THREADS_FOLLOW_SUGGESTIONS",
     "THREADS_HOME", "THREADS_POSTCHECK_OK",
 )
 
@@ -46,6 +65,72 @@ class ThreadsFlow:
                 return detected
             detected = self.driver.detect_screen()
         return detected
+
+    def _visible_texts(self) -> tuple[str, ...]:
+        snapshot_fn = getattr(self.driver, "snapshot", None)
+        if not callable(snapshot_fn):
+            return ()
+        try:
+            snapshot = snapshot_fn()
+        except Exception:
+            return ()
+        values = []
+        for node in getattr(snapshot, "nodes", ()):
+            value = str(getattr(node, "text", "") or "").strip()
+            if value and value not in values:
+                values.append(value)
+        return tuple(values)
+
+    def _handle_account_picker(self, profile: dict) -> FlowResult:
+        expected = str(profile.get("username") or "").strip()
+        if not expected:
+            return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "MISSING_USERNAME")
+
+        texts = self._visible_texts()
+        if expected in texts:
+            selected = expected
+        else:
+            generated = []
+            for value in texts:
+                if not value.startswith(expected):
+                    continue
+                suffix = value[len(expected):]
+                if suffix and suffix.isdigit() and value not in generated:
+                    generated.append(value)
+            if len(generated) > 1:
+                return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "ACCOUNT_AMBIGUOUS")
+            selected = generated[0] if len(generated) == 1 else ""
+
+        if selected:
+            option = Selector(
+                semantic="threads_account_option",
+                texts=(selected,),
+                require_enabled=False,
+            )
+            if self.driver.find(option) is None:
+                return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "ACCOUNT_NOT_FOUND")
+            action = self._attempt(lambda: self.driver.tap(option))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "UI_CHANGED")
+            updates = {"username": selected} if selected != expected else None
+            return FlowResult(
+                "running",
+                "THREADS_ACCOUNT_PICKER",
+                last_safe_step="THREADS_ACCOUNT_PICKER",
+                profile_updates=updates,
+            )
+
+        if self.driver.find(OTHER_ACCOUNTS) is not None:
+            action = self._attempt(lambda: self.driver.tap(OTHER_ACCOUNTS))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "UI_CHANGED")
+            return FlowResult(
+                "running",
+                "THREADS_ACCOUNT_PICKER",
+                last_safe_step="THREADS_ACCOUNT_PICKER",
+            )
+
+        return FlowResult("needs_confirmation", "THREADS_ACCOUNT_PICKER", "ACCOUNT_NOT_FOUND")
 
     def _handle_detected(self, detected, profile: dict, *, crash_reopened: bool = False) -> FlowResult:
         if detected.protected:
@@ -73,6 +158,22 @@ class ThreadsFlow:
                 return FlowResult("needs_confirmation", detected.kind, "APP_CRASH")
             self.driver.open_package(PACKAGE)
             return self._handle_detected(self._detect_bounded(), profile, crash_reopened=True)
+        if detected.kind == "THREADS_ACCOUNT_PICKER":
+            return self._handle_account_picker(profile)
+        if detected.kind == "THREADS_NOTIFICATION_PERMISSION":
+            if self.driver.find(NOTIFICATION_DENY) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(NOTIFICATION_DENY))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step=detected.kind)
+        if detected.kind == "THREADS_FOLLOW_SUGGESTIONS":
+            if self.driver.find(FOLLOW_SUGGESTIONS_CLOSE) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(FOLLOW_SUGGESTIONS_CLOSE))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult("running", detected.kind, last_safe_step=detected.kind)
         if detected.kind == "THREADS_ONBOARDING":
             selector = (
                 CONTINUE_WITH_INSTAGRAM
