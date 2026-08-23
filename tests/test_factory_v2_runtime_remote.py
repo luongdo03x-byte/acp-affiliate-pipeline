@@ -448,7 +448,9 @@ class RemoteRuntimeTests(unittest.TestCase):
         class CredentialFailureGateway(FakeGateway):
             def send(self, job, action, payload=None):
                 self.commands.append((action, payload or {}))
-                raise CredentialDecryptError("CREDENTIAL_DECRYPT_FAILED")
+                if action == "OPEN_URL":
+                    raise CredentialDecryptError("CREDENTIAL_DECRYPT_FAILED")
+                return {"ok": True}
 
         class Activation:
             def start(inner_self, account_id):
@@ -477,7 +479,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         )
         self.assertEqual([("job-1", "FAILED")], runtime.released)
         self.assertEqual(
-            ["OPEN_URL"],
+            ["OPEN_URL", "RESTORE_OAUTH_APPS"],
             [action for action, _ in gateway.commands],
         )
 
