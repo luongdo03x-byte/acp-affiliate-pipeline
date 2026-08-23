@@ -229,6 +229,10 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         job = self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
         self.assertEqual("COMPLETED", job["state"])
         self.assertEqual("READY", self.repo.get_worker("avd-1")["state"])
+        self.assertIn(
+            "RESTORE_OAUTH_APPS",
+            [action for action, _ in self.gateway.commands],
+        )
 
     def test_oauth_failure_releases_runner_and_preserves_threads_safe_stage(self):
         account, _ = self.seed_threads_verifying()
@@ -242,6 +246,10 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         self.assertEqual("OAUTH_FAILED", saved["last_error_code"])
         self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
         self.assertEqual("READY", self.repo.get_worker("avd-1")["state"])
+        self.assertIn(
+            "RESTORE_OAUTH_APPS",
+            [action for action, _ in self.gateway.commands],
+        )
 
 
 if __name__ == "__main__":
