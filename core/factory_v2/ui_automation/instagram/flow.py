@@ -18,6 +18,7 @@ from .selectors import (
     CHOOSE_FROM_LIBRARY,
     CONTINUE,
     DISPLAY_NAME_INPUT,
+    FINAL_SIGNUP_SUBMIT,
     MEDIA_PICKER_CONFIRM,
     MEDIA_PICKER_PHOTO,
     NAV_TIP_GOT_IT,
@@ -35,6 +36,7 @@ _CHECKPOINT_RESUMABLE = frozenset({
     "IG_ACCOUNT_SWITCHER",
     "IG_SIGNUP_ENTRY",
     "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -52,7 +54,6 @@ _IG_PROTECTED = (
     "PASSWORD_REQUIRED",
     "OTP_REQUIRED",
     "CAPTCHA_REQUIRED",
-    "IG_FINAL_SIGNUP_SUBMIT",
     "EMAIL_OR_PHONE_VERIFICATION",
     "SELFIE_OR_IDENTITY_CHECK",
     "SECURITY_CHALLENGE",
@@ -82,6 +83,7 @@ _AFTER_EXISTING_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
 _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_SIGNUP_ENTRY",
     "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -92,6 +94,7 @@ _AFTER_ADD_ACCOUNT = _IG_PROTECTED + _IG_ERRORS + (
 )
 _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
     "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -103,6 +106,7 @@ _AFTER_SIGNUP = _IG_PROTECTED + _IG_ERRORS + (
     "IG_POSTCHECK_OK",
 )
 _AFTER_ACCOUNTS_CENTER = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_USERNAME_ENTRY",
     "IG_USERNAME_VALID",
     "IG_USERNAME_UNAVAILABLE",
@@ -114,6 +118,8 @@ _AFTER_ACCOUNTS_CENTER = _IG_PROTECTED + _IG_ERRORS + (
     "IG_POSTCHECK_OK",
 )
 _AFTER_USERNAME = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_ACCOUNTS_CENTER_CONSENT",
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_CONTACT_ENTRY",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
@@ -122,6 +128,7 @@ _AFTER_USERNAME = _IG_PROTECTED + _IG_ERRORS + (
     "IG_POSTCHECK_OK",
 )
 _AFTER_CONTACT = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_BIRTHDAY_ENTRY",
     "IG_PROFILE_SETUP",
     "IG_AVATAR_SETUP",
@@ -129,12 +136,14 @@ _AFTER_CONTACT = _IG_PROTECTED + _IG_ERRORS + (
     "IG_POSTCHECK_OK",
 )
 _AFTER_BIRTHDAY = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_PROFILE_SETUP",
     "IG_AVATAR_SETUP",
     "IG_HOME",
     "IG_POSTCHECK_OK",
 )
 _AFTER_PROFILE = _IG_PROTECTED + _IG_ERRORS + (
+    "IG_FINAL_SIGNUP_SUBMIT",
     "IG_AVATAR_SETUP",
     "IG_HOME",
     "IG_POSTCHECK_OK",
@@ -355,6 +364,17 @@ class InstagramFlow:
                 profile,
                 account_id=account_id,
                 crash_reopened=True,
+            )
+        if detected.kind == "IG_FINAL_SIGNUP_SUBMIT":
+            if self.driver.find(FINAL_SIGNUP_SUBMIT) is None:
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            action = self._attempt(lambda: self.driver.tap(FINAL_SIGNUP_SUBMIT))
+            if action.status != "completed":
+                return FlowResult("needs_confirmation", detected.kind, "UI_CHANGED")
+            return FlowResult(
+                "running",
+                detected.kind,
+                last_safe_step="IG_FINAL_SIGNUP_SUBMIT",
             )
         if detected.kind == "IG_NAV_TIP":
             if self.driver.find(NAV_TIP_GOT_IT) is None:
