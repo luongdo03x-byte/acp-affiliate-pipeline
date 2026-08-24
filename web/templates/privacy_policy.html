@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACP Privacy Policy</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #1f2937; background: #f8fafc; line-height: 1.65; }
+    main { max-width: 780px; margin: 48px auto; padding: 36px; background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; }
+    h1, h2 { color: #111827; line-height: 1.25; }
+    h1 { margin-top: 0; }
+    a { color: #2563eb; }
+    .muted { color: #6b7280; }
+    .notice { padding: 14px 16px; background: #f3f4f6; border-radius: 10px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ACP Privacy Policy</h1>
+  <p class="muted">Effective date: August 24, 2026</p>
+
+  <p>ACP is a social media management application that lets an authorized user connect a Threads account and publish content that the user chooses to publish.</p>
+
+  <h2>Information ACP receives</h2>
+  <p>When you connect Threads through Meta's authorization flow, ACP may receive the Threads account identifier, username and profile information made available by the permissions you approve. ACP also receives an access token needed to access the Threads API on your behalf.</p>
+  <p>When you use publishing features, ACP processes the text, media references and publishing instructions that you explicitly provide to the application.</p>
+
+  <h2>How ACP uses this information</h2>
+  <p>ACP uses Threads account data only to identify the connected account, maintain the authorized connection, and perform actions that the user requests, including publishing Threads content. ACP does not use Threads data to build advertising profiles and does not sell Threads account data.</p>
+
+  <h2>Access tokens and security</h2>
+  <p>Threads access tokens are treated as credentials. ACP stores connected-account access tokens in encrypted form and does not intentionally expose them in the user interface or application logs.</p>
+
+  <h2>Sharing</h2>
+  <p>ACP sends data to Meta/Threads when required to complete authorization or to perform a user-requested Threads action. ACP does not sell Threads data. Data may also be processed by infrastructure providers that are necessary to operate the deployment, if such providers are configured by the ACP operator.</p>
+
+  <h2>Retention and deletion</h2>
+  <p>ACP retains connected-account information only for as long as it is needed to provide the requested integration or to meet legitimate operational requirements. You may request deletion of your ACP connection data and stored access credentials at any time.</p>
+  <p>Deletion instructions are available at <a href="/data-deletion">ACP Data Deletion</a>.</p>
+
+  <h2>Your choices</h2>
+  <p>You control whether to authorize ACP through the Meta/Threads authorization window. You may stop using the integration and request deletion of stored connection data.</p>
+
+  <h2>Contact</h2>
+  {% if support_email %}
+    <p>For privacy questions or deletion requests, contact <a href="mailto:{{ support_email }}">{{ support_email }}</a>.</p>
+  {% else %}
+    <p class="notice"><strong>Support contact is not configured yet.</strong> The ACP operator must set <code>ACP_SUPPORT_EMAIL</code> before submitting this deployment for external review.</p>
+  {% endif %}
+</main>
+</body>
+</html>
