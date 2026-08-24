@@ -72,6 +72,54 @@ class FactoryV2AvdTests(unittest.TestCase):
             captured["argv"],
         )
 
+    def test_open_url_shell_quotes_oauth_url_with_ampersands(self):
+        runner = FakeRunner({})
+        manager = AvdManager(
+            runner=runner,
+            adb_path="adb",
+            emulator_path="emulator",
+        )
+
+        url = (
+            "https://threads.net/oauth/authorize"
+            "?client_id=123"
+            "&redirect_uri=https%3A%2F%2Fexample.test%2Fcallback"
+            "&scope=threads_basic"
+            "&state=abc123"
+        )
+
+        manager.open_url(
+            "emulator-5554",
+            url,
+            browser_package="com.android.chrome",
+        )
+
+        argv, timeout = runner.calls[-1]
+
+        self.assertEqual(20, timeout)
+
+        self.assertEqual(
+            (
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "am",
+                "start",
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                "'" + url + "'",
+                "-p",
+                "com.android.chrome",
+            ),
+            argv,
+        )
+
+        # Regression: raw '&' URL must never be handed unquoted to
+        # `adb shell`, otherwise Android /system/bin/sh splits the command.
+        self.assertNotEqual(url, argv[9])
+
 
 if __name__ == "__main__":
     unittest.main()

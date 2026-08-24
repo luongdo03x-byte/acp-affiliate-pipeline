@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from urllib.parse import urlsplit
@@ -158,7 +159,7 @@ class AvdManager:
             raise ValueError("URL credentials are not supported")
         argv = [
             self.adb, "-s", serial, "shell", "am", "start",
-            "-a", "android.intent.action.VIEW", "-d", value,
+            "-a", "android.intent.action.VIEW", "-d", shlex.quote(value),
         ]
         if browser_package is not None:
             argv.extend(["-p", _validate_browser_package(browser_package)])
