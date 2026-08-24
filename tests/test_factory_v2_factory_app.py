@@ -40,6 +40,29 @@ class FactoryOnlyAppTests(unittest.TestCase):
         self.assertNotIn("/duyet", rules)
         self.assertIn("/api/factory/v2/dashboard", rules)
 
+    def test_meta_legal_pages_are_public_and_use_configured_support_email(self):
+        with patch.dict(
+            os.environ,
+            {"ACP_SUPPORT_EMAIL": "review@example.com"},
+            clear=False,
+        ):
+            app = build_app(start_controller=False)
+            client = app.test_client()
+
+            privacy = client.get("/privacy")
+            self.assertEqual(200, privacy.status_code)
+            privacy_html = privacy.get_data(as_text=True)
+            self.assertIn("ACP Privacy Policy", privacy_html)
+            self.assertIn("Threads", privacy_html)
+            self.assertIn("review@example.com", privacy_html)
+
+            deletion = client.get("/data-deletion")
+            self.assertEqual(200, deletion.status_code)
+            deletion_html = deletion.get_data(as_text=True)
+            self.assertIn("ACP Data Deletion", deletion_html)
+            self.assertIn("access token", deletion_html.lower())
+            self.assertIn("review@example.com", deletion_html)
+
 
 if __name__ == "__main__":
     unittest.main()
