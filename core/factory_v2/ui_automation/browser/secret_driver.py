@@ -172,11 +172,24 @@ class BrowserSecretDriver:
             self.adb.keyevent(67)
         self.adb.set_text(value)
 
+    def _restore_login_form_after_input(self) -> bool:
+        try:
+            self.adb.back()
+            restored = self.wait_for((BROWSER_LOGIN,), 2.0)
+        except (RuntimeError, ValueError):
+            return False
+        return restored.kind == BROWSER_LOGIN
+
     def set_username(self, value: str) -> ActionResult:
         detected, username_node, _, _ = self._login_nodes()
         if username_node is None:
             return ActionResult("postcondition_failed", before=detected.kind)
-        self._replace_text(username_node, str(value))
+        try:
+            self._replace_text(username_node, str(value))
+        except (RuntimeError, ValueError):
+            return ActionResult("postcondition_failed", before=detected.kind)
+        if not self._restore_login_form_after_input():
+            return ActionResult("postcondition_failed", before=detected.kind)
         return ActionResult("completed", before=detected.kind, after=BROWSER_LOGIN)
 
     def set_password(self, value: str) -> ActionResult:
@@ -186,6 +199,8 @@ class BrowserSecretDriver:
         try:
             self._replace_text(password_node, str(value))
         except (RuntimeError, ValueError):
+            return ActionResult("postcondition_failed", before=detected.kind)
+        if not self._restore_login_form_after_input():
             return ActionResult("postcondition_failed", before=detected.kind)
         return ActionResult("completed", before=detected.kind, after=BROWSER_LOGIN)
 

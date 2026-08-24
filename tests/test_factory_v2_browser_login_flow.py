@@ -77,6 +77,48 @@ class LiveLoginAdb:
         return _LIVE_THREADS_LOGIN_XML
 
 
+class KeyboardOccludingLoginAdb:
+    """Simulates Chrome hiding the login button while the soft keyboard is open."""
+
+    def __init__(self):
+        self.keyboard_open = False
+        self.back_calls = 0
+        self.text_values = []
+
+    def foreground(self):
+        return "com.android.chrome", "ChromeActivity"
+
+    def dump_hierarchy(self):
+        if not self.keyboard_open:
+            return _LIVE_THREADS_LOGIN_XML
+
+        # Live behavior observed on the AVD: both web EditTexts remain visible,
+        # but the Log in button is no longer exposed as clickable while the
+        # soft keyboard covers it.
+        return _LIVE_THREADS_LOGIN_XML.replace(
+            "text='Log in' resource-id='' class='android.widget.Button'\n"
+            "        package='com.android.chrome' content-desc='' "
+            "clickable='true' enabled='true'",
+            "text='Log in' resource-id='' class='android.widget.Button'\n"
+            "        package='com.android.chrome' content-desc='' "
+            "clickable='false' enabled='true'",
+        )
+
+    def tap(self, x, y):
+        self.keyboard_open = True
+
+    def keyevent(self, keycode):
+        pass
+
+    def set_text(self, value):
+        self.text_values.append(value)
+        self.keyboard_open = True
+
+    def back(self):
+        self.back_calls += 1
+        self.keyboard_open = False
+
+
 class ExplodingPasswordDriver(BrowserSecretDriver):
     def __init__(self):
         pass
@@ -217,6 +259,33 @@ class BrowserLoginFlowTests(unittest.TestCase):
         self.assertEqual(2, len(driver.wait_calls))
         self.assertNotIn("example-secret", repr(result))
         self.assertNotIn("user1", repr(result))
+
+    def test_secret_driver_closes_keyboard_between_credential_fields(self):
+        adb = KeyboardOccludingLoginAdb()
+        driver = BrowserSecretDriver(
+            adb,
+            build_browser_detector(),
+            poll_interval=0,
+            sleeper=lambda _: None,
+        )
+
+        username_result = driver.set_username("user1")
+
+        self.assertEqual("completed", username_result.status)
+        self.assertFalse(adb.keyboard_open)
+        self.assertEqual(BROWSER_LOGIN, driver.detect_screen().kind)
+
+        password_result = driver.set_password("example-secret")
+
+        self.assertEqual("completed", password_result.status)
+        self.assertFalse(adb.keyboard_open)
+        self.assertEqual(BROWSER_LOGIN, driver.detect_screen().kind)
+
+        self.assertEqual(2, adb.back_calls)
+        self.assertEqual(
+            ["user1", "example-secret"],
+            adb.text_values,
+        )
 
     def test_password_adb_failure_is_sanitized(self):
         result = ExplodingPasswordDriver().set_password("example-secret")
