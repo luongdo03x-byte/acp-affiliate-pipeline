@@ -93,6 +93,22 @@ class FakeActivation:
         return self.repo.get_account(account_id)
 
 
+class ExpiringActivation(FakeActivation):
+    """Models an expired OAuth attempt that moves the account back to retry."""
+
+    def start(self, account_id):
+        self.start_calls += 1
+        account = self.repo.get_account(account_id)
+        if account["stage"] != AccountStage.RETRY_PENDING.value:
+            self.service.transition_account(
+                account_id,
+                AccountStage.RETRY_PENDING,
+                error_code="OAUTH_FAILED",
+                error_message="OAuth session đã hết hạn",
+            )
+        raise ValueError("account retry has not been approved")
+
+
 class FactoryRuntimeActivationTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", isolation_level=None)
@@ -173,6 +189,30 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
             self.repo.get_account(account["id"]),
             self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone(),
         )
+
+    def seed_expired_start_attempt(self):
+        account, _ = self.seed_threads_verifying()
+
+        # First attempt reaches ACP_CONNECTING and creates ACP_OAUTH checkpoint.
+        self.runtime.tick()
+
+        self.runtime.activation_service = ExpiringActivation(
+            self.repo,
+            self.service,
+        )
+        self.conn.execute(
+            """UPDATE factory_job
+               SET state='RUNNING',
+                   desired_action='START_ACP',
+                   command_id='expired-start-1'
+               WHERE id='job-1'"""
+        )
+        self.conn.execute(
+            """UPDATE factory_worker
+               SET state='RUNNING'
+               WHERE id='avd-1'"""
+        )
+        return self.repo.get_account(account["id"])
 
     def test_threads_postcheck_opens_oauth_then_gateway_uses_decrypted_transient_login(self):
         account, _ = self.seed_threads_verifying()
@@ -257,6 +297,69 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
             "RESTORE_OAUTH_APPS",
             [action for action, _ in self.gateway.commands],
         )
+
+    def test_expired_oauth_start_releases_stale_job_instead_of_recovery_loop(self):
+        account = self.seed_expired_start_attempt()
+
+        self.runtime.tick()
+
+        saved = self.repo.get_account(account["id"])
+        job = self.conn.execute(
+            "SELECT * FROM factory_job WHERE id='job-1'"
+        ).fetchone()
+        worker = self.repo.get_worker("avd-1")
+        checkpoint = self.conn.execute(
+            """SELECT * FROM factory_checkpoint
+               WHERE account_id=? AND type='ACP_OAUTH'
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1""",
+            (account["id"],),
+        ).fetchone()
+
+        self.assertEqual("RETRY_PENDING", saved["stage"])
+        self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
+        self.assertEqual("OAUTH_FAILED", saved["last_error_code"])
+
+        # Expired OAuth attempt is terminal for this job.
+        self.assertEqual("FAILED", job["state"])
+        self.assertIsNone(saved["current_job_id"])
+        self.assertIsNone(saved["assigned_worker_id"])
+
+        self.assertEqual("READY", worker["state"])
+        self.assertIsNone(worker["current_job_id"])
+        self.assertIsNone(worker["current_account_id"])
+
+        self.assertEqual("RESOLVED", checkpoint["status"])
+        self.assertEqual("OAUTH_FAILED", checkpoint["resolution"])
+
+        self.assertIn(
+            "RESTORE_OAUTH_APPS",
+            [action for action, _ in self.gateway.commands],
+        )
+
+    def test_retry_after_expired_oauth_assigns_fresh_start_acp_job(self):
+        account = self.seed_expired_start_attempt()
+        self.runtime.tick()
+
+        retried = self.service.retry_account(account["id"])
+
+        self.assertEqual("RETRY_PENDING", retried["stage"])
+        self.assertEqual("THREADS_CREATED", retried["last_safe_stage"])
+        self.assertIsNone(retried["last_error_code"])
+        self.assertIsNone(retried["current_job_id"])
+
+        fresh_job = self.scheduler.assign_next("avd-1")
+
+        self.assertIsNotNone(fresh_job)
+        self.assertNotEqual("job-1", fresh_job["id"])
+        self.assertEqual("RUNNING", fresh_job["state"])
+        self.assertEqual("START_ACP", fresh_job["desired_action"])
+
+        saved = self.repo.get_account(account["id"])
+        self.assertEqual(fresh_job["id"], saved["current_job_id"])
+        self.assertEqual("RETRY_PENDING", saved["stage"])
+        self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
+        self.assertIsNone(saved["last_error_code"])
 
 
 if __name__ == "__main__":

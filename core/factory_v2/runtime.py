@@ -585,6 +585,30 @@ class FactoryControllerRuntime:
         try:
             activation = self._activation()
             started = activation.start(account["id"])
+        except ValueError:
+            current = self.repo.get_account(account["id"])
+
+            oauth_retry_terminal = (
+                current is not None
+                and current["stage"] == AccountStage.RETRY_PENDING.value
+                and current.get("last_safe_stage")
+                    == AccountStage.THREADS_CREATED.value
+                and current.get("last_error_code") == "OAUTH_FAILED"
+            )
+
+            if not oauth_retry_terminal:
+                raise
+
+            # An expired/failed OAuth attempt is terminal for this job.
+            # Keep THREADS_CREATED as the safe stage, clean up temporary
+            # OAuth app state, and release the stale START_ACP job.
+            self._restore_oauth_apps(job)
+            self._resolve_activation_checkpoint(
+                account["id"],
+                "OAUTH_FAILED",
+            )
+            self._release_preserving_account(job["id"], "FAILED")
+            return
         except RuntimeError:
             current = self.repo.get_account(account["id"])
             if current and current["stage"] in {
