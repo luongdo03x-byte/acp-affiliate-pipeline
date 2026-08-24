@@ -361,6 +361,36 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         self.assertEqual("THREADS_CREATED", saved["last_safe_stage"])
         self.assertIsNone(saved["last_error_code"])
 
+    def test_runner_failure_persists_safe_error_detail(self):
+        account, _ = self.seed_threads_verifying()
+
+        def fail_send(job, action, payload=None):
+            raise RuntimeError("browser account binding mismatch")
+
+        self.gateway.send = fail_send
+
+        with self.assertLogs("core.factory_v2.runtime", level="WARNING") as logs:
+            self.runtime.tick()
+
+        job = self.conn.execute(
+            "SELECT * FROM factory_job WHERE id='job-1'"
+        ).fetchone()
+        worker = self.repo.get_worker("avd-1")
+
+        self.assertEqual("RECOVERING", job["state"])
+        self.assertEqual("RECOVERING", worker["state"])
+
+        self.assertEqual(
+            "runner command failed: browser account binding mismatch",
+            worker["last_error"],
+        )
+
+        joined = "\n".join(logs.output)
+        self.assertIn(
+            "RuntimeError: browser account binding mismatch",
+            joined,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -820,6 +820,11 @@ class FactoryControllerRuntime:
         try:
             self._drive_job(job)
         except Exception as exc:
+            detail = " ".join(str(exc).split())[:240]
+            if not detail:
+                detail = "unspecified runner failure"
+            worker_error = f"runner command failed: {detail}"
+
             self.repo.conn.execute(
                 "UPDATE factory_job SET state='RECOVERING' WHERE id=?",
                 (job["id"],),
@@ -827,11 +832,15 @@ class FactoryControllerRuntime:
             self.repo.conn.execute(
                 """UPDATE factory_worker
                    SET state='RECOVERING', recovery_count=recovery_count+1,
-                       last_error='runner command failed'
+                       last_error=?
                    WHERE id=?""",
-                (job["worker_id"],),
+                (worker_error, job["worker_id"]),
             )
-            _LOG.warning("Factory runner command deferred (%s)", type(exc).__name__)
+            _LOG.warning(
+                "Factory runner command deferred (%s: %s)",
+                type(exc).__name__,
+                detail,
+            )
 
     def tick(self) -> None:
         self.supervisor.tick()
