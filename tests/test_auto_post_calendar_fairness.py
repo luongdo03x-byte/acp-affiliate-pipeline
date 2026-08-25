@@ -137,13 +137,34 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
         self._insert_channel("ch-a", "channel-a")
         self._insert_channel("ch-b", "channel-b")
         self._insert_product("product-1")
-        self._insert_scheduled_post(
+        target_id = self._insert_scheduled_post(
             "post-a",
             "product-1",
             "ch-a",
             "2026-08-25T20:30:00+07:00",
         )
         now_utc = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
+
+        self.assertTrue(
+            auto_scheduler._queued_or_recently_published_product_exists(
+                self.conn, "product-1", now_utc, channel_id="ch-a"
+            )
+        )
+        self.assertFalse(
+            auto_scheduler._queued_or_recently_published_product_exists(
+                self.conn, "product-1", now_utc, channel_id="ch-b"
+            )
+        )
+
+        published_at = datetime(2026, 8, 25, 7, 30, tzinfo=timezone.utc).isoformat(timespec="seconds")
+        self.conn.execute(
+            "UPDATE post SET status='PUBLISHED', published_at=?, updated_at=? WHERE id='post-a'",
+            (published_at, published_at),
+        )
+        self.conn.execute(
+            "UPDATE publish_target SET status='SUCCESS', updated_at=? WHERE id=?",
+            (published_at, target_id),
+        )
 
         self.assertTrue(
             auto_scheduler._queued_or_recently_published_product_exists(
