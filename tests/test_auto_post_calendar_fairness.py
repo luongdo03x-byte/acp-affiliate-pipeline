@@ -51,6 +51,7 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
             (
                 channel_id,
                 code,
+                "threads",
                 f"@{code}",
                 json.dumps(niches, ensure_ascii=False),
                 target,
