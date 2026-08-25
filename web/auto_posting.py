@@ -1,4 +1,4 @@
-"""Operator-facing 48-hour Auto Posting Control Center."""
+"""Operator-facing today + tomorrow Auto Posting Control Center."""
 from __future__ import annotations
 
 import json
@@ -170,7 +170,7 @@ def page():
         counts=counts,
         accounts=accounts,
         system_state=system_state,
-        horizon_hours=48,
+        calendar_days=2,
         message=request.args.get("message"),
         err=request.args.get("err"),
         pending_review=_pending_review_count(),
@@ -256,7 +256,7 @@ def run_scheduler_now():
     skipped = int(stats.get("skipped", 0) or 0)
     return _redirect(
         message=(
-            f"Đã chạy scheduler 48h: tạo {scheduled} slot, "
+            f"Đã lấp lịch hôm nay + ngày mai: tạo {scheduled} slot, "
             f"chờ duyệt {review}, bỏ qua {skipped}. Không publish ngay."
         )
     )
