@@ -2040,14 +2040,22 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(stats["scheduled"], 1)
         self.assertEqual(slots, ["2026-08-21T02:30:00+00:00"])
 
-    def test_fill_auto_schedule_uses_exact_48_hour_horizon_not_two_local_dates(self):
+    def test_fill_auto_schedule_uses_today_and_tomorrow_calendar_not_exact_48_hours(self):
         from acp.core import pipeline
 
         self._insert_channel()
         self._insert_products(8)
+
+        # 23:00 ngày 20/08 tại Bangkok:
+        # mọi slot hôm nay đã qua, nên scheduler chỉ được lấp ngày mai 21/08.
+        # Không được trượt 48h sang ngày 22/08.
         now_utc = datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc)
 
-        stats = pipeline.fill_auto_schedule(self.conn, "camp", now_utc=now_utc)
+        stats = pipeline.fill_auto_schedule(
+            self.conn,
+            "camp",
+            now_utc=now_utc,
+        )
 
         slots = [
             row["scheduled_at"]
@@ -2056,13 +2064,17 @@ class AutoScheduleFillTests(unittest.TestCase):
             ).fetchall()
         ]
 
-        self.assertEqual(stats["scheduled"], 4)
-        self.assertEqual(slots, [
-            "2026-08-21T02:30:00+00:00",
-            "2026-08-21T05:30:00+00:00",
-            "2026-08-22T02:30:00+00:00",
-            "2026-08-22T05:30:00+00:00",
-        ])
+        self.assertEqual(stats["scheduled"], 2)
+        self.assertEqual(
+            slots,
+            [
+                "2026-08-21T02:30:00+00:00",
+                "2026-08-21T05:30:00+00:00",
+            ],
+        )
+        self.assertFalse(
+            any(slot.startswith("2026-08-22") for slot in slots)
+        )
 
     def test_fill_auto_schedule_clamps_malformed_core_target_to_three_slots(self):
         from acp.core import pipeline
