@@ -2,18 +2,24 @@ name: Threads Auto Scheduler CI
 
 on:
   push:
-    branches: ["feat/threads-auto-routing-scheduler"]
+    branches: ["feat/threads-auto-routing-scheduler", "feat/auto-posting-calendar-fairness"]
   pull_request:
     paths:
       - "core/auto_scheduler.py"
+      - "core/auto_post_plans.py"
+      - "core/auto_post_scheduler_runtime.py"
       - "core/db.py"
       - "core/pipeline.py"
       - "core/scoring.py"
       - "run.py"
+      - "web/auto_posting.py"
       - "web/server.py"
+      - "web/templates/auto_posting.html"
       - "web/templates/channels.html"
       - "web/templates/ops.html"
       - "ops/acp-auto-schedule.*"
+      - "tests/test_auto_post_calendar_fairness.py"
+      - "tests/test_auto_posting_job_controls.py"
       - "tests/test_auto_scheduler.py"
       - "tests/test_auto_scheduler_safety.py"
       - "tests/test_pipeline.py"
@@ -34,7 +40,13 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - name: Auto scheduler tests
-        run: python -m unittest tests.test_auto_scheduler tests.test_auto_scheduler_safety -v
+        run: >-
+          python -m unittest
+          tests.test_auto_scheduler
+          tests.test_auto_scheduler_safety
+          tests.test_auto_post_calendar_fairness
+          tests.test_auto_posting_job_controls
+          -v
       - name: Compile changed Python surfaces
         run: python -m compileall core web tests adapters run.py
       - name: Whitespace check
