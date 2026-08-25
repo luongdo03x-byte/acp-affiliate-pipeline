@@ -26,6 +26,7 @@ if __name__ == "acp.core":
     from . import auto_post_time_guard as _auto_post_time_guard  # noqa: E402
     from . import auto_post_runtime as _auto_post_runtime  # noqa: E402
     from . import auto_post_scheduler_runtime as _auto_post_scheduler_runtime  # noqa: E402
+    from . import auto_post_collision_runtime as _auto_post_collision_runtime  # noqa: E402
 
     _shopee_import_runtime.install()
     _shopee_auto_runtime.install()
@@ -38,3 +39,4 @@ if __name__ == "acp.core":
     _auto_post_time_guard.install()
     _auto_post_runtime.install()
     _auto_post_scheduler_runtime.install()
+    _auto_post_collision_runtime.install()
