@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-header">
   <div>
-    <div class="eyebrow">48-hour control center</div>
+    <div class="eyebrow">Hôm nay + ngày mai</div>
     <h1>Auto Posting</h1>
     <p class="lede">ACP vẫn tự tạo và tự đăng. Trang này cho biết trước account nào sẽ đăng lúc nào, dùng sản phẩm/ảnh/caption nào và cho phép can thiệp trước khi worker chạy.</p>
   </div>
@@ -18,11 +18,11 @@
     <div>
       <div class="eyebrow">Auto System</div>
       <h2>Điều khiển tự động</h2>
-      <p class="note">Scheduler tạo plan trước 48 giờ; Publish Worker chỉ đăng khi tới giờ. Hai phần được điều khiển độc lập.</p>
+      <p class="note">Scheduler lấp các slot còn lại của hôm nay và toàn bộ ngày mai theo múi giờ từng account; Publish Worker chỉ đăng khi tới giờ. Hai phần được điều khiển độc lập.</p>
     </div>
     <form method="post" action="{{ url_for('auto_posting.run_scheduler_now') }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-      <button class="btn btn--primary" type="submit">Tạo lịch 48h ngay</button>
+      <button class="btn btn--primary" type="submit">Lấp lịch hôm nay + ngày mai</button>
     </form>
   </div>
 
@@ -95,7 +95,7 @@
 </section>
 
 <div class="kpi-grid kpi-grid--4">
-  <div class="kpi-card"><div class="kpi-label">Plan 48h</div><div class="kpi-value">{{ counts.total }}</div><div class="kpi-meta">tất cả account</div></div>
+  <div class="kpi-card"><div class="kpi-label">Plan hôm nay + ngày mai</div><div class="kpi-value">{{ counts.total }}</div><div class="kpi-meta">tất cả account</div></div>
   <div class="kpi-card"><div class="kpi-label">READY</div><div class="kpi-value">{{ counts.ready }}</div><div class="kpi-meta">đã có nội dung</div></div>
   <div class="kpi-card"><div class="kpi-label">Đang reconcile</div><div class="kpi-value">{{ counts.regenerating }}</div><div class="kpi-meta">ảnh / product / data</div></div>
   <div class="kpi-card"><div class="kpi-label">Đang publish</div><div class="kpi-value">{{ counts.publishing }}</div><div class="kpi-meta">worker đang xử lý</div></div>
@@ -178,6 +178,6 @@
 {% endfor %}
 
 {% if not groups %}
-<div class="empty-state">Chưa có Auto plan trong {{ horizon_hours }} giờ tới. Bật Auto cho account phía trên rồi bấm “Tạo lịch 48h ngay”; scheduler cũng sẽ tiếp tục tự lấp lịch theo timer hiện có.</div>
+<div class="empty-state">Chưa có Auto plan cho hôm nay + ngày mai. Bật Auto cho account phía trên rồi bấm “Lấp lịch hôm nay + ngày mai”; scheduler cũng sẽ tiếp tục tự lấp lịch theo timer hiện có.</div>
 {% endif %}
 {% endblock %}
