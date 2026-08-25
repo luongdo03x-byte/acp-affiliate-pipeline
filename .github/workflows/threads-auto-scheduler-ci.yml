@@ -8,6 +8,7 @@ on:
       - "core/auto_scheduler.py"
       - "core/auto_post_plans.py"
       - "core/auto_post_scheduler_runtime.py"
+      - "core/auto_post_collision_runtime.py"
       - "core/db.py"
       - "core/pipeline.py"
       - "core/scoring.py"
