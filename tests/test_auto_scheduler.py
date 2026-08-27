@@ -2193,5 +2193,223 @@ class AutoScheduleFillTests(unittest.TestCase):
         self.assertEqual(leaked_review_rows, 0)
 
 
+def _insert_review_post(conn, post_id, channel_id, status="PENDING_REVIEW",
+                        caption="Sản phẩm đang giảm, xem tại https://example.com/p #tiepthilienket"):
+    campaign = conn.execute("SELECT id FROM campaign LIMIT 1").fetchone()
+    if not campaign:
+        conn.execute("INSERT INTO campaign (id, code, name, is_active, created_at) VALUES (?,?,?,1,?)",
+                     ("camp-1", "gd2026", "test", db.now()))
+        campaign_id = "camp-1"
+    else:
+        campaign_id = campaign["id"]
+    stamp = db.now()
+    conn.execute("""
+        INSERT INTO post (id, product_id, channel_id, campaign_id, variant_code,
+                          caption_body, disclosure_text, caption_final, status, created_at, updated_at)
+        VALUES (?,NULL,?,?, 'h1', ?, 'Nội dung có tiếp thị liên kết', ?, ?, ?, ?)
+    """, (post_id, channel_id, campaign_id, caption, caption, status, stamp, stamp))
+
+
+class ReviewSlotSuggestionTests(unittest.TestCase):
+    """Gợi ý giờ đăng "khung giờ hot" cho màn /duyet.
+
+    Ràng buộc phải giữ vững: tính từ hiện tại, ưu tiên khung giờ vàng
+    (trưa/tối), cách lịch autoPosting đã có tối thiểu 5 giờ cùng kênh,
+    tối đa 3 bài/ngày/kênh theo ngày địa phương của kênh."""
+
+    def setUp(self):
+        self.previous_db_path = db.DB_PATH
+        self.tempdir = tempfile.TemporaryDirectory()
+        db.DB_PATH = os.path.join(self.tempdir.name, "review-slots.db")
+        db.init_db()
+        self.conn = db.connect()
+        self.conn.execute("""
+            INSERT INTO channel (id, code, platform, handle, status, created_at)
+            VALUES ('ch-hot', 'ch_hot', 'threads', '@hot', 'ACTIVE', ?)
+        """, (db.now(),))
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        db.DB_PATH = self.previous_db_path
+        self.tempdir.cleanup()
+
+    def _add_target(self, target_id, scheduled_iso, status="SCHEDULED"):
+        _insert_review_post(self.conn, f"post-{target_id}", "ch-hot")
+        stamp = db.now()
+        self.conn.execute("""
+            INSERT INTO publish_target (id, post_id, channel_id, status, scheduled_at,
+                                        auto_scheduled, created_at, updated_at)
+            VALUES (?, ?, 'ch-hot', ?, ?, 1, ?, ?)
+        """, (target_id, f"post-{target_id}", status, scheduled_iso, stamp, stamp))
+
+    def test_prefers_earliest_hot_window_computed_from_now(self):
+        from acp.core import auto_scheduler
+
+        # 02:00 UTC = 09:00 giờ VN -- cả khung trưa lẫn khung tối đều ở phía trước.
+        now_utc = datetime(2026, 8, 26, 2, 0, tzinfo=timezone.utc)
+        sug = auto_scheduler.suggest_review_slot(self.conn, "ch-hot", now_utc=now_utc)
+
+        self.assertIsNotNone(sug)
+        self.assertEqual(sug["timezone"], "Asia/Bangkok")
+        # Hai khung hot cùng điểm 1.0 -> chọn sớm hơn: 11:00 trưa nay.
+        self.assertEqual(sug["slot_local"], "11:00")
+        self.assertEqual(sug["date_local"], "2026-08-26")
+        self.assertTrue(sug["hot"])
+        slot = datetime.fromisoformat(sug["slot"])
+        self.assertGreaterEqual(slot, now_utc + auto_scheduler.REVIEW_START_BUFFER - timedelta(minutes=1))
+
+    def test_respects_five_hour_gap_with_existing_auto_target(self):
+        from acp.core import auto_scheduler
+
+        # Lịch autoPosting đã chiếm 11:00 VN hôm nay -> gợi ý kế tiếp phải cách >= 5h.
+        self._add_target("t-lunch", "2026-08-26T04:00:00+00:00")
+        now_utc = datetime(2026, 8, 26, 2, 0, tzinfo=timezone.utc)
+
+        sug = auto_scheduler.suggest_review_slot(self.conn, "ch-hot", now_utc=now_utc)
+
+        self.assertIsNotNone(sug)
+        self.assertEqual(sug["slot_local"], "19:00")  # khung tối, cách 8 tiếng
+        chosen = datetime.fromisoformat(sug["slot"])
+        existing = datetime.fromisoformat("2026-08-26T04:00:00+00:00")
+        self.assertGreaterEqual(abs(chosen - existing), auto_scheduler.REVIEW_MIN_GAP)
+
+    def test_daily_cap_three_pushes_suggestion_to_next_day(self):
+        from acp.core import auto_scheduler
+
+        for i, hour in enumerate((1, 7, 13)):  # 08:00 / 14:00 / 20:00 giờ VN
+            self._add_target(f"t-{i}", f"2026-08-26T{hour:02d}:00:00+00:00")
+        now_utc = datetime(2026, 8, 26, 2, 0, tzinfo=timezone.utc)
+
+        sug = auto_scheduler.suggest_review_slot(self.conn, "ch-hot", now_utc=now_utc)
+
+        self.assertIsNotNone(sug)
+        self.assertEqual(sug["date_local"], "2026-08-27")
+        self.assertEqual(sug["slot_local"], "11:00")
+
+    def test_never_suggests_a_past_or_too_soon_slot(self):
+        from acp.core import auto_scheduler
+
+        # 15:00 UTC = 22:00 VN -- hết ngày hôm nay, khung hot gần nhất là trưa mai.
+        now_utc = datetime(2026, 8, 26, 15, 0, tzinfo=timezone.utc)
+        sug = auto_scheduler.suggest_review_slot(self.conn, "ch-hot", now_utc=now_utc)
+
+        self.assertIsNotNone(sug)
+        self.assertEqual((sug["date_local"], sug["slot_local"]), ("2026-08-27", "11:00"))
+        self.assertGreater(datetime.fromisoformat(sug["slot"]), now_utc)
+
+    def test_success_targets_still_count_toward_gap_and_quota(self):
+        from acp.core import auto_scheduler
+
+        self._add_target("t-done", "2026-08-26T06:30:00+00:00", status="SUCCESS")  # 13:30 VN
+        now_utc = datetime(2026, 8, 26, 2, 0, tzinfo=timezone.utc)
+
+        sug = auto_scheduler.suggest_review_slot(self.conn, "ch-hot", now_utc=now_utc)
+
+        self.assertIsNotNone(sug)
+        chosen = datetime.fromisoformat(sug["slot"])
+        published = datetime.fromisoformat("2026-08-26T06:30:00+00:00")
+        self.assertGreaterEqual(abs(chosen - published), auto_scheduler.REVIEW_MIN_GAP)
+
+
+class ReviewAutoPickWebTests(unittest.TestCase):
+    """Đường duyệt tay trên web: checkbox "Tự chọn khung giờ hot" phải tạo
+    publish_target với giờ do suggest_review_slot đề xuất, tôn trọng cả ràng
+    buộc 5h/3-bài-ngày với lịch autoPosting đã có; giờ nhập tay vẫn thắng."""
+
+    def setUp(self):
+        self.previous_db_path = db.DB_PATH
+        self.previous_password = os.environ.get("ACP_ADMIN_PASSWORD")
+        self.previous_secret = os.environ.get("ACP_SECRET_KEY")
+        self.tempdir = tempfile.TemporaryDirectory()
+        db.DB_PATH = os.path.join(self.tempdir.name, "review-web.db")
+        os.environ["ACP_ADMIN_PASSWORD"] = "test-password"
+        os.environ["ACP_SECRET_KEY"] = "test-secret"
+
+        db.init_db()
+        conn = db.connect()
+        try:
+            conn.execute("""
+                INSERT INTO channel (id, code, platform, handle, status, enabled, created_at)
+                VALUES ('ch-web', 'ch_web', 'threads', '@web', 'ACTIVE', 1, ?)
+            """, (db.now(),))
+            _insert_review_post(conn, "post-web-1", "ch-web")
+        finally:
+            conn.close()
+
+        from acp.web.server import create_app
+
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self.client.post("/dangnhap", data={"password": "test-password"})
+        with self.client.session_transaction() as session_data:
+            self.csrf = session_data["csrf"]
+
+    def tearDown(self):
+        db.DB_PATH = self.previous_db_path
+        self.tempdir.cleanup()
+        if self.previous_password is None:
+            os.environ.pop("ACP_ADMIN_PASSWORD", None)
+        else:
+            os.environ["ACP_ADMIN_PASSWORD"] = self.previous_password
+        if self.previous_secret is None:
+            os.environ.pop("ACP_SECRET_KEY", None)
+        else:
+            os.environ["ACP_SECRET_KEY"] = self.previous_secret
+
+    def _targets(self):
+        conn = db.connect()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM publish_target WHERE channel_id='ch-web'").fetchall()]
+        finally:
+            conn.close()
+
+    def test_review_page_renders_auto_pick_controls_and_hints(self):
+        page = self.client.get("/duyet")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('name="auto_pick_time"', page.text)
+        self.assertIn("Tự chọn khung giờ hot", page.text)
+
+    def test_approve_with_auto_pick_creates_hot_slot_target(self):
+        response = self.client.post("/duyet/post-web-1/approve", data={
+            "_csrf": self.csrf,
+            "channel_ids": ["ch-web"],
+            "caption": "Sản phẩm đang giảm, xem tại https://example.com/p #tiepthilienket",
+            "auto_pick_time": "1",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("err=", response.headers["Location"])
+        targets = self._targets()
+        self.assertEqual(len(targets), 1)
+        from acp.core import auto_scheduler
+        scheduled = datetime.fromisoformat(targets[0]["scheduled_at"])
+        now_utc = datetime.now(timezone.utc)
+        self.assertGreater(scheduled, now_utc)  # không bao giờ đăng vào quá khứ
+
+        minutes = scheduled.astimezone(auto_scheduler._parse_timezone("Asia/Bangkok"))
+        # Phải nằm trong (hoặc rất gần) một khung giờ vàng: trưa hoặc tối.
+        best = auto_scheduler._hot_window_score(minutes.hour * 60 + minutes.minute)
+        self.assertGreaterEqual(best, 0.5)
+
+    def test_manual_time_beats_auto_pick(self):
+        response = self.client.post("/duyet/post-web-1/approve", data={
+            "_csrf": self.csrf,
+            "channel_ids": ["ch-web"],
+            "scheduled_at": "2026-09-01T10:00",
+            "auto_pick_time": "1",  # có giờ tay -> auto bị bỏ qua
+        })
+
+        self.assertEqual(response.status_code, 302)
+        targets = self._targets()
+        self.assertEqual(len(targets), 1)
+        self.assertTrue(targets[0]["scheduled_at"].startswith("2026-09-01T03:00"))  # UTC = VN - 7
+
+
 if __name__ == "__main__":
     unittest.main()

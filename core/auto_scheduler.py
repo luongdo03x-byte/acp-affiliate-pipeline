@@ -11,6 +11,21 @@ MIN_HOUR_SAMPLE_SIZE = 5
 MAX_CORE_DAILY_TARGET = 3
 MAX_AUTO_PRODUCT_SYNC_AGE = timedelta(minutes=120)
 
+# --------------------------------------------------------------- duyệt tay (/duyet)
+# Operator bấm "Duyệt & lên lịch" mà không tự nhập giờ: hệ thống tự chọn khung
+# giờ hot cho TỪNG kênh, tính từ hiện tại, đồng thời đọc lịch autoPosting đã có
+# (publish_target đang sống) để không trùng slot, không đăng dày quá 5 giờ/kênh
+# và không vượt trần 3 bài/ngày/kênh.
+REVIEW_MIN_GAP = timedelta(hours=5)
+REVIEW_DAILY_CAP = 3
+REVIEW_START_BUFFER = timedelta(minutes=30)
+REVIEW_HORIZON_HOURS = 72
+REVIEW_SLOT_STEP_MINUTES = 30
+# Khung giờ xem cao điểm của mạng xã hội VN (phút trong ngày địa phương):
+# trưa 11:00-13:30 và tối 19:00-21:30. Ngoài khoảng này điểm giảm dần trong 90 phút.
+REVIEW_HOT_WINDOWS = ((11 * 60, 13 * 60 + 30), (19 * 60, 21 * 60 + 30))
+_REVIEW_HOT_FALLOFF_MINUTES = 90
+
 
 def _row_get(row, key: str, default=None):
     if row is None:
@@ -430,3 +445,109 @@ def route_product(conn, product, now_utc) -> dict | None:
         )
     )
     return ranked[0]
+
+
+def _hot_window_score(minutes_of_day: int) -> float:
+    """1.0 trong khung giờ vàng, giảm tuyến tính trong 90 phút bên ngoài."""
+    best = 0.0
+    for start, end in REVIEW_HOT_WINDOWS:
+        if start <= minutes_of_day <= end:
+            return 1.0
+        distance = min(abs(minutes_of_day - start), abs(minutes_of_day - end))
+        best = max(best, 1.0 - distance / _REVIEW_HOT_FALLOFF_MINUTES)
+    return round(max(0.0, best), 3)
+
+
+def _review_measured_scores(conn, channel_id: str, tz_name: str) -> dict:
+    """Điểm đo được theo GIỜ địa phương (median hoa hồng/click của target
+    SUCCESS), chỉ tin giờ có đủ mẫu -- cùng ngưỡng MIN_HOUR_SAMPLE_SIZE với
+    rank_slots. Trả về {hour: score}."""
+    by_hour = {}
+    for slot_text, values in _channel_hour_metrics(conn, channel_id, tz_name).items():
+        if len(values) < MIN_HOUR_SAMPLE_SIZE:
+            continue
+        try:
+            hour = int(slot_text[:2])
+        except (TypeError, ValueError):
+            continue
+        current = scoring.median(values) or 0.0
+        if current > by_hour.get(hour, 0.0):
+            by_hour[hour] = current
+    return by_hour
+
+
+def suggest_review_slot(conn, channel_id: str, now_utc: datetime = None) -> dict | None:
+    """Chọn một giờ đăng cho kênh ở bước duyệt tay /duyet.
+
+    Ưu tiên khung giờ hot (nhiều người xem): điểm khung giờ vàng là tiêu chí
+    chính, điểm đo được theo giờ (nếu đủ mẫu) làm tie-break -- kênh càng có
+    dữ liệu, gợi ý càng bám thực tế thay vì lý thuyết.
+
+    Ràng buộc cứng:
+      - tính từ hiện tại (+30 phút đệm, lưới 30 phút), quét tối đa 72 giờ;
+      - cách mọi publish_target đang sống của CHÍNH kênh này (gồm lịch
+        autoPosting đã lên) ít nhất REVIEW_MIN_GAP -- 5 giờ;
+      - không vượt REVIEW_DAILY_CAP -- 3 bài/ngày/kênh, đếm theo ngày địa
+        phương của kênh (giống cơ chế quota của auto scheduler).
+
+    Trả về {"slot": ISO-UTC, "slot_local": "HH:MM", "date_local", "label_local",
+    "hot", "timezone"} hoặc None nếu hết chỗ trong horizon.
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    channel = conn.execute("SELECT * FROM channel WHERE id=?", (channel_id,)).fetchone()
+    if not channel:
+        return None
+    cap = _core_daily_cap(channel)
+    if cap <= 0:
+        return None
+    tz_name = _row_get(channel, "posting_timezone") or "Asia/Bangkok"
+    tzinfo = _parse_timezone(tz_name)
+
+    busy, used_by_date = [], {}
+    for row in _channel_target_rows(conn, channel_id):
+        other = _parse_iso_datetime(_row_get(row, "scheduled_at") or _row_get(row, "updated_at"))
+        if other is None:
+            continue
+        other = other.astimezone(timezone.utc)
+        busy.append(other)
+        date_key = other.astimezone(tzinfo).date().isoformat()
+        used_by_date[date_key] = used_by_date.get(date_key, 0) + 1
+
+    measured = _review_measured_scores(conn, channel_id, tz_name)
+    earliest = now_utc + REVIEW_START_BUFFER
+    horizon = now_utc + timedelta(hours=REVIEW_HORIZON_HOURS)
+
+    candidates = []
+    local_day = now_utc.astimezone(tzinfo).date()
+    last_day = horizon.astimezone(tzinfo).date()
+    while local_day <= last_day:
+        date_key = local_day.isoformat()
+        if used_by_date.get(date_key, 0) < cap:
+            for minute in range(0, 24 * 60, REVIEW_SLOT_STEP_MINUTES):
+                slot_local_dt = datetime(local_day.year, local_day.month, local_day.day,
+                                         minute // 60, minute % 60, tzinfo=tzinfo)
+                slot_utc = slot_local_dt.astimezone(timezone.utc)
+                if not (earliest <= slot_utc <= horizon):
+                    continue
+                if any(abs(slot_utc - other) < REVIEW_MIN_GAP for other in busy):
+                    continue
+                hot = _hot_window_score(minute)
+                candidates.append((-hot, -measured.get(minute // 60, 0.0), slot_utc, hot))
+        local_day = local_day + timedelta(days=1)
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    chosen_hot = candidates[0][3]
+    chosen_utc = candidates[0][2]
+    chosen_local = chosen_utc.astimezone(tzinfo)
+    return {
+        "slot": chosen_utc.isoformat(timespec="seconds"),
+        "slot_local": chosen_local.strftime("%H:%M"),
+        "date_local": chosen_local.date().isoformat(),
+        "label_local": chosen_local.strftime("%H:%M %d/%m"),
+        "hot": chosen_hot >= 1.0,
+        "timezone": tz_name,
+    }

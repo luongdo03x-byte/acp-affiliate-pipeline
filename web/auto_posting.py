@@ -5,10 +5,10 @@ import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, redirect, render_template, request, url_for
 
 from ..adapters import factory
-from ..core import auto_post_plans, pipeline
+from ..core import auto_post_plans, pipeline, reviewer_caption
 from ..core.db import audit, connect
 from ..core.system_settings import (
     PUBLISH_WORKER_ENABLED,
@@ -140,12 +140,11 @@ def page():
                 }
                 by_channel[plan["channel_id"]] = group
                 grouped.append(group)
-            try:
-                plan["replacement_candidates"] = auto_post_plans.replacement_candidates(
-                    conn, plan["id"], limit=8
-                ) if plan["state"] in auto_post_plans.LIVE_STATES else []
-            except Exception:
-                plan["replacement_candidates"] = []
+            # Ứng viên thay thế KHÔNG tính ở đây nữa: quét chấm điểm + kiểm
+            # eligibility cho từng plan làm trang mở chậm cả giây, trong khi
+            # phần lớn lần mở operator không hề bấm "Đổi sản phẩm". Giờ tải
+            # bằng GET /auto-posting/<plan_id>/replacements đúng lúc cần.
+            plan["replacement_candidates"] = []
             group["plans"].append(plan)
         counts = {
             "total": len(plans),
@@ -247,6 +246,11 @@ def run_scheduler_now():
                 now_utc=datetime.now(timezone.utc),
                 ctx=ctx,
             )
+        except reviewer_caption.CaptionRewriteError:
+            return _redirect(err=(
+                "Không sinh được caption theo mẫu mới. Kiểm tra OpenAI credit/API key; "
+                "hệ thống đã không tạo lịch bằng caption mẫu cũ."
+            ))
         except Exception:
             return _redirect(err="Không tạo được lịch Auto. Kiểm tra cấu hình sản phẩm/kênh tại Vận hành.")
     finally:
@@ -321,6 +325,55 @@ def cancel(plan_id):
     finally:
         conn.close()
     return _redirect(message="Đã hủy plan; publish job tương ứng đã được vô hiệu hóa.")
+
+
+@bp.post("/auto-posting/cancel-all")
+def cancel_all():
+    conn = connect()
+    try:
+        result = auto_post_plans.cancel_all_pending(conn, actor="operator")
+    finally:
+        conn.close()
+    message = f"Đã hủy {result['cancelled']} bài Auto Posting chưa publish."
+    if result["running"]:
+        message += f" Bỏ qua {result['running']} bài worker đang xử lý."
+    return _redirect(message=message)
+
+
+@bp.get("/auto-posting/<plan_id>/replacements")
+def replacement_options(plan_id):
+    """Fragment HTML cho mục "Đổi sản phẩm" -- tải đúng lúc operator mở ra.
+
+    Trả HTML thay vì JSON để form giữ nguyên CSRF + nhãn giá format |vnd y
+    hệt bản render sẵn, JS chỉ cần gắn innerHTML.
+    """
+    conn = connect()
+    try:
+        plan = conn.execute(
+            "SELECT state FROM auto_post_plan WHERE id=?", (str(plan_id),)
+        ).fetchone()
+        if not plan or plan["state"] not in auto_post_plans.LIVE_STATES:
+            return render_template("_auto_replacements.html", plan_id=str(plan_id),
+                                   candidates=[], error="Plan không còn hoạt động")
+        try:
+            candidates = auto_post_plans.replacement_candidates(conn, str(plan_id), limit=8)
+        except Exception:
+            candidates = []
+    finally:
+        conn.close()
+    fmt = current_app.jinja_env.filters.get("vnd", _fmt_price_fallback)
+    options = [{
+        "id": item["id"],
+        "label": f"{item['name']} · {fmt(item.get('current_price'))}" if item.get("current_price") is not None else item["name"],
+    } for item in candidates]
+    return render_template("_auto_replacements.html", plan_id=str(plan_id), candidates=options)
+
+
+def _fmt_price_fallback(v):
+    try:
+        return f"{int(v):,}".replace(",", ".") + "đ"
+    except (TypeError, ValueError):
+        return "0đ"
 
 
 def register_auto_posting_routes(app):

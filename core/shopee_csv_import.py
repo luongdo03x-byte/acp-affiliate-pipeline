@@ -13,6 +13,7 @@ from io import StringIO
 from urllib.parse import urlsplit
 
 from .db import now, transaction, ulid
+from .product_category import infer_category
 from .shopee_image_enrichment import enqueue_product
 from .shopee_products import ShopeeProductError, identity_from_url
 
@@ -416,7 +417,7 @@ def _insert_product(conn, row: ShopeeAffiliateCsvRow) -> str:
         "original_price": None,
         "commission_value": row.commission_amount or 0,
         "commission_rate": row.commission_rate_percent,
-        "category_code": "khac",
+        "category_code": infer_category(row.name),
         "rating": None,
         "review_count": 0,
         "sold_count": row.sold_count or 0,
@@ -458,6 +459,11 @@ def _insert_product(conn, row: ShopeeAffiliateCsvRow) -> str:
 def _update_product(conn, existing, row: ShopeeAffiliateCsvRow) -> str:
     timestamp = now()
     values = _csv_owned_values(row)
+    # Danh mục KHÔNG thuộc nhóm CSV-owned: nếu nguồn khác (operator/topic
+    # engine) đã đặt danh mục thật thì giữ nguyên; chỉ điền suy đoán vào chỗ
+    # đang trống/'khac' -- đúng tinh thần "metadata giàu hơn phải sống sót".
+    if str(existing["category_code"] or "khac") == "khac":
+        values["category_code"] = infer_category(row.name)
     values.update({
         "last_seen_at": timestamp,
         "last_synced_at": timestamp,

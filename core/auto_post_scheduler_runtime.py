@@ -21,7 +21,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import auto_post_plans, auto_scheduler, pipeline, scoring, topic_engine
+from . import auto_post_plans, auto_scheduler, pipeline, reviewer_caption, scoring, topic_engine
 
 _INSTALLED = False
 _AUTO_CHANNEL_ID = ContextVar("acp_auto_channel_id", default=None)
@@ -360,6 +360,10 @@ def _attempt_assignment(
                 variant,
                 score=item["score"],
             )
+        except reviewer_caption.CaptionRewriteError:
+            # Custom prompt is an operator requirement. Surface its failure to
+            # the route instead of quietly filling the calendar with old drafts.
+            raise
         except Exception:
             return "skipped"
         if not prepared.get("ok"):

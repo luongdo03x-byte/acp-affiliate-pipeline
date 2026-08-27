@@ -106,6 +106,31 @@ class AutoPostingWebTests(unittest.TestCase):
         self.assertIn('Sửa caption', body)
         self.assertIn('Đổi giờ', body)
         self.assertIn('Hủy', body)
+        self.assertIn('Hủy toàn bộ Auto Posting', body)
+
+    def test_page_defers_replacement_options_to_lazy_endpoint(self):
+        response = self.client.get('/auto-posting')
+        self.assertEqual(response.status_code, 200)
+        body = response.data.decode('utf-8')
+        self.assertIn('details class="auto-plan-action auto-replacements"', body)
+        self.assertIn(f'data-endpoint="/auto-posting/{self.plan["id"]}/replacements"', body)
+        # Không tính sẵn danh sách lúc render trang -- nguyên nhân /auto-posting chậm.
+        self.assertNotIn('Chọn sản phẩm đủ điều kiện', body)
+
+    def test_replacements_endpoint_returns_fragment_for_live_plan(self):
+        response = self.client.get(f"/auto-posting/{self.plan['id']}/replacements")
+        self.assertEqual(response.status_code, 200)
+        body = response.data.decode('utf-8')
+        # Fixture chỉ có đúng 1 sản phẩm SHOPEE_AFFILIATE đang nằm trên plan
+        # -> không còn ứng viên nào khác.
+        self.assertIn('chưa có sản phẩm thay thế đủ điều kiện', body)
+
+    def test_replacements_endpoint_reports_dead_plan_without_crashing(self):
+        auto_post_plans.cancel_plan(self.conn, self.plan['id'], actor='test')
+        self.conn.commit()
+        response = self.client.get(f"/auto-posting/{self.plan['id']}/replacements")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Plan không còn hoạt động', response.data.decode('utf-8'))
 
     def test_caption_action_updates_plan_without_publishing(self):
         response = self.client.post(
@@ -127,6 +152,51 @@ class AutoPostingWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         target = self.conn.execute("SELECT status FROM publish_target WHERE id='target'").fetchone()
         self.assertEqual(target['status'], 'CANCELLED')
+
+    def test_cancel_all_action_cancels_unpublished_targets_and_jobs(self):
+        response = self.client.post(
+            "/auto-posting/cancel-all",
+            data={'_csrf': self.csrf},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        target = self.conn.execute(
+            "SELECT status FROM publish_target WHERE id='target'"
+        ).fetchone()
+        job = self.conn.execute(
+            "SELECT status FROM job_queue WHERE idempotency_key='pub:target'"
+        ).fetchone()
+        post = self.conn.execute("SELECT status FROM post WHERE id='post'").fetchone()
+        self.assertEqual(target['status'], 'CANCELLED')
+        self.assertEqual(job['status'], 'DONE')
+        self.assertEqual(post['status'], 'PENDING_REVIEW')
+
+    def test_review_reject_all_only_rejects_waiting_posts(self):
+        stamp = self.now.isoformat(timespec='seconds')
+        for post_id, status in (('waiting-1', 'PENDING_REVIEW'), ('waiting-2', 'DRAFT')):
+            self.conn.execute(
+                """INSERT INTO post (
+                     id,product_id,channel_id,campaign_id,variant_code,caption_body,
+                     disclosure_text,caption_final,affiliate_link,post_type,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,'caption','disclosure',?,'https://s.shopee.vn/p','SALES',?,?,?)""",
+                (post_id, 'p', 'ch', 'camp', 'H1',
+                 'caption\nhttps://s.shopee.vn/p', status, stamp, stamp),
+            )
+
+        page = self.client.get('/duyet')
+        self.assertIn('Bỏ qua tất cả', page.data.decode('utf-8'))
+        response = self.client.post(
+            '/duyet/reject-all',
+            data={'_csrf': self.csrf},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        waiting = self.conn.execute(
+            "SELECT id,status FROM post WHERE id IN ('waiting-1','waiting-2') ORDER BY id"
+        ).fetchall()
+        scheduled = self.conn.execute("SELECT status FROM post WHERE id='post'").fetchone()
+        self.assertEqual([row['status'] for row in waiting], ['REJECTED', 'REJECTED'])
+        self.assertEqual(scheduled['status'], 'SCHEDULED')
 
 
 if __name__ == '__main__':

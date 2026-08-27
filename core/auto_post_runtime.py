@@ -30,6 +30,7 @@ def install() -> None:
         caption_instagram: str = None,
         caption_overrides: dict = None,
         scheduled_at: str = None,
+        slots_by_channel: dict = None,
         auto_scheduled: bool = False,
     ) -> dict:
         result = original_approve(
@@ -42,6 +43,7 @@ def install() -> None:
             caption_instagram=caption_instagram,
             caption_overrides=caption_overrides,
             scheduled_at=scheduled_at,
+            slots_by_channel=slots_by_channel,
             auto_scheduled=auto_scheduled,
         )
         if result.get("ok") and auto_scheduled:

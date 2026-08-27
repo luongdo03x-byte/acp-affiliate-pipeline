@@ -16,6 +16,17 @@
                                          đồng bộ catalog ACCESSTRADE; chỉ tạo bài chờ duyệt
                                          khi có --auto-prepare và ACP_AUTO_PREPARE_CONTENT=true
                                          thứ tự timer an toàn: sync catalog -> auto-schedule -> worker-once
+    python3 run.py backfill-category [--dry]
+                                         điền danh mục suy đoán từ tên cho hàng Shopee
+                                         đang 'khac' (--dry chỉ xem, không ghi)
+    python3 run.py reset-scheduled [--dry] [--no-regen]
+                                         đưa các bài ĐÃ LÊN LỊCH nhưng CHƯA ĐĂNG về
+                                         /duyet, sinh lại caption theo cấu hình mới;
+                                         bài đã đăng thật không bị đụng tới
+    python3 run.py regen-captions [--dry]
+                                         sinh lại caption cho TOÀN BỘ bài chưa đăng
+                                         (đã lên lịch + đang chờ duyệt) theo prompt/
+                                         chính sách hiện hành; lịch cũ bị giải phóng
     python3 run.py product <mã sp>      MỘT sản phẩm -> MỘT bài chờ duyệt
     python3 run.py valuepost <kênh> [loại]   bài không bán hàng cho một kênh
                                          loại: price_level | real_discount | checklist
@@ -649,6 +660,96 @@ def cmd_demo():
     print("  Mở dashboard:  python3 run.py serve\n")
 
 
+def cmd_backfill_category(dry_run: bool = False):
+    """Điền category_code cho hàng SHOPEE_AFFILIATE đang 'khac' bằng cách suy
+    đoán từ tên (core/product_category.py). Chỉ đụng dòng đang 'khac' -- không
+    bao giờ ghi đè danh mục đã được người vận hành/s nguồn đặt đúng."""
+    from acp.core.product_category import infer_category
+    conn = connect()
+    rows = conn.execute("""SELECT id, name, category_code FROM product
+                           WHERE provider='SHOPEE_AFFILIATE'
+                             AND COALESCE(category_code,'khac')='khac'""").fetchall()
+    changes = []
+    for r in rows:
+        code = infer_category(r["name"])
+        if code != "khac":
+            changes.append((r["id"], r["name"], code))
+    dist = {}
+    for _, _, code in changes:
+        dist[code] = dist.get(code, 0) + 1
+
+    print(f"  Quét {len(rows)} sản phẩm đang 'khac': suy đoán được {len(changes)}")
+    for code, n in sorted(dist.items(), key=lambda kv: -kv[1]):
+        print(f"    {code:<20}{n}")
+    if dry_run:
+        print("  (dry-run -- chưa ghi gì. Bỏ --dry để ghi.)")
+        conn.close()
+        return 0
+    if not changes:
+        print("  Không có gì cần ghi.")
+        conn.close()
+        return 0
+    stamp = now()
+    with db.transaction(conn):
+        for pid, _name, code in changes:
+            conn.execute("UPDATE product SET category_code=?, updated_at=? WHERE id=?",
+                         (code, stamp, pid))
+        audit(conn, "product", "backfill-category", "category_backfilled",
+              actor="operator", detail={"updated": len(changes), "distribution": dist})
+    conn.close()
+    print(f"✓ Đã cập nhật {len(changes)} sản phẩm (còn lại 'khac': {len(rows) - len(changes)})")
+    return 0
+
+
+def cmd_reset_scheduled(dry_run: bool = False, regenerate: bool = True):
+    """Đưa các bài ĐÃ LÊN LỊCH nhưng CHƯA ĐĂNG về hàng chờ duyệt."""
+    if regenerate:
+        from acp.adapters import factory
+        factory.build_context()   # nối content.set_llm -- xem cmd_regen_captions
+    conn = connect()
+    res = pipeline.reset_scheduled_posts(conn, actor="operator",
+                                         regenerate=regenerate, dry_run=dry_run)
+    conn.close()
+    if dry_run:
+        print(f"  DRY-RUN -- sẽ reset {res['posts']} bài / {res['targets']} target "
+              f"(job READY: {res['jobs']}, auto plan: {res['plans']}), "
+              f"bỏ qua {res['skipped_already_published']} bài đã đăng thật")
+        for label, will_regen in res.get("preview", [])[:12]:
+            print(f"    - {label}{'  [sinh caption mới]' if will_regen else '  [giữ caption]'}")
+        if len(res.get("preview", [])) > 12:
+            print(f"    ... và {len(res['preview']) - 12} bài nữa")
+        print("  Chạy lại KHÔNG có --dry để thực hiện.")
+        return 0
+    print(f"✓ Đã đưa {res['posts']} bài về chờ duyệt "
+          f"(hủy {res['targets']} target, {res['jobs']} job đăng, {res['plans']} plan; "
+          f"caption mới: {res['regenerated']}, giữ cũ: {res['kept_caption']}). "
+          f"Duyệt lại tại /duyet.")
+    return 0
+
+
+def cmd_regen_captions(dry_run: bool = False):
+    """Sinh lại caption cho TOÀN BỘ bài chưa đăng: đã lên lịch (bỏ lịch, về
+    /duyet) lẫn đang chờ duyệt (đổi tại chỗ) -- theo prompt/chính sách mới."""
+    from acp.adapters import factory
+    factory.build_context()   # nối content.set_llm theo ACP_CAPTION_LLM -- thiếu bước này generate chỉ ra bản nháp
+    conn = connect()
+    reset = pipeline.reset_scheduled_posts(conn, actor="operator",
+                                           regenerate=True, dry_run=dry_run)
+    review = pipeline.regenerate_review_captions(conn, actor="operator", dry_run=dry_run)
+    conn.close()
+    if dry_run:
+        print(f"  DRY-RUN -- đã lên lịch: {reset['posts']} bài/{reset['targets']} target "
+              f"(job {reset['jobs']}, plan {reset['plans']}); "
+              f"chờ duyệt: {review['total']} bài. Bỏ qua {reset['skipped_already_published']} bài đã đăng.")
+        print("  Chạy lại KHÔNG có --dry để thực hiện.")
+        return 0
+    total_new = reset["regenerated"] + review["regenerated"]
+    print(f"✓ Đã sinh lại caption cho {total_new} bài "
+          f"(lịch: {reset['posts']} bài về /duyet; tại chỗ: {review['regenerated']}). "
+          f"Slot trống sẽ được auto-schedule xếp lại ở lần chạy tới.")
+    return 0
+
+
 def cmd_serve():
     from acp.web.server import create_app
     create_app().run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)
@@ -686,6 +787,17 @@ def main(argv=None):
             return 2
         return cmd_product_sync(keyword=keywords[0] if keywords else None,
                                 auto_prepare=auto_prepare)
+    elif cmd == "backfill-category":
+        return cmd_backfill_category(dry_run="--dry" in args[1:])
+    elif cmd == "reset-scheduled":
+        rest = args[1:]
+        if any(arg not in ("--dry", "--no-regen") for arg in rest):
+            print("Cách dùng: python3 run.py reset-scheduled [--dry] [--no-regen]")
+            return 2
+        return cmd_reset_scheduled(dry_run="--dry" in rest,
+                                   regenerate="--no-regen" not in rest)
+    elif cmd == "regen-captions":
+        return cmd_regen_captions(dry_run="--dry" in args[1:])
     elif cmd == "approve" and len(args) > 1:
         c = connect(); print(pipeline.approve_post(c, args[1])); c.close()
     elif cmd in ("worker-once", "worker-status", "auto-schedule"):

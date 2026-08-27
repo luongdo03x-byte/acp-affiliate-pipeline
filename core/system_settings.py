@@ -17,14 +17,15 @@ from .db import audit, now
 PUBLISH_WORKER_ENABLED = "publish_worker_enabled"
 SEEDING_GLOBAL_PAUSED = "seeding_global_paused"
 CONTENT_ENGINE_V2_ENABLED = "content_engine_v2_enabled"
+CONTENT_GUARDS_DISABLED = "content_guards_disabled"
 
-# Giá trị các khoá này không nhạy cảm (chỉ "0"/"1") -- ghi thật vào audit
-# thay vì "[redacted]" để vận hành viên xem lịch sử bật/tắt trực tiếp từ
-# audit_log mà không cần tra thêm.
+# Giá trị các khoá này không nhạy cảm -- ghi thật vào audit thay vì "[redacted]"
+# để vận hành viên xem lịch sử bật/tắt trực tiếp từ audit_log.
 _UNREDACTED_KEYS = {
     PUBLISH_WORKER_ENABLED,
     SEEDING_GLOBAL_PAUSED,
     CONTENT_ENGINE_V2_ENABLED,
+    CONTENT_GUARDS_DISABLED,
 }
 
 
@@ -63,6 +64,36 @@ def set_seeding_global_paused(conn, paused: bool, actor: str = "operator") -> No
 
 def is_content_engine_v2_enabled(conn) -> bool:
     return get_system_setting(conn, CONTENT_ENGINE_V2_ENABLED, "0") == "1"
+
+
+def content_guards_disabled(conn=None) -> bool:
+    """Công tắc BỎ RÀO CHẾN NỘI DUNG (quyết định vận hành 2026-08, operator
+    tự chịu trách nhiệm pháp lý về nội dung đăng).
+
+    Khi bật (=1): bỏ kiểm tra cam kết công dụng, từ tuyệt đối hoá, cụm cấm
+    theo ngách, bịa trải nghiệm, social proof, urgency... ở content.validate()
+    và reviewer _safe_rewrite. GIỮ NGUYÊN hai rào kỹ thuật: caption phải còn
+    link affiliate và không vượt giới hạn ký tự của nền tảng.
+
+    Không có conn thì tự mở connection đọc. Lỗi CSDL (chưa migrate/bảng chưa
+    có) -> coi như CHƯA tắt rào (fail-safe giữ bảo vệ).
+    """
+    import sqlite3
+
+    def _read(c) -> bool:
+        try:
+            return get_system_setting(c, CONTENT_GUARDS_DISABLED, "0") == "1"
+        except sqlite3.OperationalError:
+            return False
+
+    if conn is not None:
+        return _read(conn)
+    from .db import connect
+    conn = connect()
+    try:
+        return _read(conn)
+    finally:
+        conn.close()
 
 
 # Alias tương thích ngược -- toàn bộ core/pipeline.py, web/server.py (regenerate

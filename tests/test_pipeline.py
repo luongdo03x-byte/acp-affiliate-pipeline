@@ -138,8 +138,33 @@ def test_caption_tone():
                   "\n\nđang bán" not in low, caption)
             check(f"template {code} qua được validate()",
                   content.validate(caption) == [], content.validate(caption))
-    check("_social_proof dùng 'người mua rồi' chứ không phải 'đã bán ... lượt'",
-          "người mua rồi" in content._social_proof(product_with_social).lower())
+    check("_social_proof bỏ lượt mua, chỉ giữ điểm đánh giá khi đủ mẫu",
+          "người mua" not in content._social_proof(product_with_social).lower()
+          and "đánh giá 4.8/5" in content._social_proof(product_with_social))
+    check("_social_proof trả rỗng khi không đủ review",
+          content._social_proof(product_no_social) == "")
+    # Chính sách giá theo SẢN PHẨM (không tung xu mù):
+    cheap_deal = {"id": "p-cheap", "current_price": 29000, "original_price": 58000,
+                  "category_code": "gia-dung"}
+    pricey_feature = {"id": "p-dear", "current_price": 2450000, "original_price": None,
+                      "category_code": "me-va-be"}
+    check("món rẻ + deal sâu -> trọng số nhắc giá cao",
+          content.price_lead_weight(cheap_deal) >= 0.8,
+          content.price_lead_weight(cheap_deal))
+    check("đồ đắt + danh mục feature-led -> trọng số nhắc giá thấp",
+          content.price_lead_weight(pricey_feature) <= 0.4,
+          content.price_lead_weight(pricey_feature))
+    check("trọng số luôn kẹp trong [0.2, 0.85]",
+          all(0.2 <= content.price_lead_weight(p) <= 0.85
+              for p in (cheap_deal, pricey_feature,
+                        dict(cheap_deal, current_price=500000, original_price=None))))
+    check("món đắt hầu như không dẫn giá, món rẻ gần như luôn dẫn (rng cố định)",
+          sum(content._include_price("price_drop", pricey_feature,
+                                     random.Random(s), 0.0)
+              for s in range(20)) <= 8
+          and sum(content._include_price("price_drop", cheap_deal,
+                                         random.Random(s), 0.0)
+                  for s in range(20)) >= 14)
 
 
 def test_strip_shop_suffix():

@@ -238,6 +238,20 @@ class ReviewerCaptionV2Tests(unittest.TestCase):
         self.assertTrue("118,7k" in caption or "118.700đ" in caption)
         self.assertNotIn("40k", caption.lower())
 
+    def test_expensive_feature_product_draft_omits_price(self):
+        # Đồ đắt + danh mục feature-led (weight bị kéo về 0.2): bản nháp KHÔNG
+        # được chứa giá -- cả đường không-LLM lẫn prompt gửi cho LLM.
+        pricey = _product(current_price=2_450_000,
+                          name="Giường cột gỗ tự nhiên cho bé 120x60",
+                          sold_count=0)
+        content.set_llm(None)
+        caption = content.generate(
+            pricey, "spec_highlight", AFFILIATE, hook_code="H5_XAHOI",
+        )
+        self.assertNotIn("2.450.000", caption)
+        self.assertNotIn("2,45", caption.lower())
+        self.assertIn(AFFILIATE, caption)
+
     def test_non_shopee_product_keeps_legacy_generation_path(self):
         product = _product(
             provider="LEGACY", name="Tai nghe kiểm thử legacy",

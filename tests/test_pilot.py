@@ -469,8 +469,11 @@ def test_playbook_hooks_and_cta():
                   content.validate(f"{text}\n\n{playbook.CTA_LIBRARY[0]}\nhttps://x.test/y\n\n"
                                     f"{content.DISCLOSURE_DEFAULT}") == [],
                   text)
-    check("H5 dùng số liệu kiểu 'người mua rồi' chứ không phải 'đã bán ... lượt'",
-          "người mua rồi" in playbook.render_hook("H5_XAHOI", social_product, 0).lower())
+    check("H5 bỏ lượt mua, chỉ dùng điểm đánh giá khi đủ mẫu",
+          "người mua" not in playbook.render_hook("H5_XAHOI", social_product, 0).lower()
+          and "4.8/5" in playbook.render_hook("H5_XAHOI", social_product, 0))
+    check("CTA thư viện không còn cụm urgency 'chốt đơn trước khi hết hàng'",
+          all("hết hàng" not in cta.lower() for cta in playbook.CTA_LIBRARY))
 
 
 def test_content_post_type():

@@ -266,6 +266,40 @@ def cancel_plan(conn, plan_id: str, actor: str = "operator") -> dict:
     return dict(_plan(conn, plan["id"]))
 
 
+def cancel_all_pending(conn, actor: str = "operator") -> dict:
+    """Cancel every Auto plan that has not started publishing.
+
+    RUNNING/PUBLISHING is deliberately excluded: cancelling a target already
+    claimed by a worker cannot reliably stop the external publish request.
+    """
+    rows = conn.execute(
+        """SELECT ap.id
+           FROM auto_post_plan ap
+           JOIN publish_target pt ON pt.id=ap.publish_target_id
+           WHERE ap.state IN ('PLANNED','READY','REGENERATING')
+             AND pt.status IN ('SCHEDULED','PENDING')
+             AND pt.external_post_id IS NULL
+           ORDER BY ap.scheduled_at, ap.id"""
+    ).fetchall()
+    cancelled = 0
+    skipped = 0
+    for row in rows:
+        try:
+            cancel_plan(conn, row["id"], actor=actor)
+            cancelled += 1
+        except ValueError:
+            skipped += 1
+    running = conn.execute(
+        """SELECT COUNT(*) FROM auto_post_plan ap
+           JOIN publish_target pt ON pt.id=ap.publish_target_id
+           WHERE (ap.state='PUBLISHING' OR pt.status='RUNNING')
+             AND pt.external_post_id IS NULL"""
+    ).fetchone()[0]
+    audit(conn, "auto_post_plan", "bulk-cancel", "bulk_cancelled", actor=actor,
+          detail={"cancelled": cancelled, "skipped": skipped, "running": running})
+    return {"cancelled": cancelled, "skipped": skipped, "running": running}
+
+
 def _money_tokens(value) -> set[str]:
     try:
         number = int(value)

@@ -29,10 +29,11 @@ from ..adapters.shopee_affiliate import (
     AffiliateImportError, ConfirmedProductInput, ManualShopeeSource,
     ProductMetadata, ResolvedAffiliateUrl, metadata_state,
 )
-from ..core import attribution, auto_scheduler, content, helper_pairing, jobs, media_library, pipeline, scoring, storage
+from ..core import attribution, auto_scheduler, content, helper_pairing, jobs, llm_openai, media_library, openai_settings, pipeline, prompt_template, scoring, storage
 from ..core import connections
 from ..core import content_checker, content_engine, content_facts, content_hook, content_platform, content_scoring, content_variant
 from ..core.db import connect, now
+from ..core import system_settings
 from ..core.system_settings import PUBLISH_WORKER_ENABLED, publish_worker_enabled, set_system_setting
 from ..core.products import ProductFilters, ProductService, SyncAlreadyRunning
 from .threads_oauth import register_threads_channel_oauth_routes
@@ -878,6 +879,7 @@ def create_app():
                         pipeline.audit(conn, "channel", cid, "updated_automation",
                                        actor="operator", detail=audit_detail)
         rows = []
+        pool_cache = {}
         for ch in conn.execute("SELECT * FROM channel ORDER BY platform, code").fetchall():
             nl = pipeline.channel_niches(conn, ch["id"])
             posting_slots = []
@@ -886,10 +888,15 @@ def create_app():
                     posting_slots = json.loads(ch["posting_slots"] or "[]")
                 except (TypeError, ValueError):
                     posting_slots = []
+            # Chấm điểm toàn kho tốn ~50ms/lần; nhiều kênh thường dùng chung
+            # một bộ ngách nên tính MỖI BỘ NICHE DUY NHẤT một lần trong request.
+            niche_key = tuple(sorted(nl))
+            if niche_key not in pool_cache:
+                pool_cache[niche_key] = len(scoring.score_candidates(conn, limit=9999, niches=nl))
             rows.append(dict(ch, niches=nl, posting_slots_list=posting_slots,
                              posting_slots_text="\n".join(posting_slots),
                              daily_post_cap_input_max=max(3, int(ch["daily_post_cap"] or 3)),
-                             pool=len(scoring.score_candidates(conn, limit=9999, niches=nl)),
+                             pool=pool_cache[niche_key],
                              published=conn.execute(
                                  "SELECT COUNT(*) FROM post WHERE channel_id=? AND status='PUBLISHED'",
                                  (ch["id"],)).fetchone()[0]))
@@ -1013,6 +1020,14 @@ def create_app():
             # tuyệt đối không được làm cả trang 500.
             for r in rows:
                 r["variants"] = []
+        try:
+            _attach_slot_suggestions(conn, rows)
+        except Exception:
+            # Gợi ý giờ đăng chỉ là tiện ích -- hỏng thì ô "Tự chọn" vẫn hoạt
+            # động khi submit (tính lại tại thời điểm duyệt), không được làm
+            # cả trang /duyet 500.
+            for r in rows:
+                r["slot_suggestions"] = {}
         recent = [dict(r) for r in conn.execute("""
             SELECT p.id, p.status, p.scheduled_at, p.published_at, pr.name AS product_name
             FROM post p LEFT JOIN product pr ON pr.id = p.product_id
@@ -1057,6 +1072,38 @@ def create_app():
                     "violations": [v["message"] for v in content_checker.check_variant_rules(variant_obj)],
                 })
 
+    def _attach_slot_suggestions(conn, rows):
+        """Gắn rows[i]["slot_suggestions"] = {channel_id: gợi ý giờ đăng} để
+        hiển thị ở ô "Tự chọn khung giờ hot". Tính theo đúng thuật toán sẽ
+        chạy khi submit (auto_scheduler.suggest_review_slot) nhưng CHỈ để
+        xem trước; giờ thật được tính lại tại thời điểm bấm duyệt -- luôn
+        tính từ "bây giờ", không bao giờ đề xuất thời điểm đã qua."""
+        for r in rows:
+            suggestions = {}
+            seen = set()
+            for sel in r["selected_channels"]:
+                if sel["id"] in seen:
+                    continue
+                seen.add(sel["id"])
+                sug = auto_scheduler.suggest_review_slot(conn, sel["id"])
+                if sug:
+                    suggestions[sel["id"]] = sug
+            r["slot_suggestions"] = suggestions
+
+    @app.post("/duyet/reject-all")
+    def review_reject_all():
+        conn = connect()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM post WHERE status IN ('PENDING_REVIEW','DRAFT') ORDER BY id"
+            ).fetchall()
+            with pipeline.transaction(conn):
+                for row in rows:
+                    pipeline.reject_post(conn, row["id"], "Bỏ qua hàng loạt", "operator")
+        finally:
+            conn.close()
+        return redirect(url_for("review", message=f"Đã bỏ qua {len(rows)} bài chờ duyệt."))
+
     @app.route("/duyet/<post_id>/<action>", methods=["POST"])
     def review_action(post_id, action):
         conn = connect()
@@ -1077,6 +1124,19 @@ def create_app():
                     conn.close()
                     return redirect(url_for("review", err="Giờ đăng không hợp lệ"))
             channel_ids = request.form.getlist("channel_ids")
+            slots_by_channel = None
+            if not scheduled_at and request.form.get("auto_pick_time") == "1":
+                # Operator không nhập giờ và chọn "Tự chọn khung giờ hot":
+                # tính RIÊNG cho từng kênh tại đúng thời điểm duyệt -- ưu tiên
+                # khung giờ xem cao, cách lịch autoPosting đã có của kênh tối
+                # thiểu 5 giờ, trần 3 bài/ngày/kênh. Kênh nào hết chỗ thì rơi
+                # về hành vi cũ (_next_slot giãn theo min_gap_minutes).
+                slots_by_channel = {}
+                for cid in channel_ids:
+                    sug = auto_scheduler.suggest_review_slot(conn, cid)
+                    if sug:
+                        slots_by_channel[cid] = sug["slot"]
+                slots_by_channel = slots_by_channel or None
             if not channel_ids:
                 # Checklist rỗng nghĩa là operator bỏ tích hết -- CHẶN, không
                 # được âm thầm rơi về fallback 1-kênh của approve_post() (đó
@@ -1098,7 +1158,8 @@ def create_app():
                                             caption_facebook=request.form.get("caption_facebook"),
                                             caption_instagram=request.form.get("caption_instagram"),
                                             caption_overrides=caption_overrides or None,
-                                            scheduled_at=scheduled_at)
+                                            scheduled_at=scheduled_at,
+                                            slots_by_channel=slots_by_channel)
         elif action == "reject":
             res = pipeline.reject_post(conn, post_id, request.form.get("reason") or "Không phù hợp", "operator")
         elif action in ("doi-hook", "lam-lai", "doi-angle"):
@@ -1226,22 +1287,80 @@ def create_app():
         conn = connect()
         weights, filters = scoring.active_config(conn)
         saved = None
+        prompt_saved = None
+        openai_notice = None
+        openai_error = None
         if request.method == "POST":
-            for k in weights:
-                if k in request.form:
-                    weights[k] = float(request.form[k])
-            for k in ("min_rating", "min_commission_value", "cooldown_days",
-                      "min_review_count", "max_per_category_per_day"):
-                if k in request.form:
-                    val = request.form[k]
-                    filters[k] = float(val) if k == "min_rating" else int(val)
-            saved = scoring.save_config(conn, weights, filters, note="chỉnh từ giao diện")
+            # Các form độc lập trên cùng trang: phân biệt bằng field đặc trưng.
+            if "openai_action" in request.form:
+                action = request.form.get("openai_action")
+                try:
+                    if action == "clear":
+                        openai_settings.clear_key(conn, actor="operator")
+                        openai_notice = "Đã xoá API key lưu trong ACP."
+                    else:
+                        api_key = (request.form.get("openai_api_key") or "").strip()
+                        if api_key and (not api_key.startswith("sk-") or len(api_key) < 20):
+                            raise ValueError("API key không đúng định dạng OpenAI (phải bắt đầu bằng sk-).")
+                        openai_settings.save(
+                            conn,
+                            api_key,
+                            request.form.get("openai_model"),
+                            actor="operator",
+                        )
+                        # Có hiệu lực ngay trong process hiện tại, không cần restart.
+                        content.set_llm(factory.get_caption_llm())
+                        openai_notice = "Đã lưu cấu hình OpenAI bằng mã hóa."
+                        if action == "save_test":
+                            llm_openai.rewrite("Chỉ trả về đúng chữ OK")
+                            openai_notice += " Kiểm tra kết nối thành công."
+                except (RuntimeError, ValueError) as error:
+                    openai_error = str(error)
+            elif "toggle_guards" in request.form:
+                value = "1" if request.form.get("toggle_guards") == "1" else "0"
+                set_system_setting(conn, system_settings.CONTENT_GUARDS_DISABLED,
+                                   value, actor="operator")
+                prompt_saved = ("Đã BẬT chế độ bỏ rào chắn nội dung -- caption không "
+                                "bị lọc cụm cấm/bịa trải nghiệm nữa (link vẫn bắt buộc)."
+                                if value == "1" else
+                                "Đã TẮT chế độ bỏ rào chắn -- khôi phục kiểm tra nội dung.")
+            elif "prompt_template" in request.form:
+                text = (request.form.get("prompt_template") or "").strip()
+                if text:
+                    set_system_setting(conn, prompt_template.CAPTION_PROMPT_KEY,
+                                       text, actor="operator")
+                    prompt_saved = "Đã lưu prompt chung. Caption sinh sau sẽ dùng prompt này."
+                else:
+                    prompt_template.clear_custom_template(conn, actor="operator")
+                    prompt_saved = "Đã xoá prompt chung -- quay về prompt mặc định của hệ thống."
+            else:
+                for k in weights:
+                    if k in request.form:
+                        weights[k] = float(request.form[k])
+                for k in ("min_rating", "min_commission_value", "cooldown_days",
+                          "min_review_count", "max_per_category_per_day"):
+                    if k in request.form:
+                        val = request.form[k]
+                        filters[k] = float(val) if k == "min_rating" else int(val)
+                saved = scoring.save_config(conn, weights, filters, note="chỉnh từ giao diện")
+        custom_prompt = prompt_template.get_custom_template(conn)
+        guards_off = system_settings.content_guards_disabled(conn)
+        openai_key_saved = openai_settings.has_saved_key(conn)
+        openai_env_available = bool(os.environ.get("ACP_OPENAI_API_KEY"))
+        openai_model = openai_settings.get_model(conn)
+        prompt_placeholder = ("Viết caption Threads cho sản phẩm dưới đây... (dùng các token: "
+                              "{{DRAFT}} {{TEN}} {{GIA}} {{GIAM}} {{DANH_MUC}} {{MOTA}} {{LINK}})")
         preview = scoring.score_candidates(conn, limit=999, explain=True)
         conn.close()
         return render_template("scoring.html", page="cham-diem", weights=weights, filters=filters,
                                saved=saved, passed=[p for p in preview if not p["rejected"]][:20],
                                rejected=[p for p in preview if p["rejected"]][:10],
-                               total=len(preview))
+                               total=len(preview), custom_prompt=custom_prompt or "",
+                               prompt_saved=prompt_saved, prompt_placeholder=prompt_placeholder,
+                               guards_off=guards_off, openai_models=openai_settings.MODELS,
+                               openai_model=openai_model, openai_key_saved=openai_key_saved,
+                               openai_env_available=openai_env_available,
+                               openai_notice=openai_notice, openai_error=openai_error)
 
     # ------------------------------------------------- postback (công khai)
 

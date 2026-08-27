@@ -3,10 +3,17 @@
 {% block content %}
 <div class="page-header">
   <div><div class="eyebrow">Human review gate</div><h1>Chờ duyệt</h1><p class="lede">Kiểm tra ảnh, caption và link trước khi bài được lên lịch. Đây là chốt người duyệt duy nhất của pipeline.</p></div>
-  <a class="btn btn--ghost" href="/sanpham">Tạo bài mới</a>
+  <div class="form-actions">
+    {% if posts %}<form method="post" action="/duyet/reject-all" onsubmit="return confirm('Bỏ qua TẤT CẢ {{ posts|length }} bài đang chờ duyệt?');">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button class="btn btn--danger" type="submit">Bỏ qua tất cả</button>
+    </form>{% endif %}
+    <a class="btn btn--ghost" href="/sanpham">Tạo bài mới</a>
+  </div>
 </div>
 
 {% if request.args.get('err') %}<div class="alert alert--error"><strong>Không duyệt được.</strong><span>{{ request.args.get('err') }}</span></div>{% endif %}
+{% if request.args.get('message') %}<div class="alert alert--success"><strong>Đã xử lý.</strong><span>{{ request.args.get('message') }}</span></div>{% endif %}
 {% if not posts %}<div class="empty-state">Không còn bài chờ duyệt.</div>{% endif %}
 
 <div class="review-list">
@@ -73,7 +80,22 @@
     <form method="post" action="/duyet/{{ p.id }}/approve">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <div class="field"><label for="caption-{{ p.id }}">Caption (gốc)</label><textarea id="caption-{{ p.id }}" name="caption" rows="7" maxlength="500">{{ p.caption_final }}</textarea></div>
-      <div class="field"><label for="scheduled-{{ p.id }}">Giờ đăng (bỏ trống thì mỗi kênh tự chọn slot gần nhất)</label><input type="datetime-local" id="scheduled-{{ p.id }}" name="scheduled_at"></div>
+      <div class="field">
+        <label for="scheduled-{{ p.id }}">Giờ đăng</label>
+        <div class="auto-time-row">
+          <label class="niche-tile auto-time-toggle">
+            <input type="checkbox" id="auto-pick-{{ p.id }}" name="auto_pick_time" value="1" checked
+                   onchange="acpToggleAutoTime(this, '{{ p.id }}')">
+            <span>Tự chọn khung giờ hot<small>giờ xem cao · cách nhau ≥ 5h cùng kênh · tối đa 3 bài/ngày/kênh · né lịch Auto đã có</small></span>
+          </label>
+          <input type="datetime-local" id="scheduled-{{ p.id }}" name="scheduled_at"
+                 onchange="acpManualTimeChanged(this, '{{ p.id }}')">
+        </div>
+        {% set sugs = p.slot_suggestions or {} %}
+        {% for sel in p.selected_channels %}{% set sug = sugs.get(sel.id) %}
+        {% if sug %}<small class="note">↳ {{ platform_labels[sel.platform] }} {{ sel.handle }}: sẽ đăng {{ sug.label_local }}{{ ' (khung giờ hot)' if sug.hot else '' }} giờ VN</small>{% endif %}
+        {% endfor %}
+      </div>
       {% set platforms = p.selected_channels | map(attribute='platform') | unique | list %}
       {% if 'facebook' in platforms %}
       <div class="field"><label for="caption-fb-{{ p.id }}">Caption riêng cho Facebook (để trống = dùng caption gốc)</label>
@@ -126,6 +148,24 @@ function acpUseVariant(postId, captionByPlatform) {
       var el = document.getElementById(mapping[platform]);
       if (el) el.value = captionByPlatform[platform];
     }
+  }
+}
+
+// Giờ đăng: tick "Tự chọn" thì xoá giờ nhập tay; ngược lại, operator gõ giờ
+// tay là muốn quyết định tuyệt đối -> tự bỏ tick để submit đi đường cũ
+// (một giờ cho mọi kênh). Server vẫn ưu tiên giờ nhập tay hơn auto.
+function acpToggleAutoTime(box, postId) {
+  var input = document.getElementById("scheduled-" + postId);
+  if (box.checked) {
+    if (input) input.value = "";
+  } else if (input) {
+    input.focus();
+  }
+}
+function acpManualTimeChanged(input, postId) {
+  if (input.value) {
+    var box = document.getElementById("auto-pick-" + postId);
+    if (box && box.checked) box.checked = false;
   }
 }
 </script>

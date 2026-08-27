@@ -7,7 +7,13 @@
     <h1>Auto Posting</h1>
     <p class="lede">ACP vẫn tự tạo và tự đăng. Trang này cho biết trước account nào sẽ đăng lúc nào, dùng sản phẩm/ảnh/caption nào và cho phép can thiệp trước khi worker chạy.</p>
   </div>
-  <a class="btn btn--ghost" href="/vanhanh">Vận hành kỹ thuật</a>
+  <div class="form-actions">
+    {% if counts.total %}<form method="post" action="{{ url_for('auto_posting.cancel_all') }}" onsubmit="return confirm('Hủy TOÀN BỘ bài Auto Posting chưa publish? Các bài đã đăng và bài worker đang xử lý sẽ không bị đụng tới.');">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button class="btn btn--danger" type="submit">Hủy toàn bộ Auto Posting</button>
+    </form>{% endif %}
+    <a class="btn btn--ghost" href="/vanhanh">Vận hành kỹ thuật</a>
+  </div>
 </div>
 
 {% if err %}<div class="alert alert--error"><strong>Không thực hiện được.</strong><span>{{ err }}</span></div>{% endif %}
@@ -152,18 +158,9 @@
         </form>
       </details>
 
-      <details class="auto-plan-action">
+      <details class="auto-plan-action auto-replacements" data-endpoint="/auto-posting/{{ plan.id }}/replacements">
         <summary>Đổi sản phẩm</summary>
-        {% if plan.replacement_candidates %}
-        <form method="post" action="/auto-posting/{{ plan.id }}/product">
-          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-          <select name="product_id" required>
-            <option value="">Chọn sản phẩm đủ điều kiện</option>
-            {% for candidate in plan.replacement_candidates %}<option value="{{ candidate.id }}">{{ candidate.name }} · {{ candidate.current_price|vnd }}</option>{% endfor %}
-          </select>
-          <button class="btn btn--small btn--primary" type="submit">Thay & tạo lại nội dung</button>
-        </form>
-        {% else %}<p class="note">Hiện chưa có sản phẩm thay thế đủ điều kiện cho slot này.</p>{% endif %}
+        <div class="replacement-slot"><p class="note">Mở mục này để tải sản phẩm thay thế đủ điều kiện.</p></div>
       </details>
 
       <form method="post" action="/auto-posting/{{ plan.id }}/cancel" onsubmit="return confirm('Hủy plan này? Bài sẽ không được publish ở slot hiện tại.');">
@@ -180,4 +177,36 @@
 {% if not groups %}
 <div class="empty-state">Chưa có Auto plan cho hôm nay + ngày mai. Bật Auto cho account phía trên rồi bấm “Lấp lịch hôm nay + ngày mai”; scheduler cũng sẽ tiếp tục tự lấp lịch theo timer hiện có.</div>
 {% endif %}
+
+<script>
+// "Đổi sản phẩm" tải danh sách ứng viên ĐÚNG LÚC mở ra (lazy) -- trang mở
+// nhanh hơn và dropdown luôn theo dữ liệu mới nhất thay vì lúc render trang.
+function acpLoadReplacements(det) {
+  var slot = det.querySelector('.replacement-slot');
+  var endpoint = det.getAttribute('data-endpoint');
+  if (!slot || !endpoint) return;
+  slot.innerHTML = '<p class="note">Đang tìm sản phẩm thay thế…</p>';
+  fetch(endpoint, { headers: { 'Accept': 'text/html' } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then(function (html) {
+      det.dataset.loaded = '1';
+      slot.innerHTML = html;
+    })
+    .catch(function () {
+      det.dataset.loaded = '0';
+      slot.innerHTML = '<p class="note">Không tải được danh sách. <a href="#" data-retry>Thử lại</a>.</p>';
+      var retry = slot.querySelector('[data-retry]');
+      if (retry) retry.addEventListener('click', function (e) {
+        e.preventDefault();
+        acpLoadReplacements(det);
+      });
+    });
+}
+document.querySelectorAll('details.auto-replacements').forEach(function (det) {
+  det.addEventListener('toggle', function () {
+    if (!det.open || det.dataset.loaded === '1') return;
+    acpLoadReplacements(det);
+  });
+});
+</script>
 {% endblock %}

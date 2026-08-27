@@ -96,7 +96,8 @@ def _build_body_prompt(angle: str, hook: str, structure: str, facts) -> str:
         '{"main_message": "1 câu ý chính", "body": ["điểm phụ 1", "điểm phụ 2"]}\n\n'
         "RÀNG BUỘC:\n"
         "- main_message là MỘT ý chính duy nhất, không lan sang nhiều lợi ích.\n"
-        "- body tối đa 2 điểm phụ, mỗi điểm ngắn.\n"
+        "- body tối đa 2 điểm phụ, mỗi điểm ngắn, giọng văn nói tự nhiên như "
+        "nhắn tin cho một người bạn -- không khẩu hiệu quảng cáo.\n"
         "- Không lặp nguyên văn hook đã có.\n"
         "- Chỉ dùng thông tin có trong fact liệt kê dưới đây, không bịa thêm.\n"
         "- Không mở đầu chung chung (vd sản phẩm này, đây là).\n\n"

@@ -134,6 +134,58 @@ class AutoPostingJobControlsTests(unittest.TestCase):
         fill.assert_called_once()
         drain.assert_not_called()
 
+    def test_run_scheduler_surfaces_custom_caption_failure(self):
+        from acp.core import reviewer_caption
+
+        with mock.patch(
+            "acp.web.auto_posting.pipeline.fill_auto_schedule",
+            side_effect=reviewer_caption.CaptionRewriteError("LLM failed"),
+        ):
+            response = self.client.post(
+                "/auto-posting/run-scheduler",
+                data={"_csrf": self.csrf},
+                follow_redirects=False,
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("caption", response.headers["Location"])
+
+    def test_scoring_page_saves_openai_key_encrypted_and_never_renders_it(self):
+        from acp.core import openai_settings
+
+        api_key = "sk-test-client-key-1234567890"
+        with mock.patch("acp.web.server.llm_openai.rewrite", return_value="OK"):
+            response = self.client.post(
+                "/chamdiem",
+                data={
+                    "_csrf": self.csrf,
+                    "openai_action": "save_test",
+                    "openai_api_key": api_key,
+                    "openai_model": "gpt-4o-mini",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        row = self.conn.execute(
+            "SELECT value FROM system_setting WHERE key=?",
+            (openai_settings.API_KEY_SETTING,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertNotIn(api_key, row["value"])
+        self.assertEqual(openai_settings.get_api_key(self.conn), api_key)
+        self.assertNotIn(api_key, response.data.decode("utf-8"))
+
+    def test_scoring_page_rejects_unknown_openai_model(self):
+        response = self.client.post(
+            "/chamdiem",
+            data={
+                "_csrf": self.csrf,
+                "openai_action": "save",
+                "openai_api_key": "sk-test-client-key-1234567890",
+                "openai_model": "made-up-model",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("không được hỗ trợ", response.data.decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

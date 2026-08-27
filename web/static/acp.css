@@ -309,6 +309,10 @@ select { color-scheme: dark; }
 .review-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 9px; }
 .review-actions__buttons { display: flex; gap: 8px; }
 
+.auto-time-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.auto-time-toggle { min-height: 48px; max-width: 460px; }
+.auto-time-row input[type="datetime-local"] { flex: 0 0 auto; width: auto; }
+
 .channel-list { display: grid; gap: 14px; }
 .channel-card { padding: 18px; }
 .channel-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 15px; }
@@ -320,6 +324,27 @@ select { color-scheme: dark; }
 .niche-tile:has(input:checked) { border-color: rgba(139,92,246,.48); background: var(--accent-soft); }
 .niche-tile small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 9.5px; }
 .channel-card__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+
+.channel-fold { padding: 0; }
+.channel-fold__bar { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 18px; }
+.channel-fold__toggle {
+  flex: 0 0 auto;
+  display: grid; place-items: center;
+  width: 30px; height: 30px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: rgba(2, 8, 23, .24);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.channel-fold__toggle:hover { color: #fff; border-color: rgba(139, 92, 246, .45); background: var(--accent-soft); }
+.channel-fold__toggle:focus-visible { outline-offset: 1px; }
+.channel-fold__toggle .chev { font-size: 13px; line-height: 1; transition: transform .14s ease; }
+.channel-fold.is-open .channel-fold__toggle .chev { transform: rotate(90deg); }
+.channel-fold__title { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.channel-fold__title .channel-card__title { font-size: 15px; }
+.channel-fold__body { padding: 15px 18px 18px; border-top: 1px solid var(--border); }
+.channel-fold__body[hidden] { display: none; }
 
 .range-row { display: grid; grid-template-columns: 1fr 60px; gap: 12px; align-items: center; margin-top: 14px; }
 .range-label { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--text-secondary); font-size: 11px; }
@@ -374,6 +399,8 @@ select { color-scheme: dark; }
   .review-card { grid-template-columns: 1fr; }
   .review-card__image { width: min(100%, 320px); margin-inline: auto; }
   .review-actions, .channel-card__head, .channel-card__foot { align-items: stretch; flex-direction: column; }
+  .channel-fold__bar { align-items: flex-start; }
+  .channel-fold__toggle { margin-top: 2px; }
   .channel-meta { justify-content: flex-start; }
   .review-actions__buttons { width: 100%; }
   .review-actions__buttons .btn, .review-actions__buttons button { flex: 1; }

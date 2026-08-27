@@ -26,15 +26,14 @@ def _get(product, key, default=""):
 
 
 def _social_bits(product) -> str:
-    sold = _get(product, "sold_count", 0) or 0
+    # Lượt mua bị bỏ khỏi social proof (quyết định vận hành 2026-08): đếm số
+    # "50.000 người mua rồi" là khuôn công nghiệp dễ bị lặp trên cả feed.
+    # Giữ duy nhất điểm đánh giá khi đủ mẫu làm tín hiệu chất lượng.
     rating = _get(product, "rating", 0) or 0
     reviews = _get(product, "review_count", 0) or 0
-    bits = []
-    if sold >= 100:
-        bits.append(f"{sold:,}".replace(",", ".") + " người mua rồi")
     if rating and reviews >= 20:
-        bits.append(f"đánh giá {rating:g}/5")
-    return ", ".join(bits)
+        return f"đánh giá {rating:g}/5"
+    return ""
 
 
 def _h_gia_giam(product, discount_pct):
@@ -48,7 +47,9 @@ def _h_so_sanh(product, discount_pct):
 
 
 def _h_khan_hiem(product, discount_pct):
-    return "Nhìn số lượng còn lại thì chắc không trụ lâu, ai cần thì cân nhắc sớm nhé."
+    # Không được bịa khan hiếm khi không có dữ liệu tồn kho -- giọng giữ ở mức
+    # "đáng cân nhắc sớm" thay vì "sắp hết".
+    return "Món này nhìn đi nhìn lại vẫn thấy đáng để ý, ai đang cần thì xem sớm nhé."
 
 
 def _h_cau_hoi(product, discount_pct):
@@ -97,7 +98,7 @@ CTA_LIBRARY = [
     "Ai cần thì bấm vào link bên dưới:",
     "Thông tin đầy đủ mình để ở link:",
     "Quan tâm thì xem thêm ở đây:",
-    "Chốt đơn trước khi hết hàng, link dưới:",
+    "Ai đang tìm món này thì lưu link nhé:",
 ]
 
 

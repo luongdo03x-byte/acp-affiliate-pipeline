@@ -48,18 +48,25 @@ def get_channel():
 
 def get_caption_llm():
     """Trả về fn(prompt)->str cho content.set_llm(), hoặc None nếu tắt.
-    ACP_CAPTION_LLM=gemini bật viết lại caption bằng Gemini free tier."""
+    ACP_CAPTION_LLM=gemini | openai -- chọn nhà cung cấp viết lại caption."""
     choice = (os.environ.get("ACP_CAPTION_LLM") or "").lower()
+    if not choice:
+        from ..core import openai_settings
+        if openai_settings.has_saved_key():
+            choice = "openai"
     if choice == "gemini":
         from ..core import llm_gemini
         return llm_gemini.rewrite
+    if choice in ("openai", "chatgpt"):
+        from ..core import llm_openai
+        return llm_openai.rewrite
     return None
 
 
 def get_seeding_llm():
     """Structured JSON LLM used by the Seeding multi-account planner.
 
-    Reuse ACP_CAPTION_LLM as the operator switch, but use Gemini JSON mode rather
+    Reuse ACP_CAPTION_LLM as the operator switch, but use JSON mode rather
     than the free-form caption rewrite callback because seeding_tasks expects an
     ``accounts[]`` JSON document.
     """
@@ -67,6 +74,9 @@ def get_seeding_llm():
     if choice == "gemini":
         from ..core import llm_gemini
         return llm_gemini.rewrite_json
+    if choice in ("openai", "chatgpt"):
+        from ..core import llm_openai
+        return llm_openai.rewrite_json
     return None
 
 
@@ -74,13 +84,16 @@ def get_content_engine_llm():
     """Trả về fn(prompt)->str cho 6 set_*() của Content Engine v2
     (core/content_facts.py, content_hook.py, content_variant.py,
     content_checker.py, content_scoring.py), hoặc None nếu tắt.
-    ACP_CONTENT_ENGINE_LLM=gemini bật -- CỜ RIÊNG, độc lập với
+    ACP_CONTENT_ENGINE_LLM=gemini|openai -- CỜ RIÊNG, độc lập với
     ACP_CAPTION_LLM (v1) vì khối lượng gọi khác hẳn nhau (~13 lần/bài
     so với 1 lần/bài của v1)."""
     choice = (os.environ.get("ACP_CONTENT_ENGINE_LLM") or "").lower()
     if choice == "gemini":
         from ..core import llm_gemini
         return llm_gemini.rewrite_json
+    if choice in ("openai", "chatgpt"):
+        from ..core import llm_openai
+        return llm_openai.rewrite_json
     return None
 
 

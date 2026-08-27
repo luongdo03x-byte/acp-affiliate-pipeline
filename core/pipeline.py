@@ -1256,11 +1256,14 @@ def _utc_iso(value: str) -> str:
 def approve_post(conn, post_id: str, actor: str = "operator", caption_override: str = None,
                   channel_ids: list = None, caption_facebook: str = None,
                   caption_instagram: str = None, caption_overrides: dict = None,
-                  scheduled_at: str = None, auto_scheduled: bool = False) -> dict:
-    """scheduled_at: giờ đăng do operator tự chọn (ISO 8601, có timezone). Bỏ
-    trống thì mỗi kênh tự tính slot riêng (_next_slot()). Mọi giá trị được
-    chấp nhận đều lưu UTC ISO để job_queue so sánh chuỗi với now() UTC đúng
-    thời điểm."""
+                  scheduled_at: str = None, slots_by_channel: dict = None,
+                  auto_scheduled: bool = False) -> dict:
+    """scheduled_at: giờ đăng do operator tự chọn (ISO 8601, có timezone), áp
+    dụng cho mọi kênh. slots_by_channel: {channel_id: ISO-UTC} -- giờ đề xuất
+    RIÊNG cho từng kênh (màn /duyet tự chọn khung giờ hot); kênh nào không có
+    trong dict thì rơi về _next_slot(). Ưu tiên scheduled_at > slots_by_channel
+    > _next_slot(). Mọi giá trị được chấp nhận đều lưu UTC ISO để job_queue so
+    sánh chuỗi với now() UTC đúng thời điểm."""
     post = conn.execute("SELECT * FROM post WHERE id=?", (post_id,)).fetchone()
     if not post:
         return {"ok": False, "error": "Không tìm thấy bài đăng"}
@@ -1315,7 +1318,16 @@ def approve_post(conn, post_id: str, actor: str = "operator", caption_override: 
             return {"ok": False, "error": "Giờ đăng không hợp lệ"}
         slots = {ch["id"]: scheduled_at for ch in channels}
     else:
-        slots = {ch["id"]: _utc_iso(_next_slot(conn, ch["id"])) for ch in channels}
+        proposed = slots_by_channel or {}
+        slots = {}
+        for ch in channels:
+            if ch["id"] in proposed:
+                try:
+                    slots[ch["id"]] = _utc_iso(proposed[ch["id"]])
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "Giờ đăng đề xuất không hợp lệ"}
+            else:
+                slots[ch["id"]] = _utc_iso(_next_slot(conn, ch["id"]))
     earliest = min(slots.values())
     conn.execute("""UPDATE post SET caption_final=?, status='SCHEDULED', scheduled_at=?,
                     reviewed_by=?, reviewed_at=?, reject_reason=NULL, updated_at=? WHERE id=?""",
@@ -1354,6 +1366,157 @@ def reject_post(conn, post_id: str, reason: str, actor: str = "operator") -> dic
                  (reason, actor, now(), now(), post_id))
     audit(conn, "post", post_id, "rejected", actor=actor, detail={"reason": reason})
     return {"ok": True}
+
+
+def regenerate_review_captions(conn, actor: str = "operator", dry_run: bool = False) -> dict:
+    """Sinh lại caption TẠI CHỖ cho các bài đang ở hàng chờ duyệt
+    (PENDING_REVIEW/DRAFT, có sản phẩm) theo cấu hình hiện hành -- dùng sau
+    khi đổi prompt chung / chính sách mà không cần reset lịch."""
+    rows = conn.execute("""SELECT id FROM post
+                           WHERE status IN ('PENDING_REVIEW','DRAFT')
+                             AND product_id IS NOT NULL""").fetchall()
+    summary = {"total": len(rows), "regenerated": 0, "kept_caption": 0}
+    if dry_run:
+        return summary
+    for r in rows:
+        post = conn.execute("SELECT * FROM post WHERE id=?", (r["id"],)).fetchone()
+        ok, _cap = _regenerate_pending_caption(conn, post)
+        summary["regenerated" if ok else "kept_caption"] += 1
+    if summary["total"]:
+        audit(conn, "post", "regen-captions", "captions_regenerated", actor=actor,
+              detail={"total": summary["total"], "regenerated": summary["regenerated"]})
+    return summary
+
+
+def _regenerate_pending_caption(conn, post) -> tuple[bool, str]:
+    """Sinh lại caption cho bài đang chờ duyệt theo CẤU HÌNH MỚI NHẤT
+    (chính sách giá theo sản phẩm, danh mục vừa backfill, LLM đang bật).
+    Trả (ok, caption). Không đạt validate thì giữ nguyên caption cũ -- caller
+    tự quyết định thông báo."""
+    product = None
+    if post["product_id"]:
+        product = conn.execute("SELECT * FROM product WHERE id=?", (post["product_id"],)).fetchone()
+    if not product:
+        return False, ""
+    template_row = None
+    if post["caption_template_id"]:
+        template_row = conn.execute("SELECT code FROM caption_template WHERE id=?",
+                                    (post["caption_template_id"],)).fetchone()
+    orig = product["original_price"] or 0
+    cur = product["current_price"] or 0
+    discount = max(0.0, (orig - cur) / orig) if orig > cur > 0 else 0.0
+    try:
+        caption = content.generate(dict(product), template_row["code"] if template_row else "price_drop",
+                                   post["affiliate_link"] or "", discount_pct=discount,
+                                   hook_code=post["variant_code"],
+                                   rng=random.Random(str(post["id"])))
+    except Exception:
+        return False, ""
+
+    sel_rows = conn.execute("SELECT channel_id FROM post_channel_selection WHERE post_id=?",
+                            (post["id"],)).fetchall()
+    channel_ids = [r[0] for r in sel_rows] or [post["channel_id"]]
+    platforms = {r[0] for r in conn.execute(
+        f"SELECT DISTINCT platform FROM channel WHERE id IN ({','.join('?' * len(channel_ids))})",
+        channel_ids)}
+    max_len = min(content.PLATFORM_MAX_LEN.get(p, content.MAX_LEN) for p in platforms) if platforms \
+        else content.MAX_LEN
+    problems = content.validate(caption, niches=_union_niches(conn, channel_ids),
+                                max_len=max_len, post_type=post["post_type"])
+    if problems:
+        return False, ""
+    stamp = now()
+    conn.execute("""UPDATE post SET caption_body=?, caption_final=?, updated_at=? WHERE id=?""",
+                 (caption, caption, stamp, post["id"]))
+    return True, caption
+
+
+def reset_scheduled_posts(conn, actor: str = "operator", regenerate: bool = True,
+                          dry_run: bool = False) -> dict:
+    """Đưa các bài ĐÃ LÊN LỊCH nhưng CHƯA ĐĂNG THẬT về hàng chờ duyệt.
+
+    Dùng khi operator muốn toàn bộ lịch hiện hữu nhận lại nội dung mới (đổi
+    chính sách caption / bật LLM / sửa danh mục...). An toàn theo 3 lớp:
+      - bỏ qua mọi post có ÍT NHẤT MỘT target đã SUCCESS (đăng thật rồi);
+      - target chưa đăng -> CANCELLED, job PUBLISH_POST READY -> DONE
+        (cùng ngữ nghĩa với auto_post_plans.cancel_plan);
+      - bài quay về PENDING_REVIEW => vẫn phải qua tay người ở /duyet,
+        không có đường tắt tự đăng lại.
+
+    regenerate=True: sinh lại caption theo cấu hình hiện hành; không đạt
+    validate thì giữ caption cũ. dry_run=True: chỉ đếm, không ghi.
+    """
+    stamp = now()
+    targets = conn.execute(f"""
+        SELECT pt.id AS target_id, pt.post_id, pt.auto_scheduled
+        FROM publish_target pt JOIN post p ON p.id = pt.post_id
+        WHERE pt.status IN ('SCHEDULED','PENDING')
+          AND pt.external_post_id IS NULL""").fetchall()
+    published_post_ids = {r[0] for r in conn.execute(
+        "SELECT DISTINCT post_id FROM publish_target WHERE status='SUCCESS'")}
+    by_post = {}
+    for t in targets:
+        if t["post_id"] not in published_post_ids:
+            by_post.setdefault(t["post_id"], []).append(t)
+
+    summary = {
+        "posts": len(by_post), "targets": sum(len(v) for v in by_post.values()),
+        "jobs": 0, "plans": 0, "regenerated": 0, "kept_caption": 0,
+        "skipped_already_published": len(published_post_ids), "value_posts": 0,
+    }
+    preview = []
+    for pid, ts in sorted(by_post.items()):
+        post = conn.execute("SELECT * FROM post WHERE id=?", (pid,)).fetchone()
+        label = post["product_id"] and (
+            conn.execute("SELECT name FROM product WHERE id=?", (post["product_id"],)).fetchone() or {"name": ""}
+        )["name"][:48] or f"[bài {post['post_type']}]"
+        will_regen = bool(regenerate and post["product_id"])
+        summary["jobs"] += conn.execute(
+            """SELECT COUNT(*) FROM job_queue
+               WHERE job_type='PUBLISH_POST' AND status='READY' AND payload LIKE ?""",
+            (f"%{pid}%",)).fetchone()[0]
+        summary["plans"] += conn.execute(
+            """SELECT COUNT(*) FROM auto_post_plan
+               WHERE state NOT IN ('CANCELLED','PUBLISHED') AND post_id=?""", (pid,)).fetchone()[0]
+        if not post["product_id"]:
+            summary["value_posts"] += 1
+        preview.append((label, will_regen))
+
+    if dry_run:
+        summary["preview"] = preview
+        return summary
+
+    with transaction(conn):
+        for pid, ts in by_post.items():
+            post = conn.execute("SELECT * FROM post WHERE id=?", (pid,)).fetchone()
+            for t in ts:
+                conn.execute(
+                    """UPDATE publish_target SET status='CANCELLED',
+                           last_error='reset_by_operator', updated_at=? WHERE id=?""",
+                    (stamp, t["target_id"]))
+                conn.execute(
+                    """UPDATE job_queue SET status='DONE', last_error='reset_by_operator',
+                           locked_at=NULL, locked_by=NULL, updated_at=?
+                       WHERE job_type='PUBLISH_POST' AND status='READY' AND payload LIKE ?""",
+                    (stamp, f"%{t['target_id']}%"))
+                conn.execute(
+                    """UPDATE auto_post_plan SET state='CANCELLED', updated_at=?
+                       WHERE publish_target_id=? AND state NOT IN ('CANCELLED','PUBLISHED')""",
+                    (stamp, t["target_id"]))
+            regenerated = False
+            if regenerate and post["product_id"]:
+                regenerated, _cap = _regenerate_pending_caption(conn, post)
+                summary["regenerated" if regenerated else "kept_caption"] += 1
+            conn.execute(
+                """UPDATE post SET status='PENDING_REVIEW', scheduled_at=NULL,
+                       reject_reason='reset_for_reapprove', reviewed_by=NULL,
+                       reviewed_at=NULL, updated_at=? WHERE id=?""",
+                (stamp, pid))
+        audit(conn, "post", "reset-scheduled", "reset_for_reapprove", actor=actor,
+              detail={"posts": summary["posts"], "targets": summary["targets"],
+                      "regenerated": summary["regenerated"],
+                      "kept_caption": summary["kept_caption"]})
+    return summary
 
 
 def retry_publish_target(conn, target_id: str, actor: str = "operator") -> dict:

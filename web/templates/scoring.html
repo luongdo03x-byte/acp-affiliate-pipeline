@@ -22,6 +22,55 @@
 <div class="form-actions"><button class="btn btn--primary" type="submit">Lưu phiên bản mới</button></div>
 </form>
 
+<div class="section-heading section-heading--spaced"><div><h2>Kết nối OpenAI</h2><p class="note">API key dùng riêng cho OpenAI API; ChatGPT Plus không bao gồm API credit.</p></div></div>
+{% if openai_notice %}<div class="alert alert--success"><strong>OpenAI.</strong><span>{{ openai_notice }}</span></div>{% endif %}
+{% if openai_error %}<div class="alert alert--danger"><strong>OpenAI lỗi.</strong><span>{{ openai_error }}</span></div>{% endif %}
+<form method="post" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <div class="grid2">
+    <div class="field"><label for="openai-api-key">OpenAI API key</label>
+      <input id="openai-api-key" type="password" name="openai_api_key" autocomplete="new-password" placeholder="{{ 'Đã lưu an toàn - để trống nếu không đổi' if openai_key_saved else 'sk-...' }}">
+      <p class="note">Key không được hiển thị lại và được mã hóa bằng khóa chủ ACP trước khi lưu.</p>
+    </div>
+    <div class="field"><label for="openai-model">Model viết caption</label>
+      <select id="openai-model" name="openai_model">
+        {% for model_id, model_label in openai_models %}<option value="{{ model_id }}" {{ 'selected' if model_id == openai_model }}>{{ model_label }}</option>{% endfor %}
+      </select>
+      <p class="note"><code>gpt-5.6-luna</code> phù hợp nhất cho caption số lượng lớn. Chọn <code>gpt-5.6-terra</code> nếu cần bám prompt và văn phong tốt hơn.</p>
+    </div>
+  </div>
+  <p class="note">Trạng thái: {% if openai_key_saved %}<strong>đang dùng key mã hóa lưu trong ACP</strong>{% elif openai_env_available %}<strong>đang dùng key từ .env.local</strong>{% else %}<strong>chưa có API key</strong>{% endif %}.</p>
+  <div class="form-actions">
+    <button class="btn btn--primary" type="submit" name="openai_action" value="save_test">Lưu và kiểm tra</button>
+    <button class="btn" type="submit" name="openai_action" value="save">Chỉ lưu</button>
+    {% if openai_key_saved %}<button class="btn btn--danger" type="submit" name="openai_action" value="clear">Xóa key đã lưu</button>{% endif %}
+  </div>
+</form>
+
+<div class="section-heading section-heading--spaced"><div><h2>Prompt caption (ChatGPT)</h2><p class="note">Prompt chung áp dụng cho MỌI caption sinh ra khi LLM bật. Để trống và lưu = quay về prompt mặc định của hệ thống.</p></div></div>
+{% if prompt_saved %}<div class="alert alert--success"><strong>Đã lưu.</strong><span>{{ prompt_saved }}</span></div>{% endif %}
+<form method="post" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <div class="field"><label for="prompt-template">Nội dung prompt của bạn</label>
+    <textarea id="prompt-template" name="prompt_template" rows="10" placeholder="{{ custom_prompt or prompt_placeholder }}">{{ custom_prompt }}</textarea></div>
+  <p class="note">Token thay dữ liệu thật: <code>{{ '{{DRAFT}}' }}</code> bản nháp đầy đủ · <code>{{ '{{TEN}}' }}</code> tên SP · <code>{{ '{{GIA}}' }}</code> giá · <code>{{ '{{GIAM}}' }}</code> % giảm thật · <code>{{ '{{DANH_MUC}}' }}</code> danh mục · <code>{{ '{{MOTA}}' }}</code> mô tả · <code>{{ '{{LINK}}' }}</code> link affiliate.</p>
+  <p class="note">Output vẫn bị chặn bởi rào chắn nội dung: thiếu link, bịa trải nghiệm, cụm cấm, số liệu ngoài dữ liệu → tự rơi về bản nháp an toàn.</p>
+  <div class="form-actions"><button class="btn btn--primary" type="submit">Lưu prompt</button></div>
+</form>
+
+<form method="post" class="card">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <div class="field">
+    <label class="niche-tile auto-time-toggle" style="max-width:none">
+      <input type="checkbox" name="toggle_guards_checkbox" {{ 'checked' if guards_off }}
+             onchange="this.form.toggle_guards.value = this.checked ? '1' : '0'">
+      <span>Bỏ rào chắn nội dung<small>cấm-công-dụng · từ-tuyệt-đối-hoá · bịa-trải-nghiệm · cụm-cấm-ngách · urgency — tắt hết. Link affiliate và giới hạn 500 ký tự vẫn giữ. Bạn tự chịu trách nhiệm nội dung đăng.</small></span>
+    </label>
+    <input type="hidden" name="toggle_guards" value="{{ '1' if guards_off else '0' }}">
+  </div>
+  <div class="form-actions"><button class="btn btn--primary" type="submit">{{ 'TẮT bỏ rào chắn (khôi phục kiểm tra)' if guards_off else 'BẬT bỏ rào chắn nội dung' }}</button></div>
+</form>
+
 <div class="section-heading section-heading--spaced"><div><h2>Xem trước</h2><p class="note">{{ passed|length }} sản phẩm đứng đầu trên tổng {{ total }}.</p></div></div>
 <div class="table-card"><div class="table-scroll"><table class="data-table"><thead><tr><th>Sản phẩm</th><th>Danh mục</th><th class="n">Giá</th><th class="n">Hoa hồng</th><th class="n">Điểm</th><th>Cấu thành</th></tr></thead><tbody>
 {% for s in passed %}<tr><td><strong>{{ s.product.name }}</strong></td><td class="dim">{{ s.product.category_code }}</td><td class="n dim">{{ s.product.current_price|vnd }}</td><td class="n money">{{ s.product.commission_value|vnd }}</td><td class="n">{{ '%.3f'|format(s.score) }}</td><td class="dim">{% for k, v in s.breakdown.items() %}{% if v > 0.01 %}{{ k }} {{ '%.2f'|format(v) }}{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}</td></tr>{% endfor %}

@@ -42,9 +42,13 @@
 <div class="section-heading section-heading--spaced"><div><h2>{{ platform|upper }}</h2></div></div>
 <div class="channel-list">
 {% for c in chs %}
-<section class="card channel-card">
-  <div class="channel-card__head">
-    <div><div class="channel-card__title">{{ c.username and ('@' + c.username) or c.handle }}</div><span class="mono-sub">{{ c.code }}{% if c.last_sync_at %} · đồng bộ {{ c.last_sync_at[:16]|replace('T',' ') }}{% endif %}</span></div>
+<section class="card channel-card channel-fold">
+  <div class="channel-fold__bar">
+    <button type="button" class="channel-fold__toggle" aria-expanded="false" aria-controls="chan-body-{{ c.id }}" title="Mở/thu gọn cấu hình"><span class="chev" aria-hidden="true">&#9656;</span></button>
+    <div class="channel-fold__title">
+      <div class="channel-card__title">{{ c.username and ('@' + c.username) or c.handle }}</div>
+      <span class="mono-sub">{{ c.code }}{% if c.last_sync_at %} · đồng bộ {{ c.last_sync_at[:16]|replace('T',' ') }}{% endif %}</span>
+    </div>
     <div class="channel-meta">
       <span class="tag {{ 'ok' if c.status=='ACTIVE' else 'bad' }}">{{ 'Cần kết nối lại' if c.status=='NEEDS_REAUTH' else c.status }}</span>
       <span class="tag {{ 'ok' if c.enabled else '' }}">{{ 'Đang bật' if c.enabled else 'Đã tắt' }}</span>
@@ -52,6 +56,7 @@
       <form method="post" action="/kenh/{{ c.id }}/{{ 'disable' if c.enabled else 'enable' }}"><input type="hidden" name="_csrf" value="{{ csrf_token }}"><button class="btn btn--small" type="submit">{{ 'Tắt' if c.enabled else 'Bật' }}</button></form>
     </div>
   </div>
+  <div class="channel-fold__body" id="chan-body-{{ c.id }}" hidden>
   <form method="post">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}"><input type="hidden" name="channel_id" value="{{ c.id }}">
     <div class="section-heading section-heading--spaced">
@@ -76,6 +81,7 @@
     {% endif %}
     <div class="channel-card__foot"><span class="note">Thay đổi chỉ áp dụng cho nội dung Auto tiếp theo; bài đã đăng không bị đổi.</span><button class="btn btn--primary" type="submit">Lưu cho {{ c.handle }}</button></div>
   </form>
+  </div>
 </section>
 {% endfor %}
 </div>
@@ -100,15 +106,20 @@
 {% if account_groups %}
 <div class="channel-list">
 {% for g in account_groups %}
-<section class="card channel-card">
-  <div class="channel-card__head">
-    <div><div class="channel-card__title">{{ g.name }}</div><span class="mono-sub">{{ g.code }} · {{ g.channels|length }} kênh</span></div>
+<section class="card channel-card channel-fold">
+  <div class="channel-fold__bar">
+    <button type="button" class="channel-fold__toggle" aria-expanded="false" aria-controls="group-body-{{ g.id }}" title="Mở/thu gọn nhóm"><span class="chev" aria-hidden="true">&#9656;</span></button>
+    <div class="channel-fold__title">
+      <div class="channel-card__title">{{ g.name }}</div>
+      <span class="mono-sub">{{ g.code }} · {{ g.channels|length }} kênh</span>
+    </div>
+    <div class="channel-meta">
+    {% for ch in g.channels %}
+      <span class="tag">[{{ platform_labels[ch.platform] }}] {{ ch.handle }}</span>
+    {% endfor %}
+    </div>
   </div>
-  <div class="channel-meta">
-  {% for ch in g.channels %}
-    <span class="tag">[{{ platform_labels[ch.platform] }}] {{ ch.handle }}</span>
-  {% endfor %}
-  </div>
+  <div class="channel-fold__body" id="group-body-{{ g.id }}" hidden>
   <form method="post" action="/kenh/nhom/{{ g.id }}/sua">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     <div class="niche-grid">
@@ -122,8 +133,23 @@
       <button class="btn btn--danger" type="submit" formaction="/kenh/nhom/{{ g.id }}/xoa">Xoá nhóm</button>
     </div>
   </form>
+  </div>
 </section>
 {% endfor %}
 </div>
 {% endif %}
+
+<script>
+(function () {
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.channel-fold__toggle');
+    if (!btn) return;
+    var body = document.getElementById(btn.getAttribute('aria-controls'));
+    if (!body) return;
+    var open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    body.hidden = !open;
+  });
+})();
+</script>
 {% endblock %}
