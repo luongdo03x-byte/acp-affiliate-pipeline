@@ -1,0 +1,11 @@
+{% if error %}<p class="note">{{ error }}</p>
+{% elif candidates %}
+<form method="post" action="/auto-posting/{{ plan_id }}/product">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+  <select name="product_id" required>
+    <option value="">Chọn sản phẩm đủ điều kiện</option>
+    {% for candidate in candidates %}<option value="{{ candidate.id }}">{{ candidate.label }}</option>{% endfor %}
+  </select>
+  <button class="btn btn--small btn--primary" type="submit">Thay & tạo lại nội dung</button>
+</form>
+{% else %}<p class="note">Hiện chưa có sản phẩm thay thế đủ điều kiện cho slot này.</p>{% endif %}
