@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS job_queue (
     locked_by         TEXT,
     last_error        TEXT,
     idempotency_key   TEXT UNIQUE,
+    defer_count       INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
@@ -486,6 +487,8 @@ MIGRATIONS = [
      "ALTER TABLE publish_target ADD COLUMN auto_scheduled INTEGER NOT NULL DEFAULT 0"),
     ("post", "post_type", "ALTER TABLE post ADD COLUMN post_type TEXT NOT NULL DEFAULT 'SALES'"),
     ("system_setting", "updated_by", "ALTER TABLE system_setting ADD COLUMN updated_by TEXT"),
+    ("job_queue", "defer_count",
+     "ALTER TABLE job_queue ADD COLUMN defer_count INTEGER NOT NULL DEFAULT 0"),
 ] + PRODUCT_MIGRATIONS
 
 
