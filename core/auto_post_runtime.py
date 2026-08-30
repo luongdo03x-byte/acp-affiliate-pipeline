@@ -60,6 +60,14 @@ def install() -> None:
         target_id = str((payload or {}).get("publish_target_id") or "").strip()
         if target_id:
             target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
+            # Chốt chặn áp dụng cho MỌI target, không riêng Auto. Khi worker
+            # treo rồi được thu hồi, các job publish cũ quay lại hàng đợi; phần
+            # lớn trong số đó là target thủ công (auto_scheduled=0) không đi qua
+            # đường reconcile. Không có chốt này, việc phục hồi sẽ đẩy nguyên
+            # loạt caption và giá của mấy ngày trước lên kênh thật.
+            if target and auto_post_plans.is_overdue(conn, target_id):
+                auto_post_plans.surface_overdue(conn, target_id, "slot_overdue")
+                return
             if target and int(target["auto_scheduled"] or 0):
                 try:
                     plan = auto_post_plans.upsert_from_target(
@@ -71,13 +79,19 @@ def install() -> None:
                 if reconciled.get("action") == "cancelled":
                     return
                 if reconciled.get("action") == "defer":
+                    reason = reconciled.get("reason") or "pending"
+                    # Hoãn chỉ hợp lý khi slot còn kịp. Quá thời gian ân hạn thì
+                    # điều kiện đã không tự hết (catalog quá hạn đồng bộ không
+                    # tự làm mới), và hoãn tiếp chỉ tạo vòng lặp im lặng. Đẩy
+                    # bài về /duyet để operator nhìn thấy và quyết định.
+                    if auto_post_plans.is_overdue(conn, target["id"]):
+                        auto_post_plans.surface_overdue(conn, target["id"], reason)
+                        return
                     # Reuse existing job-queue rate-limit semantics: the same
                     # publish job returns to READY in 60 minutes without burning
                     # retry budget, while image/data/product recovery continues.
                     from ..adapters.base import RateLimitError
-                    raise RateLimitError(
-                        f"Auto plan đang chờ reconcile: {reconciled.get('reason') or 'pending'}"
-                    )
+                    raise RateLimitError(f"Auto plan đang chờ reconcile: {reason}")
         result = original_publish(conn, payload, ctx)
         if target_id:
             auto_post_plans.sync_target_state(conn, target_id)

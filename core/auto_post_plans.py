@@ -12,6 +12,12 @@ from .db import audit, now, ulid
 LIVE_STATES = frozenset({"PLANNED", "READY", "REGENERATING", "PUBLISHING"})
 TERMINAL_STATES = frozenset({"PUBLISHED", "CANCELLED", "FAILED"})
 
+# Quá ngần này giờ so với giờ đã lên lịch thì slot coi như lỡ: có đăng được
+# nữa cũng không còn đúng ý đồ lịch, và quan trọng hơn là operator cần biết.
+# Không có mốc này, một điều kiện không tự hết (catalog quá hạn đồng bộ) sẽ
+# khiến job hoãn lại mỗi giờ mãi mãi mà không ai nhìn thấy.
+OVERDUE_GRACE_HOURS = 6
+
 
 def _utc_iso(value: str) -> str:
     parsed = datetime.fromisoformat(str(value or ""))
@@ -509,6 +515,61 @@ def reconcile_plan(conn, plan_id: str, *, actor: str = "auto_scheduler") -> dict
         (stamp, "data_refreshed" if changed else "validated", stamp, plan["id"]),
     )
     return {"ok": True, "action": "refreshed" if changed else "kept", "plan": dict(_plan(conn, plan["id"]))}
+
+
+def is_overdue(conn, target_id: str, *, now_utc: datetime = None) -> bool:
+    """Slot đã trôi qua quá thời gian ân hạn chưa?"""
+    row = conn.execute(
+        "SELECT scheduled_at FROM publish_target WHERE id=?", (target_id,)
+    ).fetchone()
+    if not row or not row["scheduled_at"]:
+        return False
+    try:
+        scheduled = datetime.fromisoformat(_utc_iso(row["scheduled_at"]))
+    except (TypeError, ValueError):
+        return False
+    current = now_utc or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current - scheduled > timedelta(hours=OVERDUE_GRACE_HOURS)
+
+
+def surface_overdue(conn, target_id: str, reason: str, *, now_utc: datetime = None,
+                    actor: str = "auto_post_runtime") -> dict:
+    """Đưa một slot Auto lỡ giờ về /duyet thay vì hoãn tiếp trong im lặng.
+
+    Bài đã PUBLISHED thì không đụng tới: một publish_target khác của cùng bài
+    có thể đã lên sóng, và rút bài đang live về PENDING_REVIEW sẽ huỷ oan các
+    target còn lại -- cùng lý do đã ghi ở nhánh ContentViolationError của
+    hàng đợi.
+    """
+    target = conn.execute("SELECT * FROM publish_target WHERE id=?", (target_id,)).fetchone()
+    if not target:
+        return {"ok": False, "action": "missing"}
+
+    stamp = now()
+    message = (
+        f"Auto không đăng được đúng giờ ({reason}). "
+        f"Dữ liệu sản phẩm cần được làm mới trước khi đăng lại."
+    )
+    conn.execute(
+        "UPDATE publish_target SET status='CANCELLED', last_error=?, updated_at=? WHERE id=?",
+        (message[:500], stamp, target_id),
+    )
+    post = conn.execute("SELECT status FROM post WHERE id=?", (target["post_id"],)).fetchone()
+    if post and post["status"] != "PUBLISHED":
+        conn.execute(
+            "UPDATE post SET status='PENDING_REVIEW', reject_reason=?, updated_at=? WHERE id=?",
+            (message[:500], stamp, target["post_id"]),
+        )
+    conn.execute(
+        """UPDATE auto_post_plan SET state='CANCELLED', last_change_reason=?,
+               last_reconciled_at=?, updated_at=? WHERE publish_target_id=?""",
+        (f"overdue:{reason}"[:200], stamp, stamp, target_id),
+    )
+    audit(conn, actor, "auto_post_overdue_surfaced", "publish_target", target_id,
+          {"reason": reason})
+    return {"ok": True, "action": "surfaced", "reason": reason}
 
 
 def sync_target_state(conn, target_id: str) -> None:
