@@ -4,6 +4,10 @@
 <div class="page-header">
   <div><div class="eyebrow">Human review gate</div><h1>Chờ duyệt</h1><p class="lede">Kiểm tra ảnh, caption và link trước khi bài được lên lịch. Đây là chốt người duyệt duy nhất của pipeline.</p></div>
   <div class="form-actions">
+    {% if posts %}<form method="post" action="/duyet/approve-all" onsubmit="return confirm('Duyệt TẤT CẢ {{ posts|length }} bài đang chờ? Hệ thống tự chọn khung giờ cho từng kênh.');">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button class="btn btn--primary" type="submit">Duyệt tất cả</button>
+    </form>{% endif %}
     {% if posts %}<form method="post" action="/duyet/reject-all" onsubmit="return confirm('Bỏ qua TẤT CẢ {{ posts|length }} bài đang chờ duyệt?');">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       <button class="btn btn--danger" type="submit">Bỏ qua tất cả</button>

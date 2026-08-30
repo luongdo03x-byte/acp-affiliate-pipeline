@@ -1104,6 +1104,54 @@ def create_app():
             conn.close()
         return redirect(url_for("review", message=f"Đã bỏ qua {len(rows)} bài chờ duyệt."))
 
+    @app.post("/duyet/approve-all")
+    def review_approve_all():
+        """Duyệt cả hàng chờ trong một lần.
+
+        Không hỏi giờ cho từng bài được, nên dùng đúng bộ chọn khung giờ hot mà
+        form một-bài dùng khi operator tích "Tự chọn khung giờ hot".
+
+        Cố tình KHÔNG bọc tất cả trong một transaction như reject-all: bỏ qua
+        hàng loạt thì một dòng hỏng cũng vô hại, còn duyệt hàng loạt mà rollback
+        toàn bộ vì một bài lỗi sẽ để cả hàng chờ nằm nguyên -- đúng cái tình
+        huống nút này sinh ra để giải quyết.
+        """
+        conn = connect()
+        approved = failed = 0
+        try:
+            rows = conn.execute(
+                "SELECT id, channel_id FROM post WHERE status IN ('PENDING_REVIEW','DRAFT') ORDER BY created_at"
+            ).fetchall()
+            selections = pipeline.post_channel_selections(conn, [r["id"] for r in rows])
+            for row in rows:
+                # Bài cũ không có dòng post_channel_selection vẫn phải duyệt
+                # được -- rơi về kênh gốc, cùng fallback trang /duyet đang dùng.
+                channel_ids = [c["id"] for c in selections.get(row["id"]) or []] or [row["channel_id"]]
+                slots_by_channel = {}
+                for cid in channel_ids:
+                    suggestion = auto_scheduler.suggest_review_slot(conn, cid)
+                    if suggestion:
+                        slots_by_channel[cid] = suggestion["slot"]
+                try:
+                    result = pipeline.approve_post(
+                        conn, row["id"], actor="operator",
+                        channel_ids=channel_ids,
+                        slots_by_channel=slots_by_channel or None,
+                    )
+                except Exception:
+                    result = {"ok": False}
+                if result.get("ok"):
+                    approved += 1
+                else:
+                    failed += 1
+        finally:
+            conn.close()
+
+        message = f"Đã duyệt {approved} bài."
+        if failed:
+            message += f" {failed} bài không duyệt được, còn lại trong hàng chờ."
+        return redirect(url_for("review", message=message))
+
     @app.route("/duyet/<post_id>/<action>", methods=["POST"])
     def review_action(post_id, action):
         conn = connect()
