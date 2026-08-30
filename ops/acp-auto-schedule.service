@@ -7,10 +7,11 @@ ConditionPathExists=%h/Downloads/ACP/acp/.env.local
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Downloads/ACP/acp
+ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" import-inbox'
 ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" product-sync'
 ExecStartPre=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/shopee_auto_enrich.py"'
 # Explicit command contract for docs/tests: run.py auto-schedule
 ExecStart=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" auto-schedule'
 ExecStartPost=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" worker-once'
-TimeoutStartSec=120s
+TimeoutStartSec=600s
 NoNewPrivileges=true

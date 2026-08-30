@@ -1,0 +1,12 @@
+[Unit]
+Description=ACP Shopee CSV inbox import (one bounded pass)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/Downloads/ACP/acp/.env.local
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Downloads/ACP/acp
+ExecStart=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" import-inbox'
+TimeoutStartSec=300s
+NoNewPrivileges=true

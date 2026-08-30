@@ -10,5 +10,9 @@ WorkingDirectory=%h/Downloads/ACP/acp
 ExecStart=/bin/bash -lc 'set -a; . "%h/Downloads/ACP/acp/.env.local"; set +a; exec "%h/Downloads/ACP/acp/.venv/bin/python" "%h/Downloads/ACP/acp/run.py" worker-once'
 Restart=on-failure
 RestartSec=15s
-TimeoutStartSec=55s
+# Một lượt publish có thể chạm mạng nhiều lần. 55s ngắn hơn thực tế nên
+# systemd giết worker giữa chừng, để lại job RUNNING vĩnh viễn (không ai
+# trả về READY). jobs.reclaim_stale() dọn phần còn sót, nhưng ngưỡng phải
+# đủ rộng để lượt bình thường chạy xong.
+TimeoutStartSec=300s
 NoNewPrivileges=true

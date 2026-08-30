@@ -9,6 +9,8 @@
     python3 run.py worker-once          chạy một lượt worker theo công tắc tự đăng
     python3 run.py worker-status        xem công tắc tự đăng và số lượng job an toàn
     python3 run.py auto-schedule        lấp lịch Threads Auto 48 giờ; không bật worker/global publish
+    python3 run.py import-inbox         import mọi CSV Shopee đang chờ trong thư mục inbox
+                                         (mặc định var/shopee-inbox/inbox, đổi bằng ACP_SHOPEE_CSV_INBOX)
     python3 run.py niche                xem chủ đề của từng kênh
     python3 run.py niche <kênh> <chủ đề...>   đặt chủ đề cho một kênh
     python3 run.py search [từ khoá]     tìm sản phẩm trong nguồn
@@ -162,6 +164,28 @@ def cmd_worker_once():
     print("Worker pass: " + ", ".join(
         f"{key}={stats[key]}" for key in ("done", "retried", "deferred", "failed", "skipped")))
     print(f"Queue: {_format_queue_counts(queue)}")
+    return 0
+
+
+def cmd_import_inbox():
+    """Import mọi CSV Shopee đang chờ trong thư mục inbox. An toàn cho timer."""
+    from acp.core import shopee_csv_inbox
+
+    try:
+        init_db()
+        paths = shopee_csv_inbox.ensure_dirs()
+        with db.session() as conn:
+            summary = shopee_csv_inbox.run_once(conn)
+    except Exception:
+        # Không in đường dẫn/nội dung file ra log dịch vụ.
+        print("CSV inbox import failed. Check local service logs.")
+        return 1
+
+    print(f"CSV inbox: {paths['inbox']}")
+    print("Import: " + ", ".join(
+        f"{key}={summary[key]}"
+        for key in ("files_seen", "files_imported", "files_rejected",
+                    "new", "updated", "unchanged", "error")))
     return 0
 
 
@@ -758,6 +782,7 @@ def cmd_serve():
 COMMANDS = {
     "init": cmd_init, "ingest": cmd_ingest, "plan": cmd_plan, "work": cmd_work,
     "worker-once": cmd_worker_once, "worker-status": cmd_worker_status,
+    "import-inbox": cmd_import_inbox,
     "auto-schedule": cmd_auto_schedule,
     "review": cmd_review, "approve-all": cmd_approve_all, "report": cmd_report,
     "reconcile": cmd_reconcile, "trace": cmd_trace, "doctor": cmd_doctor,
@@ -800,7 +825,7 @@ def main(argv=None):
         return cmd_regen_captions(dry_run="--dry" in args[1:])
     elif cmd == "approve" and len(args) > 1:
         c = connect(); print(pipeline.approve_post(c, args[1])); c.close()
-    elif cmd in ("worker-once", "worker-status", "auto-schedule"):
+    elif cmd in ("worker-once", "worker-status", "auto-schedule", "import-inbox"):
         return COMMANDS[cmd]()
     elif cmd in COMMANDS:
         COMMANDS[cmd]()

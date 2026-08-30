@@ -119,6 +119,37 @@ class ShopeeCsvImportDbTests(unittest.TestCase):
         row = self._product()
         self.assertEqual(len(self._history(row["id"])), 1)
 
+    def test_reimport_unchanged_row_refreshes_sync_freshness_stamps(self):
+        """An unchanged re-import still proves the row is current right now.
+
+        Auto publishing hard-blocks on `last_synced_at` age (72h). If a stable
+        product never changes price, the UNCHANGED branch must still refresh
+        the stamp or the product silently expires out of Auto forever.
+        """
+        import_rows(self.conn, [valid_result()])
+        product_id = self._product()["id"]
+        self.conn.execute(
+            "UPDATE product SET last_synced_at=?, last_seen_at=? WHERE id=?",
+            ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00", product_id),
+        )
+
+        result = import_rows(self.conn, [valid_result()])
+
+        self.assertEqual(result["unchanged"], 1)
+        row = self._product()
+        self.assertGreater(row["last_synced_at"], "2020-01-01T00:00:00+00:00")
+        self.assertGreater(row["last_seen_at"], "2020-01-01T00:00:00+00:00")
+
+    def test_reimport_unchanged_row_does_not_add_price_history(self):
+        import_rows(self.conn, [valid_result()])
+        product_id = self._product()["id"]
+        self.conn.execute(
+            "UPDATE product SET last_synced_at=? WHERE id=?",
+            ("2020-01-01T00:00:00+00:00", product_id),
+        )
+        import_rows(self.conn, [valid_result()])
+        self.assertEqual(len(self._history(product_id)), 1)
+
     def test_changed_price_adds_exactly_one_new_sourced_history_row(self):
         import_rows(self.conn, [valid_result(price=100_000)])
         result = import_rows(self.conn, [valid_result(price=120_000)])

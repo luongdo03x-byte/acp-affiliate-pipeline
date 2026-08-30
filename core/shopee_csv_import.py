@@ -479,6 +479,21 @@ def _update_product(conn, existing, row: ShopeeAffiliateCsvRow) -> str:
     return existing["id"]
 
 
+def _touch_sync_stamps(conn, product_id: str) -> None:
+    """Refresh freshness stamps for a row the CSV re-confirmed as still current.
+
+    A stable product whose price never moves classifies as UNCHANGED forever.
+    Auto publishing hard-blocks on `last_synced_at` age (SHOPEE_AUTO_FRESHNESS),
+    so without this the product silently ages out of Auto and its publish jobs
+    defer in a loop that never ends.
+    """
+    timestamp = now()
+    conn.execute(
+        "UPDATE product SET last_seen_at=?, last_synced_at=?, updated_at=? WHERE id=?",
+        (timestamp, timestamp, timestamp, product_id),
+    )
+
+
 def import_rows(conn, row_results: list[ShopeeCsvRowResult]) -> dict:
     summary = {
         "total": len(row_results or []),
@@ -514,6 +529,7 @@ def import_rows(conn, row_results: list[ShopeeCsvRowResult]) -> dict:
             else:
                 existing = _find_matching_product(conn, result.row)
                 if existing is not None:
+                    _touch_sync_stamps(conn, existing["id"])
                     enqueue_product(conn, existing["id"])
                 summary["unchanged"] += 1
     return summary
