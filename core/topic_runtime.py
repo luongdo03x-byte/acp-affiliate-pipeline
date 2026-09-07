@@ -39,8 +39,6 @@ def _topic_aware_shopee_eligibility(
         return False, "affiliate_link_invalid"
     if str(row_get(product, "affiliate_link_status") or "").upper() != "READY":
         return False, "affiliate_link_invalid"
-    if not shopee_auto_runtime._shopee_snapshot_is_fresh(product, now_utc):
-        return False, "product_sync_stale"
     if not shopee_auto_runtime._enrichment_ready(conn, row_get(product, "id")):
         return False, "product_image_not_ready"
     if not shopee_auto_runtime._usable_enriched_image(product):

@@ -8,9 +8,8 @@ Behavior owned here:
 
 - plan the remainder of each channel's local today plus local tomorrow;
 - keep earlier-today plans visible in the operator control center;
-- distribute scarce eligible products round-robin across Auto channels;
-- allow the same product on different channels while preserving same-channel
-  active/cooldown protection;
+- distribute eligible products round-robin across Auto channels without
+  reusing a product that is active or within its cooldown on any channel;
 - reconcile future plans inside the same calendar window after each fill pass.
 """
 from __future__ import annotations
@@ -344,7 +343,6 @@ def _attempt_assignment(
             conn,
             product["id"],
             now_utc,
-            channel_id=channel["id"],
         ):
             return "skipped"
 
@@ -601,15 +599,8 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    original_duplicate = auto_scheduler._queued_or_recently_published_product_exists
-    original_score_candidates = scoring.score_candidates
     original_eligibility = pipeline.current_auto_product_eligibility
     original_preflight = auto_scheduler.preflight_auto_target
-
-    duplicate_exists = _scoped_duplicate_checker(original_duplicate)
-    score_candidates = _channel_scoped_score_candidates(
-        original_score_candidates, duplicate_exists
-    )
 
     def scoped_eligibility(
         conn,
@@ -650,9 +641,6 @@ def install() -> None:
                 eligibility_checker=eligibility_checker,
             )
 
-    auto_scheduler._queued_or_recently_published_product_exists = duplicate_exists
-    scoring.score_candidates = score_candidates
-    pipeline._catalog_auto_candidates = _channel_scoped_catalog_candidates
     pipeline.current_auto_product_eligibility = scoped_eligibility
     auto_scheduler.preflight_auto_target = scoped_preflight
     auto_scheduler.available_slots = _calendar_available_slots

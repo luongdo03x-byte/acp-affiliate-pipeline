@@ -134,7 +134,7 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
         )
         self.assertFalse(any(slot.startswith("2026-08-27") for slot in local_slots))
 
-    def test_product_duplicate_and_cooldown_are_scoped_to_channel(self):
+    def test_product_duplicate_and_cooldown_are_global_across_channels(self):
         self._insert_channel("ch-a", "channel-a")
         self._insert_channel("ch-b", "channel-b")
         self._insert_product("product-1")
@@ -148,12 +148,12 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
 
         self.assertTrue(
             auto_scheduler._queued_or_recently_published_product_exists(
-                self.conn, "product-1", now_utc, channel_id="ch-a"
+                self.conn, "product-1", now_utc
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             auto_scheduler._queued_or_recently_published_product_exists(
-                self.conn, "product-1", now_utc, channel_id="ch-b"
+                self.conn, "product-1", now_utc
             )
         )
 
@@ -169,16 +169,16 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
 
         self.assertTrue(
             auto_scheduler._queued_or_recently_published_product_exists(
-                self.conn, "product-1", now_utc, channel_id="ch-a"
+                self.conn, "product-1", now_utc
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             auto_scheduler._queued_or_recently_published_product_exists(
-                self.conn, "product-1", now_utc, channel_id="ch-b"
+                self.conn, "product-1", now_utc
             )
         )
 
-    def test_fill_auto_schedule_round_robins_limited_products_across_channels(self):
+    def test_fill_auto_schedule_does_not_reuse_limited_products_across_channels(self):
         channel_ids = [f"ch-{index}" for index in range(1, 5)]
         for index, channel_id in enumerate(channel_ids, start=1):
             self._insert_channel(channel_id, f"channel-{index}", target=2)
@@ -206,9 +206,13 @@ class AutoPostCalendarFairnessTests(unittest.TestCase):
         ).fetchall()
         counts = Counter({row["channel_id"]: row["total"] for row in rows})
 
-        self.assertEqual(stats["scheduled"], 8)
-        self.assertEqual(set(counts), set(channel_ids))
-        self.assertTrue(all(counts[channel_id] == 2 for channel_id in channel_ids), counts)
+        self.assertEqual(stats["scheduled"], 2)
+        self.assertEqual(sum(counts.values()), 2)
+        self.assertTrue(all(total == 1 for total in counts.values()), counts)
+        product_count = self.conn.execute(
+            "SELECT COUNT(DISTINCT product_id) FROM post WHERE status='SCHEDULED'"
+        ).fetchone()[0]
+        self.assertEqual(product_count, 2)
 
     def test_list_window_includes_earlier_today_and_tomorrow_but_not_day_after(self):
         self._insert_channel("ch-1", "channel-1")

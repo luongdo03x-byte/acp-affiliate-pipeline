@@ -5,7 +5,7 @@ existing pipeline/auto-scheduler functions with the contracts needed by
 official Shopee Affiliate CSV rows:
 
 - image enrichment must be READY;
-- CSV snapshot freshness is 72 hours;
+- CSV snapshot age remains observable but does not block Auto;
 - unknown inventory/rating/review fields do not fail Shopee by themselves;
 - the exact affiliate URL imported from CSV is used for the post;
 - all existing niche, duplicate, quota, slot, validation and publish-worker
@@ -97,8 +97,6 @@ def _shopee_product_auto_eligibility(
         return False, "affiliate_link_invalid"
     if str(_row_get(product, "affiliate_link_status") or "").upper() != "READY":
         return False, "affiliate_link_invalid"
-    if not _shopee_snapshot_is_fresh(product, now_utc):
-        return False, "product_sync_stale"
     if not _enrichment_ready(conn, _row_get(product, "id")) or not _usable_enriched_image(product):
         return False, "product_image_not_ready"
 
@@ -246,8 +244,6 @@ def _shopee_preflight_auto_target(
         return False, "product_missing"
     if int(auto_scheduler._row_get(product, "is_available", 0) or 0) != 1:
         return False, "product_unavailable"
-    if not _shopee_snapshot_is_fresh(product, now_utc):
-        return False, "product_sync_stale"
     if not _enrichment_ready(conn, product_id) or not _usable_enriched_image(product):
         return False, "product_image_not_ready"
     if not auto_scheduler._valid_http_url(auto_scheduler._row_get(post, "affiliate_link")):

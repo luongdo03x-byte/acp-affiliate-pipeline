@@ -134,9 +134,19 @@ class ShopeeAutoPipelineTests(unittest.TestCase):
         )
         self.assertEqual(pipeline._shopee_auto_candidates(self.conn, self._channel(), 20, self.now), [])
 
-    def test_shopee_candidate_rejects_stale_csv(self):
+    def test_shopee_candidate_allows_stale_csv(self):
         self._insert_product(last_synced_at=self.now - timedelta(hours=73))
-        self.assertEqual(pipeline._shopee_auto_candidates(self.conn, self._channel(), 20, self.now), [])
+        rows = pipeline._shopee_auto_candidates(self.conn, self._channel(), 20, self.now)
+        self.assertEqual([row["product"]["id"] for row in rows], ["sp1"])
+
+    def test_shopee_scheduler_eligibility_allows_stale_csv(self):
+        product = self._insert_product(last_synced_at=self.now - timedelta(hours=73))
+        self.assertEqual(
+            pipeline.current_auto_product_eligibility(
+                self.conn, product, self._channel(), self.now,
+            ),
+            (True, "ok"),
+        )
 
     def test_shopee_candidate_rejects_invalid_affiliate_link(self):
         self._insert_product(affiliate_url="not-a-url")
@@ -181,13 +191,13 @@ class ShopeeAutoPipelineTests(unittest.TestCase):
             (True, "ok"),
         )
 
-    def test_shopee_publish_preflight_rejects_csv_older_than_72_hours(self):
+    def test_shopee_publish_preflight_allows_csv_older_than_72_hours(self):
         self._insert_product(last_synced_at=self.now - timedelta(hours=73))
         target = {"status": "SCHEDULED", "scheduled_at": (self.now + timedelta(hours=1)).isoformat()}
         post = {"id": "post1", "product_id": "sp1", "affiliate_link": "https://s.shopee.vn/example"}
         self.assertEqual(
             auto_scheduler.preflight_auto_target(self.conn, target, post, self._channel(), now_utc=self.now),
-            (False, "product_sync_stale"),
+            (True, "ok"),
         )
 
     def test_non_shopee_preflight_keeps_inventory_guard(self):
