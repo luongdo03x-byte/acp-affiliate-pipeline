@@ -20,11 +20,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.acp.accountfactory.network.FactoryV2Api
+import com.acp.accountfactory.network.ControllerBootstrapApi
 import com.acp.accountfactory.runner.AccessibilityReadiness
 import com.acp.accountfactory.runner.LocalRunnerIdentityStore
 import com.acp.accountfactory.runner.LocalRunnerService
@@ -38,6 +40,8 @@ import com.acp.accountfactory.ui.FactoryUiEvent
 import com.acp.accountfactory.ui.FactoryViewModel
 import com.acp.accountfactory.ui.WorkersScreen
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: FactorySettingsStore
@@ -192,39 +196,61 @@ private fun SettingsDialog(
     onClose: () -> Unit,
     onSaved: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var baseUrl by remember { mutableStateOf(settings.baseUrl) }
-    var factoryKey by remember { mutableStateOf(settings.factoryKey) }
+    var pairingCode by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Kết nối Controller (fallback)") },
+        onDismissRequest = { if (!busy) onClose() },
+        title = { Text("Ghép đôi với máy chủ") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("App tự tìm Controller trong cùng Wi-Fi. Chỉ nhập tay khi auto-discovery không tìm thấy Controller.")
+                Text("Nhập địa chỉ máy chủ và mã ghép đôi dùng một lần được tạo trên server. Mã có hiệu lực 10 phút.")
                 OutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it },
                     label = { Text("Factory Controller URL") },
-                    placeholder = { Text("http://192.168.68.71:5001") },
+                    placeholder = { Text("https://your-server.ngrok-free.dev") },
+                    enabled = !busy,
                     singleLine = true,
                 )
                 OutlinedTextField(
-                    value = factoryKey,
-                    onValueChange = { factoryKey = it },
-                    label = { Text("Factory Key") },
+                    value = pairingCode,
+                    onValueChange = { pairingCode = it },
+                    label = { Text("Mã ghép đôi") },
+                    enabled = !busy,
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
-                Text("Cấu hình tay chỉ là fallback. Credential auto-enroll được mã hóa bằng Android Keystore; app không lưu Threads token, mật khẩu, OTP/CAPTCHA, App Secret hoặc ACP_MASTER_KEY.")
+                Text("Sau khi ghép đôi, điện thoại tự kết nối lại khi có Internet.")
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            Button(onClick = {
-                settings.clearEnrollment()
-                settings.baseUrl = baseUrl
-                settings.factoryKey = factoryKey
-                onSaved()
-            }) { Text("LƯU") }
+            Button(enabled = !busy && baseUrl.isNotBlank() && pairingCode.isNotBlank(), onClick = {
+                busy = true
+                error = null
+                scope.launch {
+                    try {
+                        val identity = LocalRunnerIdentityStore(context).getOrCreate()
+                        val enrolled = ControllerBootstrapApi().pair(
+                            baseUrl, pairingCode, identity.deviceId, identity.deviceName,
+                        )
+                        settings.saveEnrollment(baseUrl.trim().trimEnd('/'), enrolled.deviceToken)
+                        pairingCode = ""
+                        onSaved()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        error = "Không ghép đôi được. Kiểm tra kết nối HTTPS và tạo mã mới nếu mã đã hết hạn hoặc đã dùng."
+                    } finally {
+                        busy = false
+                    }
+                }
+            }) { Text(if (busy) "ĐANG GHÉP ĐÔI…" else "GHÉP ĐÔI") }
         },
-        dismissButton = { TextButton(onClick = onClose) { Text("HỦY") } },
+        dismissButton = { TextButton(enabled = !busy, onClick = onClose) { Text("HỦY") } },
     )
 }

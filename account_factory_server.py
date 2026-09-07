@@ -12,6 +12,10 @@ from pathlib import Path
 import sys
 import threading
 import types
+import time
+import logging
+
+from flask import jsonify
 
 _REPO_ROOT = Path(__file__).resolve().parent
 
@@ -50,6 +54,18 @@ def build_app(*, start_controller=False, runtime_factory=build_default_runtime):
     register_account_factory_routes(app)
     register_factory_enrollment_routes(app)
     register_factory_v2_routes(app)
+
+    @app.get("/api/factory/healthz")
+    def controller_health():
+        if not start_controller:
+            return jsonify(ok=True, controller="disabled")
+        thread = app.extensions.get("factory_v2_controller_thread")
+        runtime = app.extensions.get("factory_v2_runtime")
+        last_tick = getattr(runtime, "last_successful_tick", None)
+        healthy = bool(thread and thread.is_alive() and last_tick is not None
+                       and time.monotonic() - last_tick < 60)
+        return jsonify(ok=healthy, controller="running" if healthy else "unavailable"), 200 if healthy else 503
+
     if start_controller:
         interval = float(os.environ.get("ACP_FACTORY_TICK_SECONDS", "2"))
 
@@ -79,6 +95,9 @@ def build_app(*, start_controller=False, runtime_factory=build_default_runtime):
 
 
 if __name__ == "__main__":
+    # OAuth callback query strings contain authorization codes. Retain controller
+    # diagnostics but don't send HTTP access lines to the service journal.
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     host = os.environ.get("ACP_HOST", "127.0.0.1")
     port = int(os.environ.get("ACP_PORT", "5000"))
     start_controller = os.environ.get("ACP_FACTORY_CONTROLLER", "1").strip().lower() not in {"0", "false", "no"}

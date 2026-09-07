@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import os
 import threading
+import time
 
 from ..db import now, transaction, ulid
 
@@ -41,6 +43,7 @@ class FactoryControllerRuntime:
         runner_gateway=None,
         activation_service=None,
         owned_connection=None,
+        local_only=False,
     ):
         self.repo = repository
         self.service = service
@@ -50,6 +53,8 @@ class FactoryControllerRuntime:
         self.runner_gateway = runner_gateway or RunnerGateway(repository, worker_processes)
         self.activation_service = activation_service
         self.owned_connection = owned_connection
+        self.local_only = local_only
+        self.last_successful_tick = None
 
     def _activation(self):
         if self.activation_service is None:
@@ -703,15 +708,20 @@ class FactoryControllerRuntime:
                ORDER BY leased_at, id"""
         ).fetchall()
         for job in active_jobs:
+            if self.local_only and self._is_remote(dict(job)):
+                continue
             self._drive_job_safely(dict(job))
 
         ready_workers = self.repo.conn.execute(
-            "SELECT id FROM factory_worker WHERE state='READY' AND draining=0 ORDER BY id"
+            "SELECT id, runner_type FROM factory_worker WHERE state='READY' AND draining=0 ORDER BY id"
         ).fetchall()
         for worker in ready_workers:
+            if self.local_only and worker["runner_type"] != RunnerType.LOCAL_DEVICE.value:
+                continue
             job = self.scheduler.assign_next(worker["id"])
             if job is not None:
                 self._drive_job_safely(job)
+        self.last_successful_tick = time.monotonic()
 
     def close(self) -> None:
         try:
@@ -737,6 +747,16 @@ class FactoryControllerRuntime:
             self.close()
 
 
+class LocalDeviceSupervisor:
+    """Physical devices supply their own heartbeat; no SDK or emulator on GCP."""
+
+    def tick(self):
+        pass
+
+    def reconcile_on_boot(self):
+        pass
+
+
 def build_default_runtime():
     """Construct the local controller runtime in the thread that will own SQLite."""
     from core.db import connect
@@ -755,14 +775,10 @@ def build_default_runtime():
     repo = FactoryRepository(conn)
     service = FactoryService(repo)
     worker_processes = WorkerProcessManager()
-    avd = AvdManager()
-    metrics = HostMetricsSampler()
+    local_only = os.environ.get("ACP_FACTORY_LOCAL_ONLY", "0").lower() in {"1", "true", "yes"}
     scheduler = Scheduler(repo, service)
-    supervisor = WorkerSupervisor(
-        repo,
-        avd,
-        metrics,
-        worker_processes=worker_processes,
+    supervisor = LocalDeviceSupervisor() if local_only else WorkerSupervisor(
+        repo, AvdManager(), HostMetricsSampler(), worker_processes=worker_processes,
     )
     supervisor.reconcile_on_boot()
     return FactoryControllerRuntime(
@@ -772,4 +788,5 @@ def build_default_runtime():
         supervisor,
         worker_processes,
         owned_connection=conn,
+        local_only=local_only,
     )

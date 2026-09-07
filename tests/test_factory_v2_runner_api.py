@@ -8,7 +8,7 @@ from core import db
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.schema import ensure_schema
 from core.factory_v2.service import FactoryService
-from web.factory_v2 import register_factory_v2_routes
+from account_factory_server import register_factory_v2_routes
 
 
 class FactoryV2RunnerApiTests(unittest.TestCase):

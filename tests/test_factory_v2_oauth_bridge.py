@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from flask import Flask
 
@@ -11,7 +12,7 @@ from core.factory_v2.oauth_bridge import start_account_oauth, sync_account_from_
 from core.factory_v2.repository import FactoryRepository
 from core.factory_v2.schema import ensure_schema
 from core.factory_v2.service import FactoryService
-from web.account_factory import register_account_factory_routes
+from account_factory_server import register_account_factory_routes
 
 
 class FakeThreadsOAuth:
@@ -44,6 +45,11 @@ class FactoryV2OAuthBridgeTests(unittest.TestCase):
         self.old_master_key = os.environ.get("ACP_MASTER_KEY")
         self.old_public_base = os.environ.get("ACP_PUBLIC_BASE_URL")
         db.DB_PATH = os.path.join(self.tmp.name, "factory-v2-oauth.db")
+        # Web callback uses acp.core.db; the factory test fixtures use core.db.
+        # Explicitly bind both to the same temporary database as in deployment.
+        callback_db = patch("acp.web.account_factory.connect", db.connect)
+        callback_db.start()
+        self.addCleanup(callback_db.stop)
         os.environ["ACP_ENV"] = "development"
         os.environ.pop("ACP_MASTER_KEY", None)
         os.environ["ACP_PUBLIC_BASE_URL"] = "https://acp.example"

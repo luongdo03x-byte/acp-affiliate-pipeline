@@ -41,15 +41,12 @@ class ZeroConfigBootstrap(
         val currentCredential = enrolledToken.ifBlank { settings.factoryKey }
 
         if (rememberedUrl.isNotBlank() && currentCredential.isNotBlank()) {
-            if (api.validateCredential(rememberedUrl, currentCredential)) {
-                return BootstrapResult(
-                    state = BootstrapState.ALREADY_CONFIGURED,
-                    controllerUrl = rememberedUrl,
-                )
-            }
-            // An auto-enrolled credential can safely be discarded and issued
-            // again. Preserve a manual Factory Key until enrollment succeeds.
-            if (enrolledToken.isNotBlank()) settings.clearEnrollment()
+            // The runner handles reconnection. A timeout must never delete a
+            // paired credential or replace a cloud controller with a LAN host.
+            return BootstrapResult(
+                state = BootstrapState.ALREADY_CONFIGURED,
+                controllerUrl = rememberedUrl,
+            )
         }
 
         val ipv4 = currentPrivateWifiIpv4()

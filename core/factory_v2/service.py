@@ -501,6 +501,14 @@ class FactoryService:
             raise ValueError("account is already disabled")
         stopped_at = now()
         with transaction(self.repo.conn):
+            checkpoints = self.repo.conn.execute(
+                "SELECT id FROM factory_checkpoint WHERE account_id=? AND status != 'RESOLVED'",
+                (account_id,),
+            ).fetchall()
+            for checkpoint in checkpoints:
+                self.repo.resolve_checkpoint(
+                    checkpoint["id"], resolved_at=stopped_at, resolution="ACCOUNT_STOPPED"
+                )
             self.repo.conn.execute(
                 """UPDATE factory_account
                    SET stage='DISABLED', assigned_worker_id=NULL, current_job_id=NULL, updated_at=?

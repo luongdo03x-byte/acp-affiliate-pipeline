@@ -13,6 +13,7 @@ from flask import abort, jsonify, request
 
 from core.db import connect
 from core.factory_v2.device_credentials import authenticate_device_token, issue_device_token
+from core.factory_v2.pairing import redeem_pairing_code
 
 
 DEVICE_TOKEN_HEADER = "X-ACP-Device-Token"
@@ -69,6 +70,24 @@ def install_factory_device_auth() -> None:
 
 
 def register_factory_enrollment_routes(app) -> None:
+    @app.post("/api/factory/pair")
+    def factory_pair():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) - {"code", "device_id", "device_name"}:
+            return jsonify(ok=False, error="Body ghép đôi không hợp lệ"), 400
+        conn = connect()
+        try:
+            token = redeem_pairing_code(
+                conn, data.get("code"), data.get("device_id"), data.get("device_name")
+            )
+        except ValueError:
+            return jsonify(ok=False, error="Mã ghép đôi hoặc thiết bị không hợp lệ; mã có thể đã dùng hoặc hết hạn"), 400
+        finally:
+            conn.close()
+        response = jsonify(ok=True, service="account-factory", api_version=2, device_token=token)
+        response.headers["Cache-Control"] = "no-store"
+        return response, 201
+
     @app.get("/api/factory/discovery")
     def factory_discovery():
         return jsonify(ok=True, service="account-factory", api_version=2)
@@ -77,7 +96,10 @@ def register_factory_enrollment_routes(app) -> None:
     def factory_enroll():
         if not _env_true("ACP_FACTORY_LAN_AUTO_ENROLL"):
             return jsonify(ok=False, error="LAN auto-enroll chưa được bật"), 403
-        if not _private_remote(request.remote_addr):
+        # Proxies (including ngrok) connect locally on behalf of public users.
+        # LAN enrollment must never trust that local socket as proof of LAN origin.
+        if (any(name in request.headers for name in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Proto"))
+                or not _private_remote(request.remote_addr)):
             return jsonify(ok=False, error="Enrollment chỉ cho phép từ mạng LAN riêng"), 403
 
         data = request.get_json(silent=True)

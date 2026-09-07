@@ -1,5 +1,9 @@
 # ACP Account Factory — Runbook
 
+For a physical phone connecting to the GCP deployment over the Internet, use
+[the cloud pairing and gateway runbook](ACP_FACTORY_CLOUD.md). The LAN discovery
+instructions below apply only to a trusted private network.
+
 ## Scope
 
 Account Factory helps an operator track Instagram/Threads profiles on Android and connect completed Threads profiles to ACP through official Threads OAuth.

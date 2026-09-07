@@ -29,7 +29,10 @@ ON factory_device_credential(status, device_id);
 
 
 def _ensure_table(conn) -> None:
-    conn.executescript(_SCHEMA)
+    # executescript commits an enclosing transaction, including pairing claims.
+    for statement in _SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
 
 
 def _token_hash(token: str) -> str:
