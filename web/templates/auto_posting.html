@@ -124,7 +124,10 @@
       </div>
 
       <div class="auto-plan-product">
-        {% set preview = plan.image_url_composited or plan.main_image_url %}
+        {# Prefer the product's current enriched image.  A plan may retain a
+           composited snapshot created on a previous host, whose local media
+           URL is no longer reachable after a migration. #}
+        {% set preview = plan.main_image_url or plan.image_url_composited %}
         {% if preview %}<img src="{{ preview }}" alt="{{ plan.product_name or 'Ảnh sản phẩm' }}" loading="lazy" class="auto-plan-image">{% else %}<div class="image-placeholder auto-plan-image">Chưa có ảnh</div>{% endif %}
         <div>
           <strong>{{ plan.product_name or 'Không còn sản phẩm' }}</strong>
