@@ -114,6 +114,20 @@ def enqueue_product(conn, product_id: str) -> str | None:
         )
         return READY
 
+    # A migrated database can retain a READY job while its local media file is
+    # absent on the new host.  That is a contradiction: the product must be
+    # enriched again, otherwise the bulk controller remains at 100% forever.
+    if desired == PENDING and existing["status"] == READY:
+        conn.execute(
+            """UPDATE shopee_image_enrichment_job
+               SET status=?, attempt_count=0, download_attempt_count=0,
+                   last_error_code=NULL, last_error=NULL, last_attempt_at=NULL,
+                   updated_at=?
+               WHERE product_id=?""",
+            (PENDING, timestamp, product_id),
+        )
+        return PENDING
+
     # Missing-image re-enqueue never resets retry/error/helper state. Explicit
     # Retry owns that transition later; repeated CSV imports stay idempotent.
     return existing["status"]

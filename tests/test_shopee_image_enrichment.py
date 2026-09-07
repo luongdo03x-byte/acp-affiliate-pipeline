@@ -174,6 +174,24 @@ class ShopeeImageEnrichmentJobTests(unittest.TestCase):
         self.assertEqual(get_job(self.conn, "p2")["status"], PENDING)
         self.assertIsNone(get_job(self.conn, "p3"))
 
+    def test_backfill_resets_ready_job_when_its_product_image_is_missing(self):
+        self._insert_product(product_id="migrated", item_id="4")
+        enqueue_product(self.conn, "migrated")
+        self.conn.execute(
+            """UPDATE shopee_image_enrichment_job
+               SET status=?, attempt_count=2, download_attempt_count=2
+               WHERE product_id=?""",
+            (READY, "migrated"),
+        )
+
+        count = backfill_missing(self.conn)
+        job = get_job(self.conn, "migrated")
+
+        self.assertEqual(count, 1)
+        self.assertEqual(job["status"], PENDING)
+        self.assertEqual(job["attempt_count"], 0)
+        self.assertEqual(job["download_attempt_count"], 0)
+
     def test_stale_transient_jobs_return_to_pending(self):
         self._insert_product(product_id="fetch", item_id="10")
         self._insert_product(product_id="download", item_id="11")
