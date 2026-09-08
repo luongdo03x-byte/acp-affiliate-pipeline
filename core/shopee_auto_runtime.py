@@ -23,6 +23,11 @@ from . import auto_scheduler, niche, pipeline, scoring
 SHOPEE_PROVIDER = "SHOPEE_AFFILIATE"
 SHOPEE_AUTO_FRESHNESS = timedelta(hours=72)
 _BAD_LINK_STATES = {"ERROR", "FAILED", "INVALID", "STALE", "UNAVAILABLE"}
+
+# Chốt an toàn khi quét kho ứng viên cho Auto: đủ rộng để không cắt mất hàng
+# hợp lệ của bất kỳ ngách nào, đủ hẹp để một lượt auto-schedule không quét vô
+# hạn nếu kho phình lên. Đây KHÔNG phải ngưỡng chọn lọc theo điểm số.
+MAX_CANDIDATE_SCAN = 5000
 _INSTALLED = False
 
 
@@ -154,7 +159,27 @@ def _shopee_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> lis
     if not channel or not int(_row_get(channel, "auto_schedule_enabled", 0) or 0):
         return []
     safe_limit = max(0, int(limit))
-    rows = conn.execute(
+    if safe_limit <= 0:
+        return []
+
+    # Trước đây chỉ lấy safe_limit*5 sản phẩm đầu bảng RỒI mới lọc theo chủ đề
+    # kênh. Bảng điểm là toàn kho, không theo kênh, nên ngách nào đang có nhiều
+    # hàng điểm cao sẽ chiếm sạch phần đầu và các kênh ngách khác nhận 0 ứng
+    # viên -- dù kho vẫn còn hàng hợp lệ cho chúng.
+    #
+    # Đo trên kho thật: top 100 bị my-pham/thoi-trang-nu chiếm hết; món hợp lệ
+    # đầu tiên của jellyfish_k5, punniu06, bersociu_21, myduyenn681999,
+    # minhanht253132 nằm ở hạng 106-108. Năm kênh đó không bao giờ được lấp
+    # lịch, và auto-schedule báo scheduled=0, skipped=16.
+    #
+    # Sửa: vẫn duyệt theo đúng thứ hạng đó, nhưng đi tiếp cho tới khi đủ
+    # safe_limit ứng viên HỢP LỆ VỚI KÊNH NÀY thay vì dừng ở một mốc cố định.
+    # Vòng lặp bên dưới đã tự dừng khi đủ, nên kênh nào có hàng ở đầu bảng vẫn
+    # thoát sớm y như trước.
+    #
+    # MAX_CANDIDATE_SCAN là chốt an toàn cho kho lớn về sau, KHÔNG phải ngưỡng
+    # liên quan. Kho Shopee hiện tại khoảng 750 sản phẩm nên duyệt trọn.
+    cursor = conn.execute(
         """
         SELECT p.*
         FROM product p
@@ -168,10 +193,10 @@ def _shopee_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> lis
                  p.id
         LIMIT ?
         """,
-        (SHOPEE_PROVIDER, max(safe_limit, 1) * 5),
-    ).fetchall()
+        (SHOPEE_PROVIDER, MAX_CANDIDATE_SCAN),
+    )
     candidates = []
-    for product in rows:
+    for product in cursor:
         eligible, _reason = _shopee_product_auto_eligibility(
             conn, product, channel, now_utc, require_auto_schedule=True
         )
