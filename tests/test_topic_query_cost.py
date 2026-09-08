@@ -60,6 +60,20 @@ class TopicQueryCostTests(unittest.TestCase):
     def _restore_db_path(self):
         db.DB_PATH = self.old_db_path
 
+    def _add_product(self, product_id: str, name: str, category_code: str = "khac") -> dict:
+        """Gắn chủ đề ghi vào product_topic, có khoá ngoại tới product."""
+        self.conn.execute(
+            """INSERT INTO product (id, source, merchant, external_product_id, name,
+                                    current_price, commission_value, category_code,
+                                    product_url, is_available, created_at, updated_at,
+                                    affiliate_link_status, post_count)
+               VALUES (?,'shopee','shopee.vn',?,?,100000,10000,?,?,1,
+                       datetime('now'),datetime('now'),'READY',0)""",
+            (product_id, product_id, name, category_code, f"https://shopee.vn/{product_id}"),
+        )
+        return {"id": product_id, "name": name, "category_code": category_code,
+                "merchant": "shopee.vn"}
+
     def test_doc_lai_luat_cua_cung_kenh_khong_cham_db_nua(self):
         first = topic_engine.channel_rules(self.conn, self.channel_ids[0])
         with CountingTrace(self.conn) as trace:
@@ -93,6 +107,26 @@ class TopicQueryCostTests(unittest.TestCase):
         self.assertEqual(
             [row["code"] for row in after["includes"]], ["gia-dung"],
             "cache phải bị xoá khi luật của kênh thay đổi")
+
+    def test_gan_chu_de_cho_cung_san_pham_chi_chay_mot_lan(self):
+        """Lớp kiểm tra điều kiện gọi hàm này một lần cho mỗi kênh, cùng sản phẩm."""
+        product = self._add_product("prod-1", "Son Tint lì Romand Juicy Lasting Tint")
+        first = topic_engine.sync_product_system_topics(self.conn, product)
+        with CountingTrace(self.conn) as trace:
+            for _channel in range(10):
+                again = topic_engine.sync_product_system_topics(self.conn, product)
+        self.assertEqual(again, first, "kết quả gọi lại phải giống lần đầu")
+        self.assertEqual(
+            trace.count, 0,
+            f"10 lần gán lại cho cùng sản phẩm vẫn tốn {trace.count} truy vấn")
+
+    def test_nguoi_goi_sua_ket_qua_khong_lam_hong_cache(self):
+        product = self._add_product("prod-2", "Khăn giấy rút Topgia 4 lớp")
+        first = topic_engine.sync_product_system_topics(self.conn, product)
+        first.append("rác")
+        self.assertNotIn(
+            "rác", topic_engine.sync_product_system_topics(self.conn, product),
+            "cache phải trả bản sao, không phải chính list đã đưa cho người gọi")
 
     def test_chu_de_he_thong_van_duoc_tao_du_tren_db_moi(self):
         topic_engine.ensure_system_topics(self.conn)

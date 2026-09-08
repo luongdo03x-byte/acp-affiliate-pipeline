@@ -83,6 +83,7 @@ def invalidate_topic_cache(conn) -> None:
     if cache is not None:
         cache.pop("system_topics_ready", None)
         cache.pop("channel_rules", None)
+        cache.pop("synced_products", None)
 
 
 def ensure_system_topics(conn) -> None:
@@ -418,6 +419,16 @@ def _system_parent_for_product(conn, product):
 
 
 def sync_product_system_topics(conn, product) -> list[str]:
+    # Kết quả chỉ phụ thuộc vào sản phẩm, không phụ thuộc kênh -- nhưng lớp
+    # kiểm tra điều kiện gọi hàm này một lần cho MỖI kênh, tức 10 lần cho cùng
+    # một sản phẩm khi dựng trang. Mỗi lần chạy tới 8 SELECT + 8 lệnh ghi, nên
+    # đây là phần đắt nhất còn lại sau khi đã cache channel_rules.
+    product_id = str(_row_get(product, "id") or "")
+    cache = _request_cache(conn)
+    synced = cache.setdefault("synced_products", {}) if cache is not None else None
+    if synced is not None and product_id in synced:
+        return list(synced[product_id])
+
     ensure_system_topics(conn)
     attached = []
     for code in niche.NICHES:
@@ -432,6 +443,9 @@ def sync_product_system_topics(conn, product) -> list[str]:
         if fallback:
             attach_product_topic(conn, _row_get(product, "id"), fallback["id"], 0.80, "SYSTEM_FALLBACK")
             attached.append(fallback["code"])
+
+    if synced is not None and product_id:
+        synced[product_id] = list(attached)
     return attached
 
 
