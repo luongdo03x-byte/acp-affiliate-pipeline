@@ -9,6 +9,7 @@ data class LocalUiNode(
     val viewId: String = "",
     val className: String = "",
     val clickable: Boolean = false,
+    val longClickable: Boolean = false,
     val editable: Boolean = false,
     val password: Boolean = false,
 )
@@ -18,6 +19,7 @@ data class LocalUiSelector(
     val texts: Set<String> = emptySet(),
     val contentDescriptions: Set<String> = emptySet(),
     val requireClickable: Boolean = false,
+    val requireLongClickable: Boolean = false,
     val requireEditable: Boolean = false,
 )
 
@@ -25,6 +27,7 @@ interface LocalAccessibilityBridge {
     fun foregroundPackage(): String?
     fun nodes(): List<LocalUiNode>
     fun click(selector: LocalUiSelector): Boolean
+    fun longClick(selector: LocalUiSelector): Boolean
     fun setText(selector: LocalUiSelector, value: String): Boolean
 }
 
@@ -54,6 +57,18 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     )
     private val instagramSignup = LocalUiSelector(
         texts = setOf("Create new account", "Tạo tài khoản mới"),
+        requireClickable = true,
+    )
+    private val instagramProfileTab = LocalUiSelector(
+        resourceIds = setOf("com.instagram.android:id/profile_tab"),
+        contentDescriptions = setOf("Profile", "Trang cá nhân"),
+        requireLongClickable = true,
+    )
+    private val instagramAddAccount = LocalUiSelector(
+        texts = setOf(
+            "Add Instagram account", "Add account",
+            "Thêm tài khoản Instagram", "Thêm tài khoản",
+        ),
         requireClickable = true,
     )
     private val contactInput = LocalUiSelector(
@@ -100,6 +115,18 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         ),
         requireClickable = true,
     )
+    private val threadsProfileTab = LocalUiSelector(
+        resourceIds = setOf("com.instagram.barcelona:id/profile_tab"),
+        contentDescriptions = setOf("Profile", "Trang cá nhân"),
+        requireLongClickable = true,
+    )
+    private val threadsAddProfile = LocalUiSelector(
+        texts = setOf(
+            "Add profile", "Add account",
+            "Thêm trang cá nhân", "Thêm tài khoản",
+        ),
+        requireClickable = true,
+    )
     private val threadsNameInput = LocalUiSelector(
         resourceIds = setOf(
             "com.instagram.barcelona:id/name",
@@ -120,11 +147,8 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectInstagram(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            // A home feed only proves that *an* Instagram session exists. It
-            // does not prove that the requested factory account was created.
-            // Stop here so an existing personal/account session can never be
-            // accepted and carried into the Threads flow by mistake.
-            "IG_HOME" -> return confirmation(screen, "EXISTING_SESSION_NOT_VERIFIED")
+            "IG_HOME" -> return act(screen, bridge.longClick(instagramProfileTab))
+            "IG_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(instagramAddAccount))
             "IG_SIGNUP_ENTRY" -> return act(screen, bridge.click(instagramSignup))
             "IG_CONTACT_ENTRY" -> {
                 val contact = profile["signup_contact"].orEmpty().trim()
@@ -169,9 +193,8 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectThreads(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            // As with Instagram, the feed may belong to an account that was
-            // already signed in before this job started.
-            "THREADS_HOME" -> return confirmation(screen, "EXISTING_SESSION_NOT_VERIFIED")
+            "THREADS_HOME" -> return act(screen, bridge.longClick(threadsProfileTab))
+            "THREADS_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(threadsAddProfile))
             "THREADS_ONBOARDING" -> {
                 val selector = if (has(nodes, threadsJoin)) threadsJoin else continueSelector
                 return act(screen, bridge.click(selector))
@@ -224,6 +247,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun detectInstagram(nodes: List<LocalUiNode>): String {
         if (bridge.foregroundPackage() != INSTAGRAM_PACKAGE) return "UNKNOWN"
         detectCommon(nodes)?.let { return it }
+        if (has(nodes, instagramAddAccount)) return "IG_ACCOUNT_SWITCHER"
         if (containsAny(nodes, "create account", "sign up", "đăng ký", "tạo tài khoản") &&
             !containsAny(nodes, "create new account", "tạo tài khoản mới")) return "IG_FINAL_SIGNUP_SUBMIT"
         if (has(nodes, instagramSignup)) return "IG_SIGNUP_ENTRY"
@@ -240,6 +264,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun detectThreads(nodes: List<LocalUiNode>): String {
         if (bridge.foregroundPackage() != THREADS_PACKAGE) return "UNKNOWN"
         detectCommon(nodes)?.let { return it }
+        if (has(nodes, threadsAddProfile)) return "THREADS_ACCOUNT_SWITCHER"
         if (has(nodes, threadsNameInput) || has(nodes, threadsBioInput)) return "THREADS_PROFILE_SETUP"
         if (has(nodes, threadsJoin) || has(nodes, continueSelector)) return "THREADS_ONBOARDING"
         if (hasHome(nodes, THREADS_PACKAGE)) return "THREADS_HOME"
@@ -295,6 +320,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
 
     private fun has(nodes: List<LocalUiNode>, selector: LocalUiSelector): Boolean = nodes.any {
         (!selector.requireClickable || it.clickable) &&
+            (!selector.requireLongClickable || it.longClickable) &&
             (!selector.requireEditable || it.editable) &&
             (it.viewId in selector.resourceIds || normalize(it.text) in selector.texts.map(::normalize) ||
                 normalize(it.contentDescription) in selector.contentDescriptions.map(::normalize))

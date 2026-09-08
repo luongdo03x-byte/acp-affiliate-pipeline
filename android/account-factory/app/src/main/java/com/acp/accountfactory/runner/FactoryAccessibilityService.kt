@@ -42,6 +42,10 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
         node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
+    override fun longClick(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->
+        node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+    }
+
     override fun setText(selector: LocalUiSelector, value: String): Boolean {
         if (value.isBlank() || value.length > 500 || value.any { it.code < 32 }) return false
         return withMatchingNode(selector) { node ->
@@ -60,6 +64,7 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
             viewId = node.viewIdResourceName.orEmpty(),
             className = node.className?.toString().orEmpty(),
             clickable = node.isClickable,
+            longClickable = node.isLongClickable,
             editable = node.isEditable,
             password = password,
         )
@@ -103,6 +108,7 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
 
     private fun matches(node: AccessibilityNodeInfo, selector: LocalUiSelector): Boolean {
         if (selector.requireClickable && !node.isClickable) return false
+        if (selector.requireLongClickable && !node.isLongClickable) return false
         if (selector.requireEditable && !node.isEditable) return false
         val idMatch = node.viewIdResourceName.orEmpty() in selector.resourceIds
         val text = LocalSafeUiAutomation.normalize(node.text?.toString().orEmpty())

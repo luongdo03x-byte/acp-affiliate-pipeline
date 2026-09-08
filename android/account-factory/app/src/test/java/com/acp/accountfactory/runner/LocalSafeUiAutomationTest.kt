@@ -11,11 +11,16 @@ class LocalSafeUiAutomationTest {
         var snapshot: List<LocalUiNode>,
     ) : LocalAccessibilityBridge {
         val clicks = mutableListOf<LocalUiSelector>()
+        val longClicks = mutableListOf<LocalUiSelector>()
         val values = mutableListOf<String>()
         override fun foregroundPackage() = packageName
         override fun nodes() = snapshot
         override fun click(selector: LocalUiSelector): Boolean {
             clicks += selector
+            return true
+        }
+        override fun longClick(selector: LocalUiSelector): Boolean {
+            longClicks += selector
             return true
         }
         override fun setText(selector: LocalUiSelector, value: String): Boolean {
@@ -82,21 +87,25 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
-    fun existingInstagramHomeIsNeverAcceptedAsNewAccount() {
+    fun existingInstagramHomeOpensAccountSwitcher() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
             listOf(
                 LocalUiNode(contentDescription = "Trang chủ"),
-                LocalUiNode(contentDescription = "Trang cá nhân"),
+                LocalUiNode(
+                    viewId = "com.instagram.android:id/profile_tab",
+                    contentDescription = "Trang cá nhân",
+                    longClickable = true,
+                ),
             ),
         )
 
         val result = LocalSafeUiAutomation(bridge).runInstagram(mapOf("username" to "new_user"))
 
-        assertEquals("needs_confirmation", result.status)
+        assertEquals("running", result.status)
         assertEquals("IG_HOME", result.screen)
-        assertEquals("EXISTING_SESSION_NOT_VERIFIED", result.reason)
         assertTrue(bridge.clicks.isEmpty())
+        assertEquals(1, bridge.longClicks.size)
     }
 
     @Test
@@ -115,5 +124,20 @@ class LocalSafeUiAutomationTest {
         assertEquals("THREADS_HOME", result.screen)
         assertEquals("CHECKPOINT_NOT_CONFIRMED", result.reason)
         assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun instagramAccountSwitcherAddsAnotherAccount() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(LocalUiNode(text = "Thêm tài khoản Instagram", clickable = true)),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(emptyMap())
+
+        assertEquals("running", result.status)
+        assertEquals("IG_ACCOUNT_SWITCHER", result.screen)
+        assertEquals(1, bridge.clicks.size)
+        assertTrue(bridge.longClicks.isEmpty())
     }
 }
