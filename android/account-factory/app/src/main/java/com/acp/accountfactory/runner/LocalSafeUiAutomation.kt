@@ -53,10 +53,12 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "com.instagram.android:id/continue_button",
         ),
         texts = setOf("Next", "Continue", "Tiếp tục", "Tiếp"),
+        contentDescriptions = setOf("Next", "Continue", "Tiếp tục", "Tiếp"),
         requireClickable = true,
     )
     private val instagramSignup = LocalUiSelector(
         texts = setOf("Create new account", "Tạo tài khoản mới"),
+        contentDescriptions = setOf("Create new account", "Tạo tài khoản mới"),
         requireClickable = true,
     )
     private val instagramProfileTab = LocalUiSelector(
@@ -114,6 +116,10 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     )
     private val threadsJoin = LocalUiSelector(
         texts = setOf(
+            "Join Threads", "Continue with Instagram", "Import from Instagram",
+            "Tham gia Threads", "Tiếp tục bằng Instagram", "Nhập từ Instagram",
+        ),
+        contentDescriptions = setOf(
             "Join Threads", "Continue with Instagram", "Import from Instagram",
             "Tham gia Threads", "Tiếp tục bằng Instagram", "Nhập từ Instagram",
         ),

@@ -48,7 +48,7 @@ class LocalSafeUiAutomationTest {
     fun knownInitialSignupCanBeTapped() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
-            listOf(LocalUiNode(text = "Tạo tài khoản mới", clickable = true)),
+            listOf(LocalUiNode(contentDescription = "Tạo tài khoản mới", clickable = true)),
         )
 
         val result = LocalSafeUiAutomation(bridge).runInstagram(emptyMap())
