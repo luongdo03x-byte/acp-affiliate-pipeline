@@ -1,5 +1,6 @@
 package com.acp.accountfactory.runner
 
+import android.util.Log
 import com.acp.accountfactory.network.FactoryConnection
 import com.acp.accountfactory.network.FactoryRunnerDto
 import com.acp.accountfactory.network.FactoryV2ApiClient
@@ -38,6 +39,7 @@ class LocalDeviceRunner(
     private var currentJobId: String? = null
     private var lastHeartbeatMs: Long = Long.MIN_VALUE
     private var pendingSubmission: PendingSubmission? = null
+    private var lastAssignmentLog: String? = null
 
     @Synchronized
     fun start() {
@@ -49,7 +51,8 @@ class LocalDeviceRunner(
                 val delayMs = try {
                     runSingleIterationForTest()
                     if (currentJobId != null) activePollMs else idlePollMs
-                } catch (_: Exception) {
+                } catch (exception: Exception) {
+                    logWarning("runner iteration failed: ${exception.javaClass.simpleName}")
                     idlePollMs
                 }
                 delay(delayMs.coerceAtLeast(250L))
@@ -76,15 +79,27 @@ class LocalDeviceRunner(
 
         val command = api.nextRunnerCommand(connection, runner.id)
         if (command != null) {
+            logInfo("command received: ${command.action}")
             currentAccountId = command.accountId
             currentJobId = command.jobId
             val result = actions.execute(command)
+            logInfo(
+                "command result: ${command.action} status=${result.status} " +
+                    "flow=${result.result["flow_status"] ?: "-"} " +
+                    "screen=${result.result["screen"] ?: "-"}",
+            )
             val pending = PendingSubmission(command, result)
             pendingSubmission = pending
             submitPending(connection, runner.id, pending)
             pendingSubmission = null
+            logInfo("command submitted: ${command.action}")
         } else {
             syncAuthoritativeAssignment(connection, runner.id)
+            val assignment = if (currentJobId == null) "unassigned" else "assigned"
+            if (assignment != lastAssignmentLog) {
+                logInfo("no command: runner=$assignment")
+                lastAssignmentLog = assignment
+            }
         }
 
         val currentTime = clockMs()
@@ -101,6 +116,7 @@ class LocalDeviceRunner(
             registered = it
             currentAccountId = it.currentAccountId
             currentJobId = it.currentJobId
+            logInfo("runner registered: ${if (it.currentJobId == null) "unassigned" else "assigned"}")
         }
     }
 
@@ -148,5 +164,17 @@ class LocalDeviceRunner(
             status = pending.result.status,
             result = pending.result.result,
         )
+    }
+
+    private companion object {
+        const val TAG = "AcpLocalRunner"
+
+        fun logInfo(message: String) {
+            runCatching { Log.i(TAG, message) }
+        }
+
+        fun logWarning(message: String) {
+            runCatching { Log.w(TAG, message) }
+        }
     }
 }

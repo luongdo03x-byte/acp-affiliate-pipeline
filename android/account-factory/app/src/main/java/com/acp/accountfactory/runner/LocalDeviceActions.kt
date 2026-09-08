@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import com.acp.accountfactory.network.RunnerCommandDto
 
 interface LocalPlatform {
@@ -79,7 +80,10 @@ open class LocalDeviceActions(
                 )
                 else -> failed("UNSUPPORTED_ACTION")
             }
-        } catch (_: Exception) {
+        } catch (exception: Exception) {
+            runCatching {
+                Log.w(TAG, "local action failed: action=$action type=${exception.javaClass.simpleName}")
+            }
             failed("LOCAL_ACTION_FAILED")
         }
     }
@@ -184,6 +188,7 @@ open class LocalDeviceActions(
     )
 
     private companion object {
+        const val TAG = "AcpLocalActions"
         const val ACCOUNT_SWITCH_CHAIN_STEPS = 2
         const val UI_SETTLING_RETRIES = 5
         val ACCOUNT_SWITCH_SCREENS = setOf(
