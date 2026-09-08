@@ -2101,7 +2101,8 @@ def test_auto_schedule_docs_and_timer_examples_keep_global_publish_separate():
     assert "ExecStartPre=" in auto_service
     assert "ExecStartPost=" in auto_service
     assert "run.py auto-schedule" in auto_service
-    assert "OnUnitActiveSec=60min" in auto_timer
+    assert "OnUnitActiveSec=24h" in auto_timer
+    assert "bài Auto cuối cùng" in combined
     for secret_name in ("ACCESSTRADE_API_TOKEN=", "AT_ACCESS_KEY=", "ACP_MASTER_KEY="):
         assert secret_name not in worker_service
         assert secret_name not in auto_service

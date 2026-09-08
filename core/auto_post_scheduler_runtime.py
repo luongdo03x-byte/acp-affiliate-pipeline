@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import auto_post_plans, auto_scheduler, pipeline, reviewer_caption, scoring, topic_engine
+from .db import audit
 
 _INSTALLED = False
 _AUTO_CHANNEL_ID = ContextVar("acp_auto_channel_id", default=None)
@@ -33,6 +34,60 @@ def _normalize_utc(value=None) -> datetime:
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return current.astimezone(timezone.utc)
+
+
+def refill_after_last_auto_publish(conn, target_id: str, *, ctx=None, now_utc=None) -> dict:
+    """Extend the calendar immediately after a channel's final Auto target.
+
+    The minute-level publish worker is the event source. A daily timer remains
+    only as recovery for an empty/new installation or a failed refill. The
+    refill failure must never make an already-published target retry.
+    """
+    target = conn.execute(
+        """SELECT id,channel_id,status,auto_scheduled
+           FROM publish_target WHERE id=?""",
+        (str(target_id),),
+    ).fetchone()
+    if not target or target["status"] != "SUCCESS" or not int(target["auto_scheduled"] or 0):
+        return {"triggered": False, "reason": "not_successful_auto_target"}
+
+    remaining = conn.execute(
+        """SELECT COUNT(*)
+           FROM publish_target
+           WHERE channel_id=? AND id<>? AND COALESCE(auto_scheduled, 0)=1
+             AND status IN ('SCHEDULED','PENDING','RUNNING')""",
+        (target["channel_id"], target["id"]),
+    ).fetchone()[0]
+    if remaining:
+        return {"triggered": False, "reason": "future_auto_targets_remain", "remaining": remaining}
+
+    campaign = conn.execute(
+        """SELECT code FROM campaign
+           WHERE is_active=1
+           ORDER BY CASE WHEN code='gd2026' THEN 0 ELSE 1 END, created_at, code
+           LIMIT 1"""
+    ).fetchone()
+    if not campaign:
+        return {"triggered": False, "reason": "no_active_campaign"}
+
+    stats = pipeline.fill_auto_schedule(
+        conn,
+        campaign["code"],
+        now_utc=_normalize_utc(now_utc),
+        ctx=ctx,
+    )
+    audit(
+        conn,
+        "publish_target",
+        target["id"],
+        "auto_schedule_refilled_after_tail_publish",
+        actor="auto_scheduler",
+        detail={
+            key: int(stats.get(key, 0) or 0)
+            for key in ("scheduled", "review", "skipped", "cancelled")
+        },
+    )
+    return {"triggered": True, "reason": "tail_published", **stats}
 
 
 @contextmanager

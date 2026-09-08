@@ -80,6 +80,13 @@
           {% if account.posting_slots_list %} · {{ account.posting_slots_list|join(' · ') }}{% endif %}
           · {{ account.posting_timezone }}
         </div>
+        <div class="note">
+          Bài cuối trong lịch:
+          <strong>{{ account.schedule_tail_local or 'chưa có lịch' }}</strong>
+          · {{ account.posting_timezone }}
+          {% if account.schedule_tail_local %} · tự lấp lịch tiếp sau khi bài này đăng{% endif %}
+        </div>
+        {% if account.last_published_local %}<div class="note">Đăng gần nhất: {{ account.last_published_local }} · {{ account.posting_timezone }}</div>{% endif %}
         <div class="note">Topic: {{ account.topic_summary }}{% if account.topic_excludes %} · Loại: {{ account.topic_excludes }}{% endif %}</div>
       </div>
       <div class="auto-account-actions">
