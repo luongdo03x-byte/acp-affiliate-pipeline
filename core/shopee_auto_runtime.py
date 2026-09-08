@@ -179,7 +179,14 @@ def _shopee_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> lis
     #
     # MAX_CANDIDATE_SCAN là chốt an toàn cho kho lớn về sau, KHÔNG phải ngưỡng
     # liên quan. Kho Shopee hiện tại khoảng 750 sản phẩm nên duyệt trọn.
-    cursor = conn.execute(
+    #
+    # Phải fetchall(), KHÔNG được duyệt cursor lười: vòng lặp bên dưới có ghi
+    # (sync_product_system_topics). Cursor còn mở giữ một giao dịch đọc, nên khi
+    # cần ghi thì SQLite phải nâng cấp giao dịch đó -- và nếu acp-worker (tiến
+    # trình khác, chạy mỗi 60 giây) đã ghi chen vào giữa thì không nâng cấp
+    # được, báo "database is locked" ngay lập tức chứ không chờ hết timeout.
+    # Đọc trọn trước rồi mới xử lý thì mỗi lệnh ghi là một giao dịch sạch.
+    rows = conn.execute(
         """
         SELECT p.*
         FROM product p
@@ -194,9 +201,9 @@ def _shopee_auto_candidates(conn, channel, limit: int, now_utc: datetime) -> lis
         LIMIT ?
         """,
         (SHOPEE_PROVIDER, MAX_CANDIDATE_SCAN),
-    )
+    ).fetchall()
     candidates = []
-    for product in cursor:
+    for product in rows:
         eligible, _reason = _shopee_product_auto_eligibility(
             conn, product, channel, now_utc, require_auto_schedule=True
         )

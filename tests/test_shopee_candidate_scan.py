@@ -8,6 +8,13 @@ chỉ vì món đầu tiên của chúng nằm ở hạng 106-108.
 
 Hệ quả: các kênh đó không bao giờ được lấp lịch, và ``auto-schedule`` báo
 ``scheduled=0, skipped=16``.
+
+KHÔNG có test cho ràng buộc "phải fetchall() thay vì duyệt cursor lười" (xem
+chú thích trong ``_shopee_auto_candidates``). Đã thử: ``sqlite3`` nạp kết quả
+theo lô nên với vài trăm dòng, cursor đã đọc xong và đóng giao dịch đọc trước
+khi vòng lặp chạy -- test xanh cả khi code sai. Muốn tái hiện phải dựng hàng
+nghìn dòng và ép đúng thời điểm ghi từ connection khác, quá mong manh để giữ
+lại. Ràng buộc đó hiện chỉ được bảo vệ bằng chú thích trong code.
 """
 import os
 import tempfile
