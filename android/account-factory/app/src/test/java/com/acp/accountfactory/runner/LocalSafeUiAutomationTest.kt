@@ -130,7 +130,7 @@ class LocalSafeUiAutomationTest {
     fun instagramAccountSwitcherAddsAnotherAccount() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
-            listOf(LocalUiNode(text = "Thêm tài khoản Instagram", clickable = true)),
+            listOf(LocalUiNode(contentDescription = "Thêm tài khoản Instagram", clickable = true)),
         )
 
         val result = LocalSafeUiAutomation(bridge).runInstagram(emptyMap())

@@ -69,6 +69,10 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "Add Instagram account", "Add account",
             "Thêm tài khoản Instagram", "Thêm tài khoản",
         ),
+        contentDescriptions = setOf(
+            "Add Instagram account", "Add account",
+            "Thêm tài khoản Instagram", "Thêm tài khoản",
+        ),
         requireClickable = true,
     )
     private val contactInput = LocalUiSelector(
@@ -122,6 +126,10 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     )
     private val threadsAddProfile = LocalUiSelector(
         texts = setOf(
+            "Add profile", "Add account",
+            "Thêm trang cá nhân", "Thêm tài khoản",
+        ),
+        contentDescriptions = setOf(
             "Add profile", "Add account",
             "Thêm trang cá nhân", "Thêm tài khoản",
         ),
