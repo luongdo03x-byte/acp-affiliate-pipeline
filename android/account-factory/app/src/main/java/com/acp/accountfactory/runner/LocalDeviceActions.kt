@@ -46,6 +46,8 @@ open class LocalDeviceActions(
     private val observationStore: ForegroundObservationStore,
     private val automationProvider: () -> LocalSafeUiAutomation? = { null },
 ) {
+    private val uiSettlingAttempts = mutableMapOf<String, Int>()
+
     constructor(context: Context) : this(
         platform = AndroidLocalPlatform(context.applicationContext),
         clipboard = AndroidLocalClipboard(context.applicationContext),
@@ -100,6 +102,15 @@ open class LocalDeviceActions(
         }
         val profile = command.payload.filterKeys { it in PROFILE_FIELDS }
         val outcome = if (flow == "threads") automation.runThreads(profile) else automation.runInstagram(profile)
+        if (outcome.status == "needs_confirmation" && outcome.reason == "UI_CHANGED") {
+            val attempts = (uiSettlingAttempts[flow] ?: 0) + 1
+            uiSettlingAttempts[flow] = attempts
+            if (attempts <= UI_SETTLING_RETRIES) {
+                return flowResult(LocalFlowOutcome("running", outcome.screen, "UI_SETTLING"))
+            }
+        } else {
+            uiSettlingAttempts.remove(flow)
+        }
         return flowResult(outcome)
     }
 
@@ -158,6 +169,7 @@ open class LocalDeviceActions(
     )
 
     private companion object {
+        const val UI_SETTLING_RETRIES = 5
         val OFFICIAL_PACKAGES = setOf("com.instagram.android", "com.instagram.barcelona")
         val SENSITIVE_KEYS = setOf("password", "otp", "captcha", "token", "secret")
         val PROFILE_FIELDS = setOf(

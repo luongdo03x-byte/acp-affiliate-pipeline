@@ -24,6 +24,14 @@ class LocalDeviceActionsTest {
         override fun putText(text: String) { value = text }
     }
 
+    private class FakeBridge : LocalAccessibilityBridge {
+        override fun foregroundPackage() = LocalSafeUiAutomation.INSTAGRAM_PACKAGE
+        override fun nodes() = listOf(LocalUiNode(text = "Unexpected transition frame"))
+        override fun click(selector: LocalUiSelector) = false
+        override fun longClick(selector: LocalUiSelector) = false
+        override fun setText(selector: LocalUiSelector, value: String) = false
+    }
+
     private fun command(action: String, payload: Map<String, String?> = emptyMap()) = RunnerCommandDto(
         id = "c1",
         jobId = "j1",
@@ -75,5 +83,25 @@ class LocalDeviceActionsTest {
         assertEquals("FAILED", bad.status)
         assertEquals("COMPLETED", good.status)
         assertEquals(listOf("https://threads.example/oauth"), platform.urls)
+    }
+
+    @Test
+    fun transientUnknownUiGetsBoundedSettlingRetries() {
+        val automation = LocalSafeUiAutomation(FakeBridge())
+        val actions = LocalDeviceActions(
+            FakePlatform(),
+            FakeClipboard(),
+            ForegroundObservationStore(),
+            automationProvider = { automation },
+        )
+
+        repeat(5) {
+            val result = actions.execute(command("AUTOMATE_INSTAGRAM"))
+            assertEquals("running", result.result["flow_status"])
+            assertEquals("UI_SETTLING", result.result["reason"])
+        }
+        val exhausted = actions.execute(command("AUTOMATE_INSTAGRAM"))
+        assertEquals("needs_confirmation", exhausted.result["flow_status"])
+        assertEquals("UI_CHANGED", exhausted.result["reason"])
     }
 }
