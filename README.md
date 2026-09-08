@@ -469,7 +469,7 @@ Xem lượt chạy gần nhất bằng `journalctl --user -u acp-worker.service 
 Sau upgrade, giữ timer đang bật; unit sẽ theo symlink release active. Khi cần
 dừng lịch worker, chạy `systemctl --user disable --now acp-worker.timer`.
 
-Để lấp rolling schedule cho Threads Auto sau mỗi lượt sync, cài thêm timer:
+Để khởi tạo và phục hồi rolling schedule cho Threads Auto, cài thêm timer:
 
 ```bash
 cp ops/acp-auto-schedule.service ops/acp-auto-schedule.timer ~/.config/systemd/user/
@@ -478,12 +478,13 @@ systemctl --user enable --now acp-auto-schedule.timer
 systemctl --user status acp-auto-schedule.timer
 ```
 
-Timer này chạy chuỗi `product-sync` -> `auto-schedule` -> `worker-once` trong
-cùng unit, source đúng `.env.local` của release active, không bật publish worker
-và không bật `ACP_ADAPTER=live`. `worker-once` ở cuối vẫn tôn trọng công tắc
-publish worker toàn hệ thống, nên khi worker đang tắt thì bước cuối chỉ no-op an
-toàn. `acp-worker.timer` giữ vai trò fallback để quét publish queue, không phải
-một vòng sync catalog thứ hai.
+Ngay sau khi bài Auto cuối cùng của một account publish thành công, publish
+worker tự lấp lịch tiếp cho hôm nay + ngày mai. Timer chạy chuỗi `product-sync`
+-> `auto-schedule` -> `worker-once` lúc khởi động và mỗi 24 giờ, chỉ làm đường
+phục hồi nếu lần lấp theo sự kiện lỗi hoặc chưa có lịch ban đầu. Timer source
+đúng `.env.local` của release active, không bật publish worker và không bật
+`ACP_ADAPTER=live`. `worker-once` vẫn tôn trọng công tắc publish worker toàn hệ
+thống. `acp-worker.timer` quét publish queue mỗi phút.
 Nói ngắn gọn: timer này không bật live adapter.
 
 ### Kiểm tra end-to-end bằng mock

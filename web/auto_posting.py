@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Blueprint, current_app, redirect, render_template, request, url_for
 
@@ -41,13 +41,25 @@ def _parse_now(value: str | None):
     return parsed.astimezone(timezone.utc)
 
 
+def _local_datetime(value, timezone_name: str):
+    if not value:
+        return None
+    dt = datetime.fromisoformat(str(value))
+    # Older rows may not carry an offset. Database timestamps are UTC; letting
+    # astimezone() interpret a naive value as the server timezone shifts the
+    # operator-facing schedule when the VM timezone changes.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo(timezone_name or "Asia/Bangkok"))
+
+
 def _localize(item: dict) -> dict:
     row = dict(item)
     try:
-        dt = datetime.fromisoformat(row["scheduled_at"])
-        tz = ZoneInfo(row.get("posting_timezone") or "Asia/Bangkok")
-        row["scheduled_local"] = dt.astimezone(tz).strftime("%d/%m %H:%M")
-        row["scheduled_input"] = dt.astimezone(tz).strftime("%Y-%m-%dT%H:%M")
+        timezone_name = row.get("posting_timezone") or "Asia/Bangkok"
+        dt = _local_datetime(row["scheduled_at"], timezone_name)
+        row["scheduled_local"] = dt.strftime("%d/%m/%Y %H:%M")
+        row["scheduled_input"] = dt.strftime("%Y-%m-%dT%H:%M")
     except Exception:
         row["scheduled_local"] = row.get("scheduled_at") or "—"
         row["scheduled_input"] = ""
@@ -106,6 +118,36 @@ def _auto_accounts(conn) -> list[dict]:
     accounts = []
     for row in rows:
         item = dict(row)
+        tail = conn.execute(
+            """SELECT MAX(scheduled_at) AS scheduled_at
+               FROM publish_target
+               WHERE channel_id=? AND COALESCE(auto_scheduled, 0)=1
+                 AND status IN ('SCHEDULED','PENDING','RUNNING')""",
+            (row["id"],),
+        ).fetchone()
+        published = conn.execute(
+            """SELECT MAX(COALESCE(p.published_at, pt.updated_at)) AS published_at
+               FROM publish_target pt
+               JOIN post p ON p.id=pt.post_id
+               WHERE pt.channel_id=? AND COALESCE(pt.auto_scheduled, 0)=1
+                 AND pt.status='SUCCESS'""",
+            (row["id"],),
+        ).fetchone()
+        timezone_name = row["posting_timezone"] or "Asia/Bangkok"
+        try:
+            tail_local = _local_datetime(tail["scheduled_at"], timezone_name)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            tail_local = None
+        try:
+            published_local = _local_datetime(published["published_at"], timezone_name)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            published_local = None
+        item["schedule_tail_local"] = (
+            tail_local.strftime("%d/%m/%Y %H:%M") if tail_local else None
+        )
+        item["last_published_local"] = (
+            published_local.strftime("%d/%m/%Y %H:%M") if published_local else None
+        )
         item["posting_slots_list"] = _parse_slots(row["posting_slots"])
         item["topic_summary"], item["topic_excludes"] = _channel_topic_summary(conn, row)
         accounts.append(item)

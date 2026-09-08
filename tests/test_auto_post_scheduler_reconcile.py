@@ -4,7 +4,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from acp.core import auto_post_plans, db, pipeline
+from acp.core import (
+    auto_post_plans,
+    auto_post_runtime,
+    auto_post_scheduler_runtime,
+    db,
+    pipeline,
+)
 
 
 class AutoPostSchedulerReconcileTests(unittest.TestCase):
@@ -77,6 +83,57 @@ class AutoPostSchedulerReconcileTests(unittest.TestCase):
         reconcile.assert_called_once_with(self.conn, self.plan['id'])
         self.assertEqual(stats['reconciled'], 1)
         self.assertEqual(stats['reconcile_deferred'], 0)
+
+    def test_successful_tail_publish_immediately_refills_schedule(self):
+        self.conn.execute("UPDATE publish_target SET status='SUCCESS' WHERE id='target'")
+        expected = {"scheduled": 2, "review": 0, "skipped": 0, "cancelled": 0}
+        with mock.patch.object(pipeline, "fill_auto_schedule", return_value=expected) as fill:
+            result = auto_post_scheduler_runtime.refill_after_last_auto_publish(
+                self.conn,
+                "target",
+                ctx={"publishers": {}},
+                now_utc=self.now,
+            )
+        fill.assert_called_once_with(
+            self.conn,
+            "c",
+            now_utc=self.now,
+            ctx={"publishers": {}},
+        )
+        self.assertTrue(result["triggered"])
+        self.assertEqual(result["scheduled"], 2)
+
+    def test_publish_before_tail_does_not_refill(self):
+        self.conn.execute("UPDATE publish_target SET status='SUCCESS' WHERE id='target'")
+        self.conn.execute(
+            """INSERT INTO publish_target
+               (id,post_id,channel_id,status,scheduled_at,auto_scheduled,created_at,updated_at)
+               VALUES ('target-next','post','ch','SCHEDULED',?,1,?,?)""",
+            (
+                (self.now + timedelta(hours=8)).isoformat(timespec="seconds"),
+                self.now.isoformat(timespec="seconds"),
+                self.now.isoformat(timespec="seconds"),
+            ),
+        )
+        with mock.patch.object(pipeline, "fill_auto_schedule") as fill:
+            result = auto_post_scheduler_runtime.refill_after_last_auto_publish(
+                self.conn,
+                "target",
+                ctx={},
+                now_utc=self.now,
+            )
+        fill.assert_not_called()
+        self.assertEqual(result["reason"], "future_auto_targets_remain")
+
+    def test_refill_failure_never_escapes_successful_publish_path(self):
+        with mock.patch.object(
+            auto_post_scheduler_runtime,
+            "refill_after_last_auto_publish",
+            side_effect=RuntimeError("recovery failed"),
+        ):
+            with self.assertLogs(auto_post_runtime._LOG, level="ERROR") as captured:
+                auto_post_runtime._refill_safely(self.conn, "target", {})
+        self.assertIn("Auto schedule refill failed", captured.output[0])
 
 
 if __name__ == '__main__':
