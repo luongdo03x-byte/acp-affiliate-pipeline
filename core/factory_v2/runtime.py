@@ -637,33 +637,19 @@ class FactoryControllerRuntime:
         if account is None:
             return
         action = str(job["desired_action"] or "").upper()
-        remote = self._is_remote(job)
 
         if action == "PREPARE_INSTAGRAM":
-            if remote:
-                self._drive_remote_instagram(job, account, prepare=True)
-            else:
-                self._open_human_checkpoint(
-                    job, account, package=_INSTAGRAM_PACKAGE, checkpoint_type="IG_POSTCHECK"
-                )
-        elif action == "AUTOMATE_INSTAGRAM" and remote:
+            self._drive_remote_instagram(job, account, prepare=True)
+        elif action == "AUTOMATE_INSTAGRAM":
             self._drive_remote_instagram(job, account, prepare=False)
         elif action == "PREPARE_THREADS":
-            if remote:
-                self._drive_remote_threads(job, account)
-            else:
-                self._open_human_checkpoint(
-                    job, account, package=_THREADS_PACKAGE, checkpoint_type="THREADS_POSTCHECK"
-                )
-        elif action == "AUTOMATE_THREADS" and remote:
             self._drive_remote_threads(job, account)
-        elif action == "OBSERVE_CHECKPOINT" and remote:
+        elif action == "AUTOMATE_THREADS":
+            self._drive_remote_threads(job, account)
+        elif action == "OBSERVE_CHECKPOINT":
             self._observe_remote_checkpoint(job, account)
         elif action in {"VERIFY_CHECKPOINT", "RETRY_CHECKPOINT"}:
-            if remote:
-                self._observe_remote_checkpoint(job, account)
-            else:
-                self._verify_checkpoint(job, account)
+            self._observe_remote_checkpoint(job, account)
         elif action == "START_ACP":
             if self._completion_mode(account) == "SOCIAL_ONLY":
                 if account["stage"] == AccountStage.THREADS_CREATED.value:

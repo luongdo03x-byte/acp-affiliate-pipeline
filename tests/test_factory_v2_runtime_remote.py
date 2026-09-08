@@ -260,15 +260,21 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertNotIn("START_ACP", runtime.running_actions)
         self.assertEqual([("job-1", "COMPLETED")], runtime.released)
 
-    def test_local_device_keeps_existing_manual_checkpoint_path(self):
+    def test_local_device_uses_safe_automation_path(self):
         acc = account()
         repo = FakeRepo(acc, worker_type="LOCAL_DEVICE")
         service = FakeService(repo)
-        gateway = FakeGateway([])
+        gateway = FakeGateway([
+            {"ok": True, "status": "completed"},
+            {"ok": True, "status": "waiting_human", "result": {"screen": "PASSWORD_REQUIRED"}},
+        ])
         runtime = TestRuntime(repo, service, gateway)
-        runtime._open_human_checkpoint = lambda *args, **kwargs: gateway.commands.append(("LOCAL_MANUAL", kwargs))
         runtime._drive_job(job(runner_type="LOCAL_DEVICE"))
-        self.assertEqual("LOCAL_MANUAL", gateway.commands[0][0])
+        self.assertEqual(
+            ["PREPARE_INSTAGRAM", "AUTOMATE_INSTAGRAM"],
+            [item[0] for item in gateway.commands],
+        )
+        self.assertEqual("WAITING_HUMAN", acc["stage"])
 
     def test_remote_waiting_checkpoint_auto_resumes_on_known_successor(self):
         acc = account("WAITING_HUMAN")

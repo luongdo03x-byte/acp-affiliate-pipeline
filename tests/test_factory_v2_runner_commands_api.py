@@ -128,6 +128,42 @@ class FactoryV2RunnerCommandApiTests(unittest.TestCase):
         self.assertEqual("COMPLETED", saved["status"])
         self.assertIn("com.instagram.android", saved["result_json"])
 
+    def test_safe_ui_flow_result_round_trips_to_runtime_shape(self):
+        command = self.gateway.send(
+            self.job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user"}},
+        )
+        self.client.get(
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/next",
+            headers=self.auth,
+        )
+        result_url = (
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/"
+            f"{command['command_id']}/result"
+        )
+        res = self.client.post(
+            result_url,
+            headers=self.auth,
+            json={
+                "status": "COMPLETED",
+                "result": {
+                    "flow_status": "waiting_human",
+                    "screen": "PASSWORD_REQUIRED",
+                    "reason": "HUMAN_VERIFICATION_REQUIRED",
+                },
+            },
+        )
+
+        self.assertEqual(202, res.status_code)
+        response = self.gateway.send(
+            self.job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user"}},
+        )
+        self.assertEqual("waiting_human", response["status"])
+        self.assertEqual("PASSWORD_REQUIRED", response["result"]["screen"])
+
 
 if __name__ == "__main__":
     unittest.main()

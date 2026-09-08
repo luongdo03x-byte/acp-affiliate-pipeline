@@ -44,11 +44,15 @@ open class LocalDeviceActions(
     private val platform: LocalPlatform,
     private val clipboard: LocalClipboard,
     private val observationStore: ForegroundObservationStore,
+    private val automationProvider: () -> LocalSafeUiAutomation? = { null },
 ) {
     constructor(context: Context) : this(
         platform = AndroidLocalPlatform(context.applicationContext),
         clipboard = AndroidLocalClipboard(context.applicationContext),
         observationStore = FactoryAccessibilityService.observationStore,
+        automationProvider = {
+            FactoryAccessibilityService.instance?.let(::LocalSafeUiAutomation)
+        },
     )
 
     open fun execute(command: RunnerCommandDto): RunnerCommandResult {
@@ -58,6 +62,10 @@ open class LocalDeviceActions(
         }
         return try {
             when (action) {
+                "PREPARE_INSTAGRAM" -> prepareInstagram()
+                "AUTOMATE_INSTAGRAM" -> automate(command, "instagram")
+                "AUTOMATE_THREADS" -> automate(command, "threads")
+                "OBSERVE_CHECKPOINT" -> observeCheckpoint(command)
                 "OPEN_PACKAGE" -> openPackage(command)
                 "OPEN_URL" -> openUrl(command)
                 "PREPARE_TEXT" -> prepareText(command)
@@ -72,6 +80,43 @@ open class LocalDeviceActions(
             failed("LOCAL_ACTION_FAILED")
         }
     }
+
+    private fun prepareInstagram(): RunnerCommandResult =
+        if (platform.openPackage(LocalSafeUiAutomation.INSTAGRAM_PACKAGE)) completed()
+        else failed("PACKAGE_NOT_INSTALLED")
+
+    private fun automate(command: RunnerCommandDto, flow: String): RunnerCommandResult {
+        val packageName = if (flow == "threads") {
+            LocalSafeUiAutomation.THREADS_PACKAGE
+        } else {
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE
+        }
+        val automation = automationProvider() ?: return flowResult(
+            LocalFlowOutcome("needs_confirmation", "UNKNOWN", "ACCESSIBILITY_NOT_READY")
+        )
+        if (automationForegroundPackage(automation) != packageName) {
+            if (!platform.openPackage(packageName)) return failed("PACKAGE_NOT_INSTALLED")
+            return flowResult(LocalFlowOutcome("running", "APP_OPENING"))
+        }
+        val profile = command.payload.filterKeys { it in PROFILE_FIELDS }
+        val outcome = if (flow == "threads") automation.runThreads(profile) else automation.runInstagram(profile)
+        return flowResult(outcome)
+    }
+
+    private fun observeCheckpoint(command: RunnerCommandDto): RunnerCommandResult {
+        val automation = automationProvider() ?: return flowResult(
+            LocalFlowOutcome("needs_confirmation", "UNKNOWN", "ACCESSIBILITY_NOT_READY")
+        )
+        return flowResult(automation.observe(command.payload["flow"].orEmpty()))
+    }
+
+    private fun automationForegroundPackage(automation: LocalSafeUiAutomation): String? =
+        automation.foregroundPackageForRunner()
+
+    private fun flowResult(outcome: LocalFlowOutcome) = RunnerCommandResult(
+        status = "COMPLETED",
+        result = outcome.result(),
+    )
 
     private fun openPackage(command: RunnerCommandDto): RunnerCommandResult {
         val packageName = command.payload["package"].orEmpty()
@@ -115,5 +160,9 @@ open class LocalDeviceActions(
     private companion object {
         val OFFICIAL_PACKAGES = setOf("com.instagram.android", "com.instagram.barcelona")
         val SENSITIVE_KEYS = setOf("password", "otp", "captcha", "token", "secret")
+        val PROFILE_FIELDS = setOf(
+            "username", "display_name", "bio", "signup_contact_type",
+            "signup_contact", "birth_date", "avatar_file",
+        )
     }
 }

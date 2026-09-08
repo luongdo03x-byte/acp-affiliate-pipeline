@@ -8,9 +8,9 @@ instructions below apply only to a trusted private network.
 
 Account Factory helps an operator track Instagram/Threads profiles on Android and connect completed Threads profiles to ACP through official Threads OAuth.
 
-It does **not** bypass OTP/CAPTCHA, identity checks or Android security permissions. The operator completes any verification required by Meta in the official apps. Android Accessibility must be enabled manually once because Android does not allow an app to grant itself that permission.
+It does **not** bypass password, OTP/CAPTCHA, final account submission, identity/recovery checks or Android security permissions. The operator completes those protected steps in the official apps. Android Accessibility must be enabled manually once because Android does not allow an app to grant itself that permission.
 
-`REMOTE_AVD` additionally supports fail-closed UI assistance for known safe screens. It may fill only approved non-sensitive profile fields (`username`, `display_name`, `bio`) and tap only positively matched known controls. Unknown UI, password/OTP/CAPTCHA, contact verification, selfie/identity, recovery and security challenges stop automation and require the operator.
+Both `LOCAL_DEVICE` and `REMOTE_AVD` support fail-closed UI assistance for known safe screens. They may fill only approved non-sensitive onboarding/profile fields and tap only positively matched known controls. Unknown UI, password/OTP/CAPTCHA, final account submission, contact verification, selfie/identity, recovery and security challenges stop automation and require the operator. The local runner executes at most one verified UI action per controller command, then reports the observed screen before continuing.
 
 ## Security boundaries
 
@@ -183,16 +183,20 @@ X-ACP-Device-Token: <device credential>
 
 The Android app keeps compatibility with its existing networking layer; the Controller auth bridge also recognizes an enrolled credential presented in the existing `X-ACP-Factory-Key` slot. A real `ACP_FACTORY_API_KEY` continues to work unchanged.
 
-## LOCAL_DEVICE operator flow
+## LOCAL_DEVICE assisted flow
 
 1. Open Account Factory. Controller discovery/enrollment and LOCAL_DEVICE runner startup happen automatically.
 2. Create/select the account work item.
 3. Open Instagram/Threads and complete any signup or verification steps required by the official app.
 4. If Android requests Accessibility, enable ACP Account Factory once in Settings.
-5. Continue the workflow until Threads is created.
-6. Start the official ACP OAuth connection.
-7. Meta redirects to ACP; ACP validates the expected username and activates the channel only on a matching identity.
-8. When ACP reports `ACTIVE`, the account reaches `ACP_ACTIVE`.
+5. Keep the official Instagram or Threads app visible when requested. The runner
+   performs only a known-safe action and reports the resulting screen on each pass.
+6. Complete password, OTP/CAPTCHA, final signup submission, identity/recovery or
+   security challenges manually. Unknown screens remain paused for confirmation.
+7. Continue the workflow until Threads is created.
+8. Start the official ACP OAuth connection.
+9. Meta redirects to ACP; ACP validates the expected username and activates the channel only on a matching identity.
+10. When ACP reports `ACTIVE`, the account reaches `ACP_ACTIVE`.
 
 ## REMOTE_AVD fail-closed automation
 

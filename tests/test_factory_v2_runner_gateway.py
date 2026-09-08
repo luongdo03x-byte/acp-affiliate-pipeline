@@ -85,10 +85,16 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         self.assertEqual("OPEN_PACKAGE", queued["action"])
         self.assertIsNone(self.processes.last_command)
 
-    def test_local_gateway_rejects_avd_automation_action(self):
+    def test_local_gateway_queues_safe_automation_with_flat_profile(self):
         job = self._leased_job("phone-automation", "LOCAL_DEVICE")
-        with self.assertRaisesRegex(ValueError, "unsupported local runner action"):
-            self.gateway.send(job, "AUTOMATE_INSTAGRAM", {"profile": {"username": "sample_user"}})
+        result = self.gateway.send(
+            job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user", "display_name": "Sample User"}},
+        )
+        queued = self.repo.get_runner_command(result["command_id"])
+        self.assertIn('"username":"sample_user"', queued["payload_json"])
+        self.assertNotIn('"profile"', queued["payload_json"])
         self.assertIsNone(self.processes.last_command)
 
     def test_local_gateway_reuses_unfinished_command(self):

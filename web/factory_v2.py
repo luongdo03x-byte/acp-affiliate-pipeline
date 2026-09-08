@@ -48,6 +48,11 @@ _HOST_FIELDS = (
 )
 _ALLOWED_RUNNER_RESULT_KEYS = frozenset({
     "package", "activity", "waiting_human", "error_code", "prepared",
+    "flow_status", "screen", "reason", "last_safe_step",
+})
+_ALLOWED_FLOW_STATUSES = frozenset({
+    "running", "waiting_human", "completed", "needs_confirmation",
+    "retry_pending", "error",
 })
 _ALLOWED_CREATE_ACCOUNT_FIELDS = frozenset({
     "execution_target", "batch_name", "completion_mode", "signup_contact_type",
@@ -175,7 +180,12 @@ def _clean_runner_result(value) -> dict:
         raise ValueError(f"runner result chứa field không hợp lệ: {sorted(unknown)}")
     clean = {}
     for key, child in value.items():
-        if key in {"package", "activity", "error_code"}:
+        if key == "flow_status":
+            flow_status = str(child or "").lower()
+            if flow_status not in _ALLOWED_FLOW_STATUSES:
+                raise ValueError("flow_status không hợp lệ")
+            clean[key] = flow_status
+        elif key in {"package", "activity", "error_code", "screen", "reason", "last_safe_step"}:
             clean[key] = None if child is None else str(child)[:240]
         elif key in {"waiting_human", "prepared"}:
             clean[key] = bool(child)

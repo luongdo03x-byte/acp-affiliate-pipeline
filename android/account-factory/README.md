@@ -21,7 +21,13 @@ Android operator app for tracking a 50-profile Instagram → Threads onboarding 
 - launches the OAuth URL returned by ACP
 - polls ACP until the channel is ACTIVE or the OAuth attempt fails
 
-The operator still completes Instagram/Threads signup, OTP/CAPTCHA and identity/security checks in the official apps. Android Accessibility must also be enabled manually once because Android does not allow an app to grant itself that permission.
+For `LOCAL_DEVICE`, the Accessibility service can assist only on positively matched,
+known-safe Instagram and Threads screens. It may fill approved non-sensitive profile
+fields and press whitelisted navigation controls. It stops before final account
+submission and whenever password, OTP/CAPTCHA, identity/recovery/security checks, or
+an unknown UI is detected. The operator completes those protected steps in the
+official apps. Android Accessibility must also be enabled manually once because
+Android does not allow an app to grant itself that permission.
 
 ## Zero-config first launch
 

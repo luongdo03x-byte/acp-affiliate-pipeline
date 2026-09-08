@@ -10,6 +10,10 @@ from .models import RunnerType
 from .worker_protocol import WorkerCommand
 
 _LOCAL_ACTIONS = frozenset({
+    "PREPARE_INSTAGRAM",
+    "AUTOMATE_INSTAGRAM",
+    "AUTOMATE_THREADS",
+    "OBSERVE_CHECKPOINT",
     "PREPARE_TEXT",
     "OPEN_PACKAGE",
     "OPEN_URL",
@@ -70,6 +74,21 @@ class RunnerGateway:
         if action not in _LOCAL_ACTIONS:
             raise ValueError(f"unsupported local runner action: {action}")
 
+        # The Android command DTO deliberately accepts only scalar values. Keep
+        # the wire format small and auditable instead of teaching the phone to
+        # accept arbitrary nested command objects.
+        profile = payload.pop("profile", None)
+        if profile is not None:
+            if not isinstance(profile, dict):
+                raise ValueError("invalid local runner profile")
+            allowed_profile = {
+                "username", "display_name", "bio", "signup_contact_type",
+                "signup_contact", "birth_date", "avatar_file",
+            }
+            if set(profile) - allowed_profile:
+                raise ValueError("unsupported local runner profile field")
+            payload.update({key: value for key, value in profile.items() if value is not None})
+
         correlation = str(job.get("command_id") or job["id"])
         command_id = f"{correlation}:{action}"
         existing = self.repo.get_runner_command(command_id)
@@ -105,4 +124,17 @@ class RunnerGateway:
             raise RuntimeError("local runner returned invalid result") from exc
         if not isinstance(result, dict):
             raise RuntimeError("local runner returned invalid result")
-        return {"status": "completed", "command_id": command_id, **result}
+        flow_status = result.pop("flow_status", None)
+        flow_detail = {
+            key: result.pop(key)
+            for key in ("screen", "reason", "last_safe_step")
+            if key in result
+        }
+        response = {
+            "status": flow_status or "completed",
+            "command_id": command_id,
+            **result,
+        }
+        if flow_detail:
+            response["result"] = flow_detail
+        return response
