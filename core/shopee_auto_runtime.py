@@ -82,7 +82,11 @@ def _shopee_product_auto_eligibility(
     exclude_post_id: str = None,
     slot_at: str = None,
     require_auto_schedule: bool = True,
+    persist_topics: bool = True,
 ) -> tuple[bool, str]:
+    # persist_topics chỉ có ý nghĩa với bản bọc topic_runtime; nhận ở đây để
+    # mọi nơi gọi dùng chung một chữ ký, kể cả khi lớp topic chưa được cài.
+    del persist_topics
     if not product or str(_row_get(product, "provider") or "") != SHOPEE_PROVIDER:
         return False, "product_provider_invalid"
     if not channel or not int(_row_get(channel, "enabled", 0) or 0) or _row_get(channel, "status") != "ACTIVE":

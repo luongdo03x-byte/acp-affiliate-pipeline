@@ -153,6 +153,127 @@ class TopicQueryCostTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in rules["includes"]], ["my-pham"])
 
 
+class WriteTrace:
+    """Ghi lại mọi câu lệnh làm thay đổi dữ liệu."""
+
+    KEYWORDS = ("INSERT", "UPDATE", "DELETE", "REPLACE")
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.statements = []
+
+    def __enter__(self):
+        self.conn.set_trace_callback(self._on_statement)
+        return self
+
+    def __exit__(self, *exc):
+        self.conn.set_trace_callback(None)
+        return False
+
+    def _on_statement(self, statement):
+        head = statement.lstrip()[:12].upper()
+        if any(head.startswith(word) for word in self.KEYWORDS):
+            self.statements.append(" ".join(statement.split())[:80])
+
+
+class ProductPoolIsReadOnlyTests(unittest.TestCase):
+    """Dựng trang danh sách là một request GET: không được ghi gì vào DB.
+
+    Đường hiển thị từng gọi sync_product_system_topics cho mỗi cặp sản
+    phẩm×kênh, tức là hàng trăm lệnh ghi cho một lần xem trang. Những lệnh ghi
+    đó phải xếp hàng sau acp-worker (chạy mỗi 60 giây) nên mỗi lệnh mất 93-725ms
+    thay vì 0,9ms, và trang không bao giờ dựng xong.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.old_db_path = db.DB_PATH
+        db.DB_PATH = os.path.join(self.tmp.name, "pool-readonly.db")
+        self.addCleanup(self._restore_db_path)
+        db.init_db()
+        self.conn = db.connect()
+        self.addCleanup(self.conn.close)
+        self.conn.execute(
+            """INSERT INTO channel (id, code, platform, handle, status, enabled,
+                                    auto_schedule_enabled, niches, created_at)
+               VALUES ('ch-ro','threads_ro','threads','@ro','ACTIVE',1,1,
+                       '[\"my-pham\"]',datetime('now'))""",
+        )
+        self.conn.execute(
+            """INSERT INTO product (id, source, merchant, external_product_id, name,
+                                    current_price, commission_value, category_code,
+                                    product_url, is_available, created_at, updated_at,
+                                    affiliate_link_status, post_count, provider,
+                                    main_image_url, last_synced_at, affiliate_url)
+               VALUES ('p-ro','shopee','shopee.vn','ext-ro',
+                       'Son Tint lì Romand Juicy Lasting Tint 5.5g',
+                       100000,10000,'khac','https://shopee.vn/p-ro',1,
+                       datetime('now'),datetime('now'),'READY',0,'SHOPEE_AFFILIATE',
+                       'https://cdn/p.jpg',datetime('now'),'https://s.shopee.vn/abc')""",
+        )
+        # Không có job ảnh READY thì hàm kiểm tra thoát sớm và không bao giờ
+        # chạm tới tầng chủ đề -- test sẽ xanh giả.
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(shopee_image_enrichment_job)")}
+        self.conn.execute(
+            "INSERT INTO shopee_image_enrichment_job (product_id, status, created_at, updated_at)"
+            " VALUES ('p-ro','READY',datetime('now'),datetime('now'))"
+            if "created_at" in columns else
+            "INSERT INTO shopee_image_enrichment_job (product_id, status) VALUES ('p-ro','READY')"
+        )
+
+    def _restore_db_path(self):
+        db.DB_PATH = self.old_db_path
+
+    def test_tinh_trang_thai_hien_thi_khong_ghi_gi_vao_db(self):
+        from acp.core import shopee_product_pool
+
+        product = dict(self.conn.execute("SELECT * FROM product WHERE id='p-ro'").fetchone())
+        product["enrichment_status"] = "READY"
+        channels = shopee_product_pool._active_auto_channels(self.conn)
+        usage = shopee_product_pool._usage_state(self.conn, "p-ro")
+        now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+
+        with WriteTrace(self.conn) as trace:
+            shopee_product_pool._auto_state(self.conn, product, usage, channels, now_utc)
+
+        self.assertEqual(
+            trace.statements, [],
+            "trang danh sách đã ghi vào DB: " + "; ".join(trace.statements[:3]))
+
+    def test_duong_chi_doc_cho_cung_ket_qua_voi_duong_ghi(self):
+        """Ràng buộc quan trọng nhất: trang và scheduler phải nói cùng một kết quả.
+
+        Nếu hai đường lệch nhau thì người vận hành thấy 'ĐỦ ĐIỀU KIỆN' trên
+        trang nhưng tới giờ bài lại bị huỷ, hoặc ngược lại.
+        """
+        from acp.core import shopee_auto_runtime
+
+        import datetime as _dt
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        product = dict(self.conn.execute("SELECT * FROM product WHERE id='p-ro'").fetchone())
+        channel = self.conn.execute("SELECT * FROM channel WHERE id='ch-ro'").fetchone()
+
+        # Chủ đề hệ thống phải tồn tại thì hai đường mới so sánh được -- đúng
+        # như trên hệ thống thật, nơi luồng ghi đã tạo chúng từ trước.
+        topic_engine.ensure_system_topics(self.conn)
+
+        readonly = shopee_auto_runtime._shopee_product_auto_eligibility(
+            self.conn, product, channel, now_utc,
+            require_auto_schedule=True, persist_topics=False)
+        persisted = shopee_auto_runtime._shopee_product_auto_eligibility(
+            self.conn, product, channel, now_utc,
+            require_auto_schedule=True, persist_topics=True)
+
+        self.assertEqual(
+            readonly, persisted,
+            f"đường chỉ đọc trả {readonly} còn đường ghi trả {persisted}")
+        self.assertTrue(
+            readonly[0],
+            "sản phẩm son tint phải đủ điều kiện cho kênh my-pham -- "
+            "test sẽ vô nghĩa nếu cả hai đường cùng trả False vì lý do khác")
+
+
 class NicheFoldCacheTests(unittest.TestCase):
     def test_chuan_hoa_chuoi_cho_ket_qua_on_dinh_khi_goi_lai(self):
         raw = "thoi-trang Đồ ngủ Pijama Tiểu Thư Phối Ren Bigsize shopee.vn"

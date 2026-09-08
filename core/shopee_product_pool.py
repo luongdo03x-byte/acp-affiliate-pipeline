@@ -194,6 +194,9 @@ def _auto_state(conn, product, usage: dict, channels, now_utc: datetime) -> dict
             channel,
             now_utc,
             require_auto_schedule=True,
+            # Trang danh sách chỉ đọc: quyết định giống hệt scheduler, nhưng
+            # không gán chủ đề vào DB.
+            persist_topics=False,
         )
         if eligible:
             return {

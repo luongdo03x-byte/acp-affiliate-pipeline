@@ -247,7 +247,7 @@ def _descendants(conn, topic_id: str) -> set[str]:
     return result
 
 
-def channel_rules(conn, channel_id: str) -> dict:
+def channel_rules(conn, channel_id: str, *, ensure: bool = True) -> dict:
     # Luật của một kênh không đổi giữa chừng một request, nhưng trang danh sách
     # sản phẩm gọi hàm này một lần cho MỖI cặp sản phẩm x kênh. Cache theo
     # connection biến 751 x 10 lần đọc thành 10 lần.
@@ -257,7 +257,11 @@ def channel_rules(conn, channel_id: str) -> dict:
     if cached_rules is not None and key in cached_rules:
         return _copy_rules(cached_rules[key])
 
-    ensure_system_topics(conn)
+    # ensure=False cho đường hiển thị: ensure_system_topics ghi 8 lệnh UPDATE
+    # mỗi request, mà một request GET thì không được ghi. Chủ đề hệ thống do
+    # luồng ghi tạo ra; ở đây chỉ đọc những gì đã có.
+    if ensure:
+        ensure_system_topics(conn)
     rows = conn.execute(
         """SELECT r.rule_mode, t.id, t.code, t.name
            FROM channel_topic_rule r JOIN topic t ON t.id=r.topic_id
@@ -348,8 +352,27 @@ def set_channel_rules(conn, channel_id: str, includes, excludes) -> dict:
     return {"includes": include_codes, "excludes": exclude_codes}
 
 
-def channel_accepts_product(conn, channel_id: str, product_id: str) -> bool:
-    rules = channel_rules(conn, channel_id)
+def system_topic_ids_for_product(conn, product) -> set:
+    """Id chủ đề hệ thống của sản phẩm, tính trong bộ nhớ và KHÔNG ghi gì.
+
+    Dùng cho đường hiển thị: một request GET không được ghi vào DB. Kết quả
+    khớp với ``sync_product_system_topics`` vì cùng dựa trên
+    ``niche.match_reasons``; khác biệt duy nhất là không lưu lại.
+
+    Chủ đề hệ thống nào chưa tồn tại trong bảng ``topic`` thì bỏ qua thay vì
+    tạo mới -- luồng ghi (auto-schedule, nhập hàng) sẽ tạo nó.
+    """
+    codes = {row["code"]: row["id"] for row in conn.execute(
+        "SELECT code, id FROM topic WHERE status='ACTIVE' AND topic_type='SYSTEM'")}
+    return {
+        codes[code] for code in niche.NICHES
+        if code in codes and not niche.match_reasons(product, [code])
+    }
+
+
+def channel_accepts_product(conn, channel_id: str, product_id: str, *,
+                            product=None, persist: bool = True) -> bool:
+    rules = channel_rules(conn, channel_id, ensure=persist)
     rows = conn.execute(
         """SELECT t.id
            FROM product_topic pt JOIN topic t ON t.id=pt.topic_id
@@ -358,15 +381,19 @@ def channel_accepts_product(conn, channel_id: str, product_id: str) -> bool:
     ).fetchall()
     product_ids = {row["id"] for row in rows}
     if not product_ids:
-        product = conn.execute("SELECT * FROM product WHERE id=?", (str(product_id),)).fetchone()
-        if product:
-            sync_product_system_topics(conn, product)
-            rows = conn.execute(
-                """SELECT t.id FROM product_topic pt JOIN topic t ON t.id=pt.topic_id
-                   WHERE pt.product_id=? AND t.status='ACTIVE'""",
-                (str(product_id),),
-            ).fetchall()
-            product_ids = {row["id"] for row in rows}
+        row = product if product is not None else conn.execute(
+            "SELECT * FROM product WHERE id=?", (str(product_id),)).fetchone()
+        if row is not None:
+            if persist:
+                sync_product_system_topics(conn, row)
+                rows = conn.execute(
+                    """SELECT t.id FROM product_topic pt JOIN topic t ON t.id=pt.topic_id
+                       WHERE pt.product_id=? AND t.status='ACTIVE'""",
+                    (str(product_id),),
+                ).fetchall()
+                product_ids = {row_["id"] for row_ in rows}
+            else:
+                product_ids = system_topic_ids_for_product(conn, row)
 
     excluded = set()
     for item in rules["excludes"]:

@@ -23,7 +23,11 @@ def _topic_aware_shopee_eligibility(
     exclude_post_id: str = None,
     slot_at: str = None,
     require_auto_schedule: bool = True,
+    persist_topics: bool = True,
 ):
+    """``persist_topics=False`` cho đường hiển thị: quyết định y hệt, nhưng
+    không gán chủ đề vào DB. Trang danh sách là một request GET, mà mỗi lệnh
+    ghi ở đó phải xếp hàng sau acp-worker nên tốn hàng trăm mili giây."""
     row_get = shopee_auto_runtime._row_get
     if not product or str(row_get(product, "provider") or "") != shopee_auto_runtime.SHOPEE_PROVIDER:
         return False, "product_provider_invalid"
@@ -55,8 +59,12 @@ def _topic_aware_shopee_eligibility(
 
     # New authoritative routing layer. Empty INCLUDE means all topics; explicit
     # EXCLUDE still wins. System topic safety remains in content.validate().
-    topic_engine.sync_product_system_topics(conn, product)
-    if not topic_engine.channel_accepts_product(conn, row_get(channel, "id"), row_get(product, "id")):
+    if persist_topics:
+        topic_engine.sync_product_system_topics(conn, product)
+    if not topic_engine.channel_accepts_product(
+        conn, row_get(channel, "id"), row_get(product, "id"),
+        product=product, persist=persist_topics,
+    ):
         return False, "product_no_longer_matches_channel"
 
     max_per_category = int(
