@@ -38,7 +38,14 @@ NICHES = {
             "túi xách", "túi đeo", "ví nữ", "giày cao gót", "cao gót", "sandal nữ", "dép nữ",
             "sneaker nữ", "giày nữ", "áo len nữ", "áo nỉ nữ", "set đồ nữ", "đồ bộ nữ",
             "áo ngủ", "nội y", "áo lót", "khuyên tai", "dây chuyền", "vòng tay",
-            "kẹp tóc", "thắt lưng nữ", "khăn choàng", "croptop", "áo croptop"],
+            "kẹp tóc", "thắt lưng nữ", "khăn choàng", "croptop", "áo croptop",
+            # Đồ mặc nhà: sàn xếp vào "thời trang" hoặc "khác", tên hàng gần như
+            # không bao giờ chứa các từ khoá ở trên nên trước đây trượt sạch.
+            "đồ ngủ", "bộ ngủ", "váy ngủ", "pijama", "pyjama", "mặc nhà", "babydoll",
+            # "đồ bộ nữ" hụt "Đồ bộ tole nữ"; hàng nam vẫn bị chặn bằng rào giới tính.
+            "đồ bộ", "áo yếm", "áo vest",
+            # "dép nữ" không bắt được "Dép Tông Nữ" vì có chữ chen giữa.
+            "dép tông", "dép kẹp", "dép lê", "dép quai hậu"],
         "exclude_tokens": ["nam giới", "cho nam", "áo sơ mi nam", "quần nam", "giày nam",
                            "dép nam", "ví nam", "thắt lưng nam", "boxer nam", "quần lót nam",
                            "đồ nam", "trẻ em", "bé trai", "bé gái", "sơ sinh", "em bé"],
@@ -70,7 +77,9 @@ NICHES = {
             "tẩy tế bào chết", "son môi", "son dưỡng", "cushion", "kem nền", "che khuyết điểm",
             "mascara", "kẻ mắt", "eyeliner", "phấn mắt", "phấn phủ", "chân mày", "nước hoa",
             "sữa tắm", "dưỡng thể", "dầu gội", "dầu xả", "ủ tóc", "dưỡng tóc", "xịt khoáng",
-            "kem mắt", "dưỡng môi", "skincare"],
+            "kem mắt", "dưỡng môi", "skincare",
+            # "son môi" không bắt được "Son Tint", "Son Kem" -- dòng son bán chạy nhất.
+            "son tint", "son kem", "son bóng", "má hồng", "lăn khử mùi", "nước tẩy trang"],
         "exclude_tokens": ["viên uống", "thực phẩm chức năng", "collagen uống", "thuốc",
                            "dược phẩm", "máy trị liệu", "thiết bị y tế", "kim tiêm", "filler", "botox"],
         "search_queries": ["sữa rửa mặt", "kem chống nắng", "serum dưỡng da", "son môi",
@@ -93,7 +102,11 @@ NICHES = {
             "yếm ăn", "ghế ăn dặm", "xe đẩy", "nôi", "cũi", "địu em bé", "xe tập đi",
             "đồ chơi gỗ", "đồ chơi giáo dục", "xếp hình", "sữa tắm em bé", "quần áo trẻ em",
             "quần áo sơ sinh", "bỉm quần", "bô vệ sinh", "ghế ngồi ô tô", "gối chống trào ngược",
-            "máy hút sữa", "áo cho con bú", "đai bụng sau sinh"],
+            "máy hút sữa", "áo cho con bú", "đai bụng sau sinh",
+            # Hàng tiêu dùng bán theo cụm "cho mẹ và bé". Cố ý KHÔNG thêm "cho bé"
+            # trần trụi: nó sẽ kéo cả sữa bột và thực phẩm dinh dưỡng vào nhóm này,
+            # đúng thứ exclude_tokens bên dưới đang cố chặn.
+            "mẹ và bé", "khăn vải khô", "khăn ướt em bé"],
         # Nhóm này cấm hàng ăn uống cho bé: liên quan dinh dưỡng, cần giấy phép riêng.
         "exclude_tokens": ["sữa bột", "sữa công thức", "thực phẩm chức năng", "vitamin",
                            "cốm ăn ngon", "men vi sinh", "thuốc", "dược phẩm"],
@@ -114,7 +127,9 @@ NICHES = {
             "dây dắt", "lồng vận chuyển", "chuồng chó", "chuồng mèo", "nhà cho mèo",
             "cây cào móng", "đồ chơi cho chó", "đồ chơi cho mèo", "bát ăn cho",
             "sữa tắm cho chó", "sữa tắm cho mèo", "lược chải lông", "tông đơ cắt lông",
-            "quần áo cho chó", "balo thú cưng", "bàn cào", "snack cho chó", "snack cho mèo"],
+            "quần áo cho chó", "balo thú cưng", "bàn cào", "snack cho chó", "snack cho mèo",
+            # Cát vệ sinh mèo hầu như luôn bán dưới tên "cát Nhật" / "cát mèo".
+            "cát nhật", "cát mèo", "cát đậu nành"],
         "exclude_tokens": ["thuốc thú y", "vaccine", "kháng sinh", "tẩy giun", "trị ve",
                            "trị ghẻ", "thuốc nhỏ gáy"],
         "search_queries": ["đồ chơi cho mèo", "hạt cho chó", "cát vệ sinh mèo",
@@ -132,8 +147,19 @@ NICHES = {
             "cây lau nhà", "hộp đựng", "hộp thủy tinh", "kệ để", "giá treo", "móc dán tường",
             "đèn bàn", "đèn ngủ", "chăn ga", "gối", "rèm cửa", "thảm chùi chân", "máy lọc không khí",
             "bàn ủi", "máy sấy tóc", "quạt", "nồi áp suất", "chảo chống dính", "bộ dao",
-            "thớt", "giỏ đựng đồ", "sọt rác", "móc phơi"],
-        "exclude_tokens": [],
+            "thớt", "giỏ đựng đồ", "sọt rác", "móc phơi",
+            # Hàng tiêu dùng nhanh: nhóm bán chạy nhất trên sàn nhưng trước đây
+            # không có từ khoá nào phủ, nên rơi hết vào "ngoài chủ đề kênh".
+            "khăn tắm", "khăn mặt", "khăn giấy", "giấy ăn", "khăn ướt", "giấy vệ sinh",
+            "túi đựng rác", "túi rác", "bao rác",
+            # KHÔNG dùng "nước tẩy" trần: nó nuốt luôn "Nước Tẩy Trang" của mỹ phẩm.
+            "nước giặt", "nước xả", "nước lau sàn", "nước rửa chén",
+            "nước tẩy rửa", "nước tẩy bồn cầu", "tẩy quần áo",
+            "cây chà sàn", "chổi", "cây lau nhà", "sáp thơm", "xịt phòng"],
+        # Thực phẩm bị sàn nhét vào danh mục gia dụng khá thường xuyên; các từ
+        # khoá tiêu dùng nhanh ở trên không được kéo chúng theo.
+        "exclude_tokens": ["nước mắm", "nước tương", "nước ngọt", "nước ép", "sữa tươi",
+                           "thực phẩm chức năng", "bánh", "kẹo", "mì gói"],
         "search_queries": ["nồi chiên không dầu", "hộp đựng thực phẩm", "kệ nhà tắm",
                            "máy hút bụi", "đèn ngủ", "chảo chống dính"],
         "extra_banned_phrases": [],
@@ -147,7 +173,14 @@ NICHES = {
             "tai nghe", "sạc nhanh", "củ sạc", "cáp sạc", "pin dự phòng", "sạc dự phòng",
             "bàn phím", "chuột không dây", "giá đỡ", "hub usb", "ổ cứng", "usb", "thẻ nhớ",
             "ốp lưng", "cường lực", "dán màn hình", "giá đỡ điện thoại", "webcam",
-            "loa bluetooth", "đèn led phòng", "kẹp điện thoại", "adapter"],
+            "loa bluetooth", "đèn led phòng", "kẹp điện thoại", "adapter",
+            # Linh kiện máy tính: danh mục sàn đúng nhưng tên hàng không chứa từ
+            # khoá phụ kiện nào ở trên. Cố ý không dùng "ram" trần -- "ram" còn là
+            # món ăn, sẽ kéo thực phẩm vào đây.
+            # "laptop" trần cũng bị loại: balo và cặp sách quảng cáo "vừa laptop",
+            # chúng là hàng thời trang chứ không phải phụ kiện công nghệ.
+            "card màn hình", "vga", "ssd", "cpu", "mainboard", "linh kiện máy tính",
+            "màn hình máy tính", "giá đỡ laptop", "đế tản nhiệt"],
         "exclude_tokens": [],
         "search_queries": ["tai nghe không dây", "sạc dự phòng", "cáp sạc", "bàn phím cơ",
                            "giá đỡ laptop", "ốp lưng"],
