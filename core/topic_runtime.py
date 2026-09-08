@@ -59,6 +59,29 @@ def _topic_aware_shopee_eligibility(
 
     # New authoritative routing layer. Empty INCLUDE means all topics; explicit
     # EXCLUDE still wins. System topic safety remains in content.validate().
+    # Chủ đề hệ thống của kênh vẫn là điều kiện BẮT BUỘC, không phải tuỳ chọn.
+    # Preflight ngay trước giờ đăng dùng đúng phép so khớp này trên cột
+    # channel.niches; nếu khâu chọn dễ dãi hơn thì nó sẽ chọn những thứ chắc
+    # chắn chết ở preflight, làm mất slot của hàng thật sự hợp kênh.
+    #
+    # Cụ thể: khi không niche nào khớp, sync_product_system_topics vẫn gắn một
+    # chủ đề đoán gần nhất (SYSTEM_FALLBACK). Trước đây tầng chủ đề tin vào nhãn
+    # đoán đó và nhận -- trên máy thật là 198 nhãn phỏng đoán, khiến 33/55 bài
+    # đã lên lịch bị huỷ ngay trước giờ đăng.
+    #
+    # Tầng chủ đề vẫn giữ vai trò của nó: thêm luật EXCLUDE và các chủ đề động.
+    # Nó lọc HẸP thêm, không nới rộng ra.
+    channel_niches = [
+        code for code in auto_scheduler._channel_niches(channel)
+        if code in auto_scheduler.niche.NICHES
+    ]
+    # Kênh chưa đặt ngách nào thì bỏ qua kiểm tra -- đúng như preflight
+    # (_shopee_preflight_auto_target chỉ so khớp khi danh sách ngách khác rỗng).
+    # Chặt hơn preflight cũng sai như dễ dãi hơn: nó loại mất hàng mà preflight
+    # sẽ cho qua.
+    if channel_niches and auto_scheduler.niche.match_reasons(product, channel_niches):
+        return False, "product_no_longer_matches_channel"
+
     if persist_topics:
         topic_engine.sync_product_system_topics(conn, product)
     if not topic_engine.channel_accepts_product(

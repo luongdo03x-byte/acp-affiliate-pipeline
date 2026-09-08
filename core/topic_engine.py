@@ -468,9 +468,12 @@ def _system_parent_for_product(conn, product):
         ("cong-nghe", ("tai nghe", "sac", "ban phim", "chuot", "op lung", "cong nghe")),
         ("the-thao", ("the thao", "yoga", "fitness", "da ngoai")),
     )
+    # So khớp theo RANH GIỚI TỪ, không phải chuỗi con. Dùng chuỗi con thì "sac"
+    # khớp vào "doc sach" -- trên máy thật đã có "Ghế mây thư giãn ... dành cho
+    # người lớn đọc sách" bị gán thành phụ kiện công nghệ đúng vì lý do này.
     padded = f" {folded} "
     for code, tokens in fallbacks:
-        if any(token in padded for token in tokens):
+        if any(f" {token.strip()} " in padded for token in tokens):
             return conn.execute("SELECT * FROM topic WHERE code=?", (code,)).fetchone()
     return None
 
