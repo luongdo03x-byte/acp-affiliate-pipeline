@@ -84,6 +84,7 @@ def invalidate_topic_cache(conn) -> None:
         cache.pop("system_topics_ready", None)
         cache.pop("channel_rules", None)
         cache.pop("synced_products", None)
+        cache.pop("topic_descendants", None)
 
 
 def ensure_system_topics(conn) -> None:
@@ -232,6 +233,13 @@ def _ancestors(conn, topic_id: str) -> list[str]:
 
 
 def _descendants(conn, topic_id: str) -> set[str]:
+    # Cây chủ đề tĩnh trong một request; hàm này bị gọi cho mỗi luật EXCLUDE
+    # của mỗi kênh, với mỗi sản phẩm. invalidate_topic_cache() xoá cache.
+    cache = _request_cache(conn)
+    cached = cache.setdefault("topic_descendants", {}) if cache is not None else None
+    if cached is not None and str(topic_id) in cached:
+        return set(cached[str(topic_id)])
+
     result = set()
     pending = [str(topic_id)]
     while pending:
@@ -244,6 +252,9 @@ def _descendants(conn, topic_id: str) -> set[str]:
             if child not in result:
                 result.add(child)
                 pending.append(child)
+
+    if cached is not None:
+        cached[str(topic_id)] = set(result)
     return result
 
 

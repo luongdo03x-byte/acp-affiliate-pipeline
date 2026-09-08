@@ -49,17 +49,31 @@ def median(xs):
 
 
 def active_config(conn):
+    # Cấu hình chấm điểm không đổi giữa chừng một request, nhưng lớp kiểm tra
+    # điều kiện đọc lại nó cho mỗi cặp sản phẩm x kênh -- 7 lần cho mỗi sản
+    # phẩm khi dựng trang danh sách. save_config() xoá cache.
+    cache = getattr(conn, "acp_cache", None)
+    if cache is not None and "scoring_config" in cache:
+        weights, filters = cache["scoring_config"]
+        return dict(weights), dict(filters)
+
     row = conn.execute(
         "SELECT weights, filters FROM scoring_config WHERE is_active = 1 ORDER BY version DESC LIMIT 1"
     ).fetchone()
     if not row:
-        return dict(DEFAULT_WEIGHTS), dict(DEFAULT_FILTERS)
-    w = dict(DEFAULT_WEIGHTS); w.update(json.loads(row["weights"]))
-    f = dict(DEFAULT_FILTERS); f.update(json.loads(row["filters"]))
+        w, f = dict(DEFAULT_WEIGHTS), dict(DEFAULT_FILTERS)
+    else:
+        w = dict(DEFAULT_WEIGHTS); w.update(json.loads(row["weights"]))
+        f = dict(DEFAULT_FILTERS); f.update(json.loads(row["filters"]))
+    if cache is not None:
+        cache["scoring_config"] = (dict(w), dict(f))
     return w, f
 
 
 def save_config(conn, weights: dict, filters: dict, note: str = "") -> int:
+    cache = getattr(conn, "acp_cache", None)
+    if cache is not None:
+        cache.pop("scoring_config", None)
     ver = (conn.execute("SELECT COALESCE(MAX(version), 0) FROM scoring_config").fetchone()[0] or 0) + 1
     conn.execute("UPDATE scoring_config SET is_active = 0")
     conn.execute(

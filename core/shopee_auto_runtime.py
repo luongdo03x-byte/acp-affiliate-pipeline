@@ -59,11 +59,23 @@ def _shopee_snapshot_is_fresh(product, now_utc: datetime) -> bool:
 
 
 def _enrichment_ready(conn, product_id: str) -> bool:
+    # Trạng thái ảnh là thuộc tính của sản phẩm, nhưng lớp kiểm tra điều kiện
+    # hỏi lại nó một lần cho MỖI kênh. Cache theo connection, tức theo request:
+    # trong một lần dựng trang, ảnh của cùng một sản phẩm không đổi.
+    cache = getattr(conn, "acp_cache", None)
+    cached = cache.setdefault("enrichment_ready", {}) if cache is not None else None
+    key = str(product_id)
+    if cached is not None and key in cached:
+        return cached[key]
+
     row = conn.execute(
         "SELECT status FROM shopee_image_enrichment_job WHERE product_id=?",
         (product_id,),
     ).fetchone()
-    return bool(row and row["status"] == "READY")
+    ready = bool(row and row["status"] == "READY")
+    if cached is not None:
+        cached[key] = ready
+    return ready
 
 
 def _usable_enriched_image(product) -> bool:
