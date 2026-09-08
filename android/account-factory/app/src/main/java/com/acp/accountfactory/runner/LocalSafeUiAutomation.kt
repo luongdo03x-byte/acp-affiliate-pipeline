@@ -18,6 +18,7 @@ data class LocalUiSelector(
     val resourceIds: Set<String> = emptySet(),
     val texts: Set<String> = emptySet(),
     val contentDescriptions: Set<String> = emptySet(),
+    val contentDescriptionPrefixes: Set<String> = emptySet(),
     val requireClickable: Boolean = false,
     val requireLongClickable: Boolean = false,
     val requireEditable: Boolean = false,
@@ -98,6 +99,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "com.instagram.android:id/username",
             "com.instagram.android:id/username_field",
         ),
+        contentDescriptionPrefixes = setOf("Username", "Tên người dùng"),
         requireEditable = true,
     )
     private val instagramNameInput = LocalUiSelector(
@@ -337,7 +339,10 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             (!selector.requireLongClickable || it.longClickable) &&
             (!selector.requireEditable || it.editable) &&
             (it.viewId in selector.resourceIds || normalize(it.text) in selector.texts.map(::normalize) ||
-                normalize(it.contentDescription) in selector.contentDescriptions.map(::normalize))
+                normalize(it.contentDescription) in selector.contentDescriptions.map(::normalize) ||
+                selector.contentDescriptionPrefixes.any { prefix ->
+                    normalize(it.contentDescription).startsWith(normalize(prefix))
+                })
     }
 
     companion object {

@@ -114,7 +114,10 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
         val text = LocalSafeUiAutomation.normalize(node.text?.toString().orEmpty())
         val description = LocalSafeUiAutomation.normalize(node.contentDescription?.toString().orEmpty())
         return idMatch || selector.texts.any { LocalSafeUiAutomation.normalize(it) == text } ||
-            selector.contentDescriptions.any { LocalSafeUiAutomation.normalize(it) == description }
+            selector.contentDescriptions.any { LocalSafeUiAutomation.normalize(it) == description } ||
+            selector.contentDescriptionPrefixes.any {
+                description.startsWith(LocalSafeUiAutomation.normalize(it))
+            }
     }
 
     private val AccessibilityNodeInfo.isEditable: Boolean

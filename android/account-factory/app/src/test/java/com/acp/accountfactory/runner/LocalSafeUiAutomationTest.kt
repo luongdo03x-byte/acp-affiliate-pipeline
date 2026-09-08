@@ -140,4 +140,30 @@ class LocalSafeUiAutomationTest {
         assertEquals(1, bridge.clicks.size)
         assertTrue(bridge.longClicks.isEmpty())
     }
+
+    @Test
+    fun usernameEntryWithoutResourceIdUsesAccessibilityLabelPrefix() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Tạo tên người dùng"),
+                LocalUiNode(
+                    contentDescription = "Tên người dùng,squirrel.83916366",
+                    className = "android.widget.EditText",
+                    clickable = true,
+                    editable = true,
+                ),
+                LocalUiNode(contentDescription = "Tiếp", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(
+            mapOf("username" to "acp_generated_user"),
+        )
+
+        assertEquals("running", result.status)
+        assertEquals("IG_PROFILE_SETUP", result.screen)
+        assertEquals(listOf("acp_generated_user"), bridge.values)
+        assertEquals(1, bridge.clicks.size)
+    }
 }
