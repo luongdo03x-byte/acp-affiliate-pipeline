@@ -188,7 +188,9 @@ def _build_auto_ops_summary(conn, now_utc: datetime) -> dict:
     upcoming = []
     for row in conn.execute(
         f"""
-        SELECT pt.channel_id, pt.status, pt.scheduled_at, ch.handle AS channel_handle, ch.code AS channel_code
+        SELECT pt.channel_id, pt.status, pt.scheduled_at,
+               ch.handle AS channel_handle, ch.code AS channel_code,
+               ch.posting_timezone
         FROM publish_target pt
         JOIN channel ch ON ch.id = pt.channel_id
         WHERE pt.auto_scheduled = 1
@@ -199,13 +201,24 @@ def _build_auto_ops_summary(conn, now_utc: datetime) -> dict:
         _AUTO_LIVE_STATUSES,
     ).fetchall():
         try:
-            scheduled_at = datetime.fromisoformat(row["scheduled_at"]).astimezone(timezone.utc)
-        except ValueError:
+            scheduled_at = datetime.fromisoformat(row["scheduled_at"])
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            scheduled_at = scheduled_at.astimezone(timezone.utc)
+        except (TypeError, ValueError):
             continue
         if not (now_utc <= scheduled_at < horizon_utc):
             continue
         item = dict(row)
         item.pop("channel_code", None)
+        timezone_name = str(item.get("posting_timezone") or "Asia/Bangkok")
+        try:
+            channel_timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            timezone_name = "Asia/Bangkok"
+            channel_timezone = ZoneInfo(timezone_name)
+        item["posting_timezone"] = timezone_name
+        item["scheduled_local"] = scheduled_at.astimezone(channel_timezone).strftime("%d/%m/%Y %H:%M")
         upcoming.append(item)
         if len(upcoming) >= 12:
             break

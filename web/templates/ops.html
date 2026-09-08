@@ -53,7 +53,7 @@
       <div class="section-heading section-heading--spaced"><div><h3>Slot đã xếp</h3><p class="note">Chỉ hiển thị kênh, giờ và trạng thái an toàn.</p></div></div>
       {% if auto_ops.upcoming %}
       <div class="table-card"><table class="data-table"><thead><tr><th>Kênh</th><th>Giờ</th><th>Trạng thái</th></tr></thead><tbody>
-      {% for item in auto_ops.upcoming %}<tr><td>{{ item.channel_handle }}</td><td class="mono">{{ item.scheduled_at[5:16]|replace('T',' ') }}</td><td><span class="tag">{{ item.status }}</span></td></tr>{% endfor %}
+      {% for item in auto_ops.upcoming %}<tr><td>{{ item.channel_handle }}</td><td class="mono">{{ item.scheduled_local }} · {{ item.posting_timezone }}</td><td><span class="tag">{{ item.status }}</span></td></tr>{% endfor %}
       </tbody></table></div>
       {% else %}<div class="empty-state">Chưa có target Auto nào trong 48 giờ tới.</div>{% endif %}
     </section>
