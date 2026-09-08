@@ -45,6 +45,7 @@ open class LocalDeviceActions(
     private val clipboard: LocalClipboard,
     private val observationStore: ForegroundObservationStore,
     private val automationProvider: () -> LocalSafeUiAutomation? = { null },
+    private val uiTransitionWait: () -> Unit = { Thread.sleep(700L) },
 ) {
     private val uiSettlingAttempts = mutableMapOf<String, Int>()
 
@@ -101,7 +102,14 @@ open class LocalDeviceActions(
             return flowResult(LocalFlowOutcome("running", "APP_OPENING"))
         }
         val profile = command.payload.filterKeys { it in PROFILE_FIELDS }
-        val outcome = if (flow == "threads") automation.runThreads(profile) else automation.runInstagram(profile)
+        var outcome = runAutomationStep(automation, flow, profile)
+        repeat(ACCOUNT_SWITCH_CHAIN_STEPS) {
+            if (outcome.status != "running" || outcome.screen !in ACCOUNT_SWITCH_SCREENS) {
+                return@repeat
+            }
+            uiTransitionWait()
+            outcome = runAutomationStep(automation, flow, profile)
+        }
         if (outcome.status == "needs_confirmation" && outcome.reason == "UI_CHANGED") {
             val attempts = (uiSettlingAttempts[flow] ?: 0) + 1
             uiSettlingAttempts[flow] = attempts
@@ -113,6 +121,13 @@ open class LocalDeviceActions(
         }
         return flowResult(outcome)
     }
+
+    private fun runAutomationStep(
+        automation: LocalSafeUiAutomation,
+        flow: String,
+        profile: Map<String, String?>,
+    ): LocalFlowOutcome =
+        if (flow == "threads") automation.runThreads(profile) else automation.runInstagram(profile)
 
     private fun observeCheckpoint(command: RunnerCommandDto): RunnerCommandResult {
         val automation = automationProvider() ?: return flowResult(
@@ -169,7 +184,12 @@ open class LocalDeviceActions(
     )
 
     private companion object {
+        const val ACCOUNT_SWITCH_CHAIN_STEPS = 2
         const val UI_SETTLING_RETRIES = 5
+        val ACCOUNT_SWITCH_SCREENS = setOf(
+            "IG_HOME", "IG_ACCOUNT_SWITCHER",
+            "THREADS_HOME", "THREADS_ACCOUNT_SWITCHER",
+        )
         val OFFICIAL_PACKAGES = setOf("com.instagram.android", "com.instagram.barcelona")
         val SENSITIVE_KEYS = setOf("password", "otp", "captcha", "token", "secret")
         val PROFILE_FIELDS = setOf(

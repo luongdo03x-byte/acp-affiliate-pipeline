@@ -32,6 +32,32 @@ class LocalDeviceActionsTest {
         override fun setText(selector: LocalUiSelector, value: String) = false
     }
 
+    private class SwitchingBridge : LocalAccessibilityBridge {
+        private var screen = 0
+        override fun foregroundPackage() = LocalSafeUiAutomation.INSTAGRAM_PACKAGE
+        override fun nodes() = when (screen) {
+            0 -> listOf(
+                LocalUiNode(contentDescription = "Home"),
+                LocalUiNode(
+                    viewId = "com.instagram.android:id/profile_tab",
+                    contentDescription = "Profile",
+                    longClickable = true,
+                ),
+            )
+            1 -> listOf(LocalUiNode(text = "Add Instagram account", clickable = true))
+            else -> listOf(LocalUiNode(text = "Create new account", clickable = true))
+        }
+        override fun click(selector: LocalUiSelector): Boolean {
+            screen += 1
+            return true
+        }
+        override fun longClick(selector: LocalUiSelector): Boolean {
+            screen += 1
+            return true
+        }
+        override fun setText(selector: LocalUiSelector, value: String) = false
+    }
+
     private fun command(action: String, payload: Map<String, String?> = emptyMap()) = RunnerCommandDto(
         id = "c1",
         jobId = "j1",
@@ -103,5 +129,22 @@ class LocalDeviceActionsTest {
         val exhausted = actions.execute(command("AUTOMATE_INSTAGRAM"))
         assertEquals("needs_confirmation", exhausted.result["flow_status"])
         assertEquals("UI_CHANGED", exhausted.result["reason"])
+    }
+
+    @Test
+    fun accountSwitcherNavigationRunsAsOneBoundedCommandChain() {
+        val bridge = SwitchingBridge()
+        val actions = LocalDeviceActions(
+            FakePlatform(),
+            FakeClipboard(),
+            ForegroundObservationStore(),
+            automationProvider = { LocalSafeUiAutomation(bridge) },
+            uiTransitionWait = {},
+        )
+
+        val result = actions.execute(command("AUTOMATE_INSTAGRAM"))
+
+        assertEquals("running", result.result["flow_status"])
+        assertEquals("IG_SIGNUP_ENTRY", result.result["screen"])
     }
 }
