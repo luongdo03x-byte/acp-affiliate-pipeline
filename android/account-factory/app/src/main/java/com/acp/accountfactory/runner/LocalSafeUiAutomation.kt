@@ -120,7 +120,11 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectInstagram(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            "IG_HOME" -> return LocalFlowOutcome("completed", screen)
+            // A home feed only proves that *an* Instagram session exists. It
+            // does not prove that the requested factory account was created.
+            // Stop here so an existing personal/account session can never be
+            // accepted and carried into the Threads flow by mistake.
+            "IG_HOME" -> return confirmation(screen, "EXISTING_SESSION_NOT_VERIFIED")
             "IG_SIGNUP_ENTRY" -> return act(screen, bridge.click(instagramSignup))
             "IG_CONTACT_ENTRY" -> {
                 val contact = profile["signup_contact"].orEmpty().trim()
@@ -165,7 +169,9 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectThreads(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            "THREADS_HOME" -> return LocalFlowOutcome("completed", screen)
+            // As with Instagram, the feed may belong to an account that was
+            // already signed in before this job started.
+            "THREADS_HOME" -> return confirmation(screen, "EXISTING_SESSION_NOT_VERIFIED")
             "THREADS_ONBOARDING" -> {
                 val selector = if (has(nodes, threadsJoin)) threadsJoin else continueSelector
                 return act(screen, bridge.click(selector))
@@ -203,9 +209,9 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         }
         protectedOutcome(screen)?.let { return it }
         val safeSuccessor = screen in if (flow.lowercase(Locale.ROOT) == "threads") {
-            setOf("THREADS_PROFILE_SETUP", "THREADS_HOME")
+            setOf("THREADS_PROFILE_SETUP")
         } else {
-            setOf("IG_PROFILE_SETUP", "IG_AVATAR_SETUP", "IG_HOME")
+            setOf("IG_PROFILE_SETUP", "IG_AVATAR_SETUP")
         }
         if (safeSuccessor) return LocalFlowOutcome("completed", screen)
         if (screen in setOf("RATE_LIMITED", "ACTION_BLOCKED", "NETWORK_ERROR")) {

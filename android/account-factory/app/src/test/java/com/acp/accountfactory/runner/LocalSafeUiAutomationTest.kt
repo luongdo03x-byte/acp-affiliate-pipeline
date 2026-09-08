@@ -80,4 +80,40 @@ class LocalSafeUiAutomationTest {
         assertFalse(bridge.clicks.isNotEmpty())
         assertTrue(bridge.values.isEmpty())
     }
+
+    @Test
+    fun existingInstagramHomeIsNeverAcceptedAsNewAccount() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(contentDescription = "Trang chủ"),
+                LocalUiNode(contentDescription = "Trang cá nhân"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(mapOf("username" to "new_user"))
+
+        assertEquals("needs_confirmation", result.status)
+        assertEquals("IG_HOME", result.screen)
+        assertEquals("EXISTING_SESSION_NOT_VERIFIED", result.reason)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun observingExistingThreadsHomeDoesNotAdvanceFlow() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(contentDescription = "Home"),
+                LocalUiNode(contentDescription = "Profile"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).observe("threads")
+
+        assertEquals("needs_confirmation", result.status)
+        assertEquals("THREADS_HOME", result.screen)
+        assertEquals("CHECKPOINT_NOT_CONFIRMED", result.reason)
+        assertTrue(bridge.clicks.isEmpty())
+    }
 }
