@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -43,6 +44,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 
+private val AccountFactoryColorScheme = lightColorScheme()
+
 class MainActivity : ComponentActivity() {
     private lateinit var settingsStore: FactorySettingsStore
     private lateinit var api: FactoryV2Api
@@ -59,7 +62,7 @@ class MainActivity : ComponentActivity() {
         val localDeviceId = identityStore.getOrCreate().deviceId
 
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = AccountFactoryColorScheme) {
                 FactoryApp(
                     settings = settingsStore,
                     api = api,
