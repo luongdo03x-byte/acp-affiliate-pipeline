@@ -432,7 +432,7 @@ class ChannelAutomationWebTests(unittest.TestCase):
                 "caption",
                 "https://example.test/aff-1",
                 "SCHEDULED",
-                "2026-08-20T09:30:00+07:00",
+                "2026-08-20T02:30:00+00:00",
                 db.now(),
                 db.now(),
             ))
@@ -513,7 +513,8 @@ class ChannelAutomationWebTests(unittest.TestCase):
         self.assertIn("Auto kênh chỉ tạo, duyệt và xếp lịch", response.text)
         self.assertIn("Worker global vẫn phải bật riêng", response.text)
         self.assertIn("1 target Auto sắp tới", response.text)
-        self.assertIn("09:30", response.text)
+        self.assertIn("20/08/2026 09:30 · Asia/Bangkok", response.text)
+        self.assertNotIn("20/08/2026 02:30", response.text)
         self.assertIn("product_sync_stale", response.text)
         self.assertNotIn("https://secret.example/token-123", response.text)
         self.assertNotIn("affiliate_link", response.text)
