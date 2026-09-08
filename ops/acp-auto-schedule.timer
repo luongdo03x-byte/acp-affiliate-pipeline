@@ -1,9 +1,9 @@
 [Unit]
-Description=Run ACP auto-schedule after catalog sync
+Description=Daily recovery pass for ACP event-driven auto-schedule
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=60min
+OnUnitActiveSec=24h
 AccuracySec=30s
 Persistent=true
 Unit=acp-auto-schedule.service

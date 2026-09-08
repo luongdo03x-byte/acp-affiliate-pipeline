@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from acp.core import auto_post_plans, db
 
@@ -107,6 +108,19 @@ class AutoPostingWebTests(unittest.TestCase):
         self.assertIn('Đổi giờ', body)
         self.assertIn('Hủy', body)
         self.assertIn('Hủy toàn bộ Auto Posting', body)
+        expected_tail = (self.now + timedelta(hours=2)).astimezone(
+            ZoneInfo('Asia/Bangkok')
+        ).strftime('%d/%m/%Y %H:%M')
+        self.assertIn('Bài cuối trong lịch:', body)
+        self.assertIn(expected_tail, body)
+        self.assertIn('Asia/Bangkok', body)
+        self.assertIn('tự lấp lịch tiếp sau khi bài này đăng', body)
+
+    def test_naive_database_schedule_is_interpreted_as_utc(self):
+        from acp.web.auto_posting import _local_datetime
+
+        shown = _local_datetime('2026-09-08T00:30:00', 'Asia/Bangkok')
+        self.assertEqual(shown.isoformat(timespec='minutes'), '2026-09-08T07:30+07:00')
 
     def test_page_defers_replacement_options_to_lazy_endpoint(self):
         response = self.client.get('/auto-posting')

@@ -396,7 +396,7 @@ Timer gọi `run.py worker-once` mỗi phút và service sẽ thử lại khi l�
 Không dùng `run.py work` trong timer vì lệnh đó drain toàn bộ hàng đợi. Dừng lịch
 nhưng không đổi công tắc bằng `systemctl --user disable --now acp-worker.timer`.
 
-Để duy trì rolling schedule cho Threads Auto, cài thêm timer:
+Để khởi tạo và phục hồi rolling schedule cho Threads Auto, cài thêm timer:
 
 ```bash
 cp ops/acp-auto-schedule.service ops/acp-auto-schedule.timer ~/.config/systemd/user/
@@ -406,12 +406,14 @@ systemctl --user status acp-auto-schedule.timer
 ```
 
 `acp-auto-schedule.service` source đúng `.env.local` của release active rồi chạy
-chuỗi `product-sync` -> `run.py auto-schedule` -> `run.py worker-once`. Timer này
-không bật publish worker và không bật `ACP_ADAPTER=live`; nó sync catalog, lấp
-lịch target Auto, rồi mới quét publish queue. `worker-once` ở cuối vẫn tôn trọng
-công tắc worker toàn hệ thống, nên khi worker đang tắt thì bước publish chỉ
-no-op an toàn. `acp-worker.timer` giữ vai trò fallback để quét publish queue,
-không phải một vòng sync catalog thứ hai.
+chuỗi `product-sync` -> `run.py auto-schedule` -> `run.py worker-once`. Bình
+thường, ngay sau khi bài Auto cuối cùng của một account publish thành công,
+publish worker sẽ lấp tiếp lịch hôm nay + ngày mai. Timer này chỉ chạy lúc khởi
+động và mỗi 24 giờ để phục hồi nếu lần lấp lịch theo sự kiện bị lỗi hoặc hệ thống
+chưa có bài Auto nào; không còn quét mỗi 60 phút. Nó không bật publish worker và
+không bật `ACP_ADAPTER=live`. `worker-once` ở cuối vẫn tôn trọng công tắc worker
+toàn hệ thống, nên khi worker đang tắt thì bước publish chỉ no-op an toàn.
+`acp-worker.timer` giữ vai trò quét publish queue mỗi phút.
 Nói ngắn gọn: timer này không bật live adapter.
 
 ### Xử lý sự cố

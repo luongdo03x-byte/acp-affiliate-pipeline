@@ -7,9 +7,28 @@ before the real publisher is called.
 """
 from __future__ import annotations
 
+import logging
+
 from . import auto_post_plans, jobs, pipeline
 
 _INSTALLED = False
+_LOG = logging.getLogger(__name__)
+
+
+def _refill_safely(conn, target_id: str, ctx) -> None:
+    """Run recovery work without changing an already-successful publish."""
+    try:
+        # Import lazily because this wrapper is installed before the calendar
+        # runtime in core.__init__.
+        from . import auto_post_scheduler_runtime
+
+        auto_post_scheduler_runtime.refill_after_last_auto_publish(
+            conn,
+            target_id,
+            ctx=ctx,
+        )
+    except Exception:
+        _LOG.exception("Auto schedule refill failed after a successful publish")
 
 
 def install() -> None:
@@ -95,6 +114,7 @@ def install() -> None:
         result = original_publish(conn, payload, ctx)
         if target_id:
             auto_post_plans.sync_target_state(conn, target_id)
+            _refill_safely(conn, target_id, ctx)
         return result
 
     pipeline.approve_post = approve_post
