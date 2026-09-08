@@ -85,6 +85,7 @@ def invalidate_topic_cache(conn) -> None:
         cache.pop("channel_rules", None)
         cache.pop("synced_products", None)
         cache.pop("topic_descendants", None)
+        cache.pop("system_topic_ids", None)
 
 
 def ensure_system_topics(conn) -> None:
@@ -373,12 +374,30 @@ def system_topic_ids_for_product(conn, product) -> set:
     Chủ đề hệ thống nào chưa tồn tại trong bảng ``topic`` thì bỏ qua thay vì
     tạo mới -- luồng ghi (auto-schedule, nhập hàng) sẽ tạo nó.
     """
-    codes = {row["code"]: row["id"] for row in conn.execute(
-        "SELECT code, id FROM topic WHERE status='ACTIVE' AND topic_type='SYSTEM'")}
-    return {
+    # Kết quả chỉ phụ thuộc sản phẩm, nhưng channel_accepts_product gọi hàm này
+    # một lần cho MỖI kênh -- 8 phép so khớp chủ đề nhân 10 kênh là 80 lần cho
+    # cùng một sản phẩm. Đây là phần tốn CPU nhất còn lại của trang.
+    cache = _request_cache(conn)
+    product_id = str(_row_get(product, "id") or "")
+    cached = cache.setdefault("system_topic_ids", {}) if cache is not None else None
+    if cached is not None and product_id and product_id in cached:
+        return set(cached[product_id])
+
+    if cached is not None and "__codes__" in cached:
+        codes = cached["__codes__"]
+    else:
+        codes = {row["code"]: row["id"] for row in conn.execute(
+            "SELECT code, id FROM topic WHERE status='ACTIVE' AND topic_type='SYSTEM'")}
+        if cached is not None:
+            cached["__codes__"] = codes
+
+    result = {
         codes[code] for code in niche.NICHES
         if code in codes and not niche.match_reasons(product, [code])
     }
+    if cached is not None and product_id:
+        cached[product_id] = set(result)
+    return result
 
 
 def channel_accepts_product(conn, channel_id: str, product_id: str, *,
