@@ -49,6 +49,7 @@ def rename_topic(conn, topic_id: str, name: str) -> dict:
            (alias_normalized,alias_display,topic_id,created_at) VALUES (?,?,?,?)""",
         (topic_engine.normalize_text(old_name), old_name, topic["id"], stamp),
     )
+    topic_engine.invalidate_topic_cache(conn)
     audit(conn, "topic", topic["id"], "renamed", actor="operator",
           detail={"old_name": old_name, "new_name": display})
     return dict(_topic(conn, topic["id"]))
@@ -116,6 +117,7 @@ def merge_topic(conn, source_id: str, target_id: str) -> dict:
     topic_engine._refresh_product_count(conn, target["id"])
     audit(conn, "topic", source["id"], "merged", actor="operator",
           detail={"target_id": target["id"], "target_name": target["name"]})
+    topic_engine.invalidate_topic_cache(conn)
     return {"source_id": source["id"], "target_id": target["id"], "target": dict(_topic(conn, target["id"]))}
 
 
@@ -130,6 +132,7 @@ def delete_topic(conn, topic_id: str) -> dict:
     stamp = now()
     conn.execute("DELETE FROM channel_topic_rule WHERE topic_id=?", (topic["id"],))
     conn.execute("UPDATE topic SET status='DISABLED', updated_at=? WHERE id=?", (stamp, topic["id"]))
+    topic_engine.invalidate_topic_cache(conn)
     audit(conn, "topic", topic["id"], "disabled", actor="operator")
     return dict(_topic(conn, topic["id"]))
 

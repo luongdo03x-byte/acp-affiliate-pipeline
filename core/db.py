@@ -400,9 +400,31 @@ CREATE INDEX IF NOT EXISTS idx_content_variant_run ON content_variant_row(run_id
 """
 
 
+class Connection(sqlite3.Connection):
+    """Connection có sẵn một chỗ để gắn cache sống đúng bằng đời một request.
+
+    ``sqlite3.Connection`` gốc là kiểu C: không gán được thuộc tính và cũng
+    không tạo weakref được, nên không có cách nào treo cache lên nó từ bên
+    ngoài. Lớp con này chỉ thêm ``acp_cache``, không đổi hành vi nào của
+    sqlite3.
+
+    Mỗi request web mở một connection riêng qua ``connect()``, nên "theo
+    connection" cũng chính là "theo request": cache không bao giờ sống lâu hơn
+    một lần dựng trang, và không có gì phải dọn thủ công.
+
+    Đọc cache bằng ``getattr(conn, "acp_cache", None)`` để code vẫn chạy với
+    connection sqlite3 thuần (script chẩn đoán, test cũ) -- khi đó chỉ là không
+    có cache, không phải lỗi.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.acp_cache = {}
+
+
 def connect() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None, factory=Connection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

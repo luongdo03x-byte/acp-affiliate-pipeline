@@ -13,8 +13,17 @@ Chủ đề nào cũng có thể thêm rào chắn nội dung riêng. Mỹ phẩ
 """
 import re
 import unicodedata
+from functools import lru_cache
+
+# Cả hai hàm chuẩn hoá dưới đây đều thuần: cùng chuỗi vào thì cùng chuỗi ra.
+# Chúng bị gọi lại trên ĐÚNG một chuỗi rất nhiều lần -- mỗi sản phẩm được đối
+# chiếu với 8 chủ đề, nhân với số kênh, và mỗi lần lại bỏ dấu lại từ đầu. Cache
+# ở đây rẻ và không đổi ngữ nghĩa. maxsize giới hạn để không phình theo số sản
+# phẩm đã từng xử lý trong tiến trình worker chạy dài.
+_NORM_CACHE_SIZE = 8192
 
 
+@lru_cache(maxsize=_NORM_CACHE_SIZE)
 def _fold(text: str) -> str:
     """Bỏ dấu, hạ chữ thường, chuẩn hoá dấu phân cách -> so khớp được cả hai ngôn ngữ."""
     if not text:
@@ -215,6 +224,7 @@ def list_codes():
     return list(NICHES)
 
 
+@lru_cache(maxsize=_NORM_CACHE_SIZE)
 def _norm_keep_tone(text: str) -> str:
     """Hạ chữ thường, chuẩn hoá dấu phân cách, GIỮ NGUYÊN dấu tiếng Việt.
 

@@ -67,7 +67,33 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", normalize_text(value)).strip("-") or "topic"
 
 
+def _request_cache(conn):
+    """Chỗ chứa cache của connection, hoặc None với sqlite3.Connection thuần."""
+    return getattr(conn, "acp_cache", None)
+
+
+def invalidate_topic_cache(conn) -> None:
+    """Xoá cache chủ đề của connection sau khi ghi vào topic/channel_topic_rule.
+
+    Gọi ở mọi nơi làm đổi luật của kênh hoặc đổi trạng thái/tên chủ đề. Bỏ sót
+    một chỗ nghĩa là trong phần còn lại của request đó, người dùng vẫn thấy dữ
+    liệu cũ.
+    """
+    cache = _request_cache(conn)
+    if cache is not None:
+        cache.pop("system_topics_ready", None)
+        cache.pop("channel_rules", None)
+
+
 def ensure_system_topics(conn) -> None:
+    # 8 chủ đề hệ thống x (1 SELECT + 1 UPDATE) = 16 truy vấn mỗi lần gọi, mà
+    # hàm này nằm ở đầu channel_rules -- tức là chạy lại cho từng cặp sản
+    # phẩm x kênh khi dựng trang /sanpham/shopee. Trong một request thì lần
+    # đầu đã đủ.
+    cache = _request_cache(conn)
+    if cache is not None and cache.get("system_topics_ready"):
+        return
+
     stamp = now()
     for code, definition in niche.NICHES.items():
         row = conn.execute("SELECT id FROM topic WHERE code=?", (code,)).fetchone()
@@ -85,6 +111,9 @@ def ensure_system_topics(conn) -> None:
                VALUES (?,?,?,'SYSTEM',NULL,'ACTIVE',1.0,0,?,?)""",
             (ulid(), code, definition["name"], stamp, stamp),
         )
+
+    if cache is not None:
+        cache["system_topics_ready"] = True
 
 
 def topic_by_code(conn, code: str):
@@ -218,6 +247,15 @@ def _descendants(conn, topic_id: str) -> set[str]:
 
 
 def channel_rules(conn, channel_id: str) -> dict:
+    # Luật của một kênh không đổi giữa chừng một request, nhưng trang danh sách
+    # sản phẩm gọi hàm này một lần cho MỖI cặp sản phẩm x kênh. Cache theo
+    # connection biến 751 x 10 lần đọc thành 10 lần.
+    key = str(channel_id)
+    cache = _request_cache(conn)
+    cached_rules = cache.setdefault("channel_rules", {}) if cache is not None else None
+    if cached_rules is not None and key in cached_rules:
+        return _copy_rules(cached_rules[key])
+
     ensure_system_topics(conn)
     rows = conn.execute(
         """SELECT r.rule_mode, t.id, t.code, t.name
@@ -240,7 +278,19 @@ def channel_rules(conn, channel_id: str) -> dict:
             ).fetchone()
             if topic:
                 includes.append(dict(topic))
-    return {"includes": includes, "excludes": excludes}
+
+    result = {"includes": includes, "excludes": excludes}
+    if cached_rules is not None:
+        cached_rules[key] = result
+    # Trả bản sao: người gọi sửa kết quả không được làm hỏng bản trong cache.
+    return _copy_rules(result)
+
+
+def _copy_rules(rules: dict) -> dict:
+    return {
+        "includes": [dict(row) for row in rules["includes"]],
+        "excludes": [dict(row) for row in rules["excludes"]],
+    }
 
 
 def set_channel_rules(conn, channel_id: str, includes, excludes) -> dict:
@@ -293,6 +343,7 @@ def set_channel_rules(conn, channel_id: str, includes, excludes) -> dict:
         actor="operator",
         detail={"include": include_codes, "exclude": exclude_codes},
     )
+    invalidate_topic_cache(conn)
     return {"includes": include_codes, "excludes": exclude_codes}
 
 
