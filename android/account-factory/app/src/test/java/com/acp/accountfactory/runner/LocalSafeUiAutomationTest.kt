@@ -118,6 +118,34 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun validRequestedUsernameIsContinuedWithoutRestartingValidation() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(
+                    text = "phuongthao.pham26",
+                    contentDescription = "Tên người dùng,squirrel.27519677",
+                    className = "android.widget.EditText",
+                    clickable = true,
+                    editable = true,
+                ),
+                LocalUiNode(
+                    contentDescription = "Giá trị nhập là Tên người dùng hợp lệ.",
+                ),
+                LocalUiNode(contentDescription = "Tiếp", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(
+            mapOf("username" to "phuongthao.pham26"),
+        )
+
+        assertEquals("running", result.status)
+        assertTrue("không được restart validation của tên đã hợp lệ", bridge.values.isEmpty())
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
     fun rejectionMessageForAnotherNameDoesNotBlockCurrentName() {
         // Thông báo còn sót của tên CŨ không được làm dừng lượt điền tên MỚI.
         val bridge = FakeBridge(

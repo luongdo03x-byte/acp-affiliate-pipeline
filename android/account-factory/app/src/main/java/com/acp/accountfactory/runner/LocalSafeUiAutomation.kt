@@ -196,14 +196,14 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
                 // còn sót của tên trước đó không được chặn lượt điền tên mới.
                 val wantedUsername = profile["username"]
                 val availableUsername = availableUsername(nodes)
-                if (!wantedUsername.isNullOrBlank() &&
-                    availableUsername != null &&
-                    !availableUsername.equals(wantedUsername, ignoreCase = true)
-                ) {
+                if (!wantedUsername.isNullOrBlank() && availableUsername != null) {
+                    val adoptedUsername = availableUsername.takeUnless {
+                        it.equals(wantedUsername, ignoreCase = true)
+                    }
                     if (has(nodes, continueSelector)) {
                         return if (bridge.click(continueSelector)) {
                             LocalFlowOutcome(
-                                "running", screen, actualUsername = availableUsername,
+                                "running", screen, actualUsername = adoptedUsername,
                             )
                         } else {
                             confirmation(screen)
@@ -212,12 +212,12 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
                     return if (bridge.dismissKeyboard()) {
                         LocalFlowOutcome(
                             "running", screen, "KEYBOARD_DISMISSED",
-                            actualUsername = availableUsername,
+                            actualUsername = adoptedUsername,
                         )
                     } else {
                         LocalFlowOutcome(
                             "needs_confirmation", screen, "UI_CHANGED",
-                            actualUsername = availableUsername,
+                            actualUsername = adoptedUsername,
                         )
                     }
                 }
