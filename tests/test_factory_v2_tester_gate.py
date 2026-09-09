@@ -172,6 +172,60 @@ class TesterGateTests(unittest.TestCase):
         self.assertEqual(AccountStage.ACP_CONNECTING.value, account["stage"])
         self.assertIsNone(self.runtime._tester_checkpoint(self.account_id))
 
+    def test_invited_account_runs_accept_flow_then_activates(self):
+        self._mark_invited()
+        job = self._job_for(self.account_id, desired_action="WAIT_TESTER")
+        self.gateway.responses["ACCEPT_THREADS_TESTER"] = {
+            "ok": True,
+            "status": "completed",
+            "result": {"screen": "THREADS_TESTER_INVITE_CONFIRM", "reason": None},
+        }
+
+        self.runtime._drive_tester_invite(job, self.repo.get_account(self.account_id))
+
+        account = self.repo.get_account(self.account_id)
+        self.assertIsNotNone(account["tester_accepted_at"])
+        self.assertEqual(AccountStage.ACP_CONNECTING.value, account["stage"])
+        self.assertIn("ACCEPT_THREADS_TESTER", self.gateway.sent)
+
+    def test_missing_invite_keeps_account_waiting(self):
+        self._mark_invited()
+        job = self._job_for(self.account_id, desired_action="START_ACP")
+        self.runtime._start_activation(job, self.repo.get_account(self.account_id))
+        waiting_job = dict(
+            self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
+        )
+        self.gateway.responses["ACCEPT_THREADS_TESTER"] = {
+            "ok": True,
+            "status": "needs_confirmation",
+            "result": {"screen": "THREADS_TESTER_INVITE_LIST", "reason": "NO_TESTER_INVITE"},
+        }
+
+        self.runtime._drive_tester_invite(
+            waiting_job, self.repo.get_account(self.account_id)
+        )
+
+        account = self.repo.get_account(self.account_id)
+        self.assertIsNone(account["tester_accepted_at"])
+        self.assertEqual(AccountStage.THREADS_CREATED.value, account["stage"])
+        checkpoint = self.runtime._tester_checkpoint(self.account_id)
+        self.assertIsNotNone(checkpoint)
+        self.assertIn("Meta", checkpoint["message"])
+
+    def test_uninvited_account_never_touches_the_device(self):
+        job = self._job_for(self.account_id, desired_action="START_ACP")
+        self.runtime._start_activation(job, self.repo.get_account(self.account_id))
+        waiting_job = dict(
+            self.conn.execute("SELECT * FROM factory_job WHERE id='job-1'").fetchone()
+        )
+
+        self.runtime._drive_tester_invite(
+            waiting_job, self.repo.get_account(self.account_id)
+        )
+
+        self.assertNotIn("ACCEPT_THREADS_TESTER", self.gateway.sent)
+        self.assertEqual(0, self.activation.start_calls)
+
 
 if __name__ == "__main__":
     unittest.main()

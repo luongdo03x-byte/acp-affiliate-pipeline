@@ -542,6 +542,8 @@ class FactoryControllerRuntime:
         )
 
     def _drive_tester_invite(self, job, account) -> None:
+        from .threads_onboarding import mark_tester_accepted
+
         self.repo.conn.execute(
             "UPDATE factory_job SET heartbeat_at=?, lease_expires_at=? WHERE id=?",
             (now(), _lease_extension(), job["id"]),
@@ -549,6 +551,32 @@ class FactoryControllerRuntime:
         if account.get("tester_accepted_at"):
             self._resolve_tester_checkpoint(account["id"], "TESTER_ACCEPTED")
             self._start_activation(job, self.repo.get_account(account["id"]))
+            return
+        if not account.get("tester_invited_at"):
+            # The operator has not confirmed the Meta-side invitation yet, so
+            # there is nothing for the device to accept.
+            return
+
+        response = self._command(job, "ACCEPT_THREADS_TESTER")
+        if _pending(response):
+            return
+        if response.get("status") == "completed":
+            mark_tester_accepted(self.repo.conn, account["id"])
+            self._resolve_tester_checkpoint(account["id"], "TESTER_ACCEPTED")
+            self._start_activation(job, self.repo.get_account(account["id"]))
+            return
+
+        result = response.get("result") or {}
+        if result.get("reason") == "NO_TESTER_INVITE":
+            checkpoint = self._tester_checkpoint(account["id"])
+            if checkpoint is not None:
+                self.repo.conn.execute(
+                    "UPDATE factory_checkpoint SET message=? WHERE id=?",
+                    (
+                        "Chưa thấy lời mời trên Meta cho account này.",
+                        checkpoint["id"],
+                    ),
+                )
 
     def _start_activation(self, job, account) -> None:
         if not account.get("tester_accepted_at"):

@@ -21,6 +21,7 @@ from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
 from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
 from core.factory_v2.ui_automation.threads.screens import build_threads_detector
+from core.factory_v2.ui_automation.threads.tester_flow import ThreadsTesterFlow
 from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, WorkerHeartbeat
 
 
@@ -140,6 +141,7 @@ class WorkerAgent:
         avd: AvdManager | None = None,
         instagram_flow=None,
         threads_flow=None,
+        threads_tester_flow=None,
         adb_client=None,
     ):
         self.worker_id = worker_id
@@ -170,6 +172,9 @@ class WorkerAgent:
             )
         self.instagram_flow = instagram_flow
         self.threads_flow = threads_flow
+        self.threads_tester_flow = threads_tester_flow or ThreadsTesterFlow(
+            self.threads_flow.driver
+        )
 
     def heartbeat(self) -> dict:
         heartbeat = WorkerHeartbeat(
@@ -315,6 +320,12 @@ class WorkerAgent:
                 return self._flow_response(
                     "threads",
                     self.threads_flow.run(_safe_profile(command.payload)),
+                )
+            if action == "ACCEPT_THREADS_TESTER":
+                self.threads_tester_flow.driver.open_package(_THREADS_PACKAGE)
+                return self._flow_response(
+                    "threads",
+                    self.threads_tester_flow.accept_invite(),
                 )
             if action == "OBSERVE_CHECKPOINT":
                 flow_name = str(command.payload.get("flow") or self.flow or "").strip().lower()
