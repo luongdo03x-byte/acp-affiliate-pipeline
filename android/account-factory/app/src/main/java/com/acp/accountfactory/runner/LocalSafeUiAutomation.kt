@@ -179,6 +179,17 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
                 return act(screen, bridge.click(continueSelector))
             }
             "IG_PROFILE_SETUP" -> {
+                // Instagram từ chối tên và ghi RÕ TÊN ĐÓ trong thông báo. Nếu không
+                // nhận ra, runner gõ lại tên cũ mỗi vòng lặp; mỗi lần gõ lại khởi
+                // động lại quá trình kiểm tra tên nên nó chạy vô hạn, vừa không tiến
+                // được vừa nện liên tục vào Instagram.
+                //
+                // Chỉ dừng khi thông báo nhắc đúng tên ĐANG định điền -- thông báo
+                // còn sót của tên trước đó không được chặn lượt điền tên mới.
+                val wantedUsername = profile["username"]
+                if (!wantedUsername.isNullOrBlank() && usernameRejected(nodes, wantedUsername)) {
+                    return LocalFlowOutcome("retry_pending", screen, "USERNAME_UNAVAILABLE")
+                }
                 val fields = listOf(
                     usernameInput to profile["username"],
                     instagramNameInput to profile["display_name"],
@@ -298,6 +309,19 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         return "UNKNOWN"
     }
 
+    /** Instagram đã từ chối đúng tên [username] này chưa. */
+    private fun usernameRejected(nodes: List<LocalUiNode>, username: String): Boolean {
+        val text = nodes.flatMap { listOf(it.text, it.contentDescription) }
+            .joinToString(" ") { normalize(it) }
+        // Bắt buộc thông báo phải nhắc chính tên đang điền, nếu không thì một
+        // thông báo còn sót của tên khác sẽ chặn nhầm lượt điền hợp lệ.
+        if (!text.contains(normalize(username))) return false
+        return listOf(
+            "khong dung duoc", "khong su dung duoc", "da co nguoi su dung", "da ton tai",
+            "isn't available", "is not available", "not available", "is taken", "already taken",
+        ).any(text::contains)
+    }
+
     private fun detectCommon(nodes: List<LocalUiNode>): String? {
         if (nodes.any { it.password }) return "PASSWORD_REQUIRED"
         val text = nodes.flatMap { listOf(it.text, it.contentDescription) }.joinToString(" ") { normalize(it) }
@@ -364,8 +388,14 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "SELFIE_OR_IDENTITY_CHECK", "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY",
         )
 
+        // NFD chỉ tách được dấu phụ (ô, ù, ê...). Chữ "đ" là một ký tự riêng,
+        // không phải "d" cộng dấu, nên nó sống sót qua bước bỏ dấu: "được" ra
+        // "đuoc" chứ không phải "duoc". Mọi mẫu ASCII chứa đ vì thế không bao
+        // giờ khớp. Phía Python (core/niche.py) đã xử lý; bản Kotlin thì chưa.
         fun normalize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
             .replace(Regex("\\p{Mn}+"), "")
+            .replace("đ", "d")
+            .replace("Đ", "D")
             .trim()
             .lowercase(Locale.ROOT)
     }

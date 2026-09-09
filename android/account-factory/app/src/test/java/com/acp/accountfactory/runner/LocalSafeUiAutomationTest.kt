@@ -30,6 +30,75 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun normalizeCungPhaiBoChuD() {
+        // NFD chỉ tách dấu phụ; "đ" là ký tự riêng nên sống sót qua bước bỏ dấu.
+        // Thiếu bước này thì mọi mẫu ASCII chứa đ ("duoc", "dang ky"...) không
+        // bao giờ khớp -- đúng lỗi đã làm bộ dò tên bị từ chối không hoạt động.
+        assertEquals("duoc", LocalSafeUiAutomation.normalize("được"))
+        assertEquals("dang ky", LocalSafeUiAutomation.normalize("Đăng ký"))
+        assertEquals("khong dung duoc", LocalSafeUiAutomation.normalize("không dùng được"))
+    }
+
+    @Test
+    fun rejectedUsernameStopsInsteadOfRetypingForever() {
+        // Instagram từ chối tên và ghi rõ tên đó trong thông báo. Trước đây runner
+        // không nhận ra, cứ gõ lại mỗi vòng lặp -- mỗi lần gõ lại khởi động lại
+        // quá trình kiểm tra tên, nên nó chạy vô hạn mà không bao giờ tiến được.
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Tạo tên người dùng", contentDescription = "Tạo tên người dùng"),
+                LocalUiNode(
+                    text = "phuongthao.pham26",
+                    contentDescription = "Tên người dùng,phuongthao.pham26",
+                    className = "android.widget.EditText",
+                    clickable = true,
+                    editable = true,
+                ),
+                LocalUiNode(
+                    text = "Tên người dùng phuongthao.pham26 không dùng được.",
+                    contentDescription = "Tên người dùng phuongthao.pham26 không dùng được.",
+                ),
+                LocalUiNode(contentDescription = "Tiếp", className = "android.widget.Button", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(mapOf("username" to "phuongthao.pham26"))
+
+        assertEquals("USERNAME_UNAVAILABLE", result.reason)
+        assertEquals("retry_pending", result.status)
+        assertTrue("không được gõ lại tên đã bị từ chối", bridge.values.isEmpty())
+        assertTrue("không được bấm Tiếp khi tên đã bị từ chối", bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun rejectionMessageForAnotherNameDoesNotBlockCurrentName() {
+        // Thông báo còn sót của tên CŨ không được làm dừng lượt điền tên MỚI.
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(
+                    text = "squirrel.27519677",
+                    contentDescription = "Tên người dùng,squirrel.27519677",
+                    className = "android.widget.EditText",
+                    clickable = true,
+                    editable = true,
+                ),
+                LocalUiNode(
+                    text = "Tên người dùng phuongthaop không dùng được.",
+                    contentDescription = "Tên người dùng phuongthaop không dùng được.",
+                ),
+                LocalUiNode(contentDescription = "Tiếp", className = "android.widget.Button", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(mapOf("username" to "phuongthao.pham26"))
+
+        assertTrue("phải điền tên mới", bridge.values.contains("phuongthao.pham26"))
+        assertEquals(null, result.reason)
+    }
+
+    @Test
     fun usernameScreenIsNotMistakenForFinalSubmit() {
         // Cây UI thật chụp từ Redmi 9A. Instagram dựng màn này bằng Compose nên
         // MỌI node đều có resource-id rỗng; ô nhập chỉ nhận ra được qua

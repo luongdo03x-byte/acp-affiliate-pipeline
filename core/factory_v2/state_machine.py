@@ -9,6 +9,11 @@ _RUNNER_ASSIGNED_NEXT = frozenset({
     S.IG_READY_FOR_HUMAN,
     S.RETRY_PENDING,
     S.NEEDS_CONFIRMATION,
+    # Runner đang chạy phát hiện Instagram từ chối tên. Phải báo được trạng thái
+    # này ngay từ RUNNER_ASSIGNED, nếu không nó rơi vào RETRY_PENDING -- vốn được
+    # assign_next giao việc tiếp -- và hệ thống giao lại đúng cái tên đã bị từ
+    # chối, lặp vô hạn.
+    S.USERNAME_UNAVAILABLE,
     S.ERROR,
 })
 

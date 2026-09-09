@@ -378,6 +378,18 @@ class FactoryControllerRuntime:
             self._complete_remote_flow(job, account, flow=flow)
             return
         if status == "retry_pending":
+            # Tên bị Instagram từ chối là việc cần đặt tên khác, không phải lỗi
+            # tạm thời để thử lại. Nếu để nó rơi vào RETRY_PENDING thì assign_next
+            # giao lại đúng cái tên đó và vòng lặp không bao giờ dứt.
+            if "USERNAME_UNAVAILABLE" in {reason, screen}:
+                self._transition_remote_terminal(
+                    job,
+                    account,
+                    stage=AccountStage.USERNAME_UNAVAILABLE,
+                    error_code="USERNAME_UNAVAILABLE",
+                    message=reason,
+                )
+                return
             if "RATE_LIMITED" in {reason, screen}:
                 code = "RATE_LIMITED"
             elif "ACTION_BLOCKED" in {reason, screen}:
