@@ -145,6 +145,16 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         ),
         requireClickable = true,
     )
+    private val threadsProfileChooserMarker = LocalUiSelector(
+        texts = setOf(
+            "Join with Instagram", "Log in to Threads",
+            "Tham gia bằng Instagram", "Đăng nhập vào Threads",
+        ),
+        contentDescriptions = setOf(
+            "Join with Instagram", "Log in to Threads",
+            "Tham gia bằng Instagram", "Đăng nhập vào Threads",
+        ),
+    )
     private val threadsProfileTab = LocalUiSelector(
         resourceIds = setOf(
             "com.instagram.barcelona:id/profile_tab",
@@ -152,6 +162,9 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "barcelona_tab_profile",
         ),
         contentDescriptions = setOf("Profile", "Trang cá nhân"),
+    )
+    private val currentAccountMarker = LocalUiSelector(
+        contentDescriptions = setOf("Current account", "Tài khoản hiện tại"),
     )
     private val threadsAddProfile = LocalUiSelector(
         texts = setOf(
@@ -277,8 +290,31 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectThreads(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            "THREADS_HOME" -> return act(screen, bridge.longClick(threadsProfileTab))
-            "THREADS_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(threadsAddProfile))
+            "THREADS_HOME" -> {
+                val username = requestedUsername(profile)
+                if (username != null && currentThreadsHomeHasIdentity(nodes, username)) {
+                    return LocalFlowOutcome("completed", screen)
+                }
+                return act(screen, bridge.longClick(threadsProfileTab))
+            }
+            "THREADS_ACCOUNT_SWITCHER" -> {
+                val username = requestedUsername(profile)
+                if (username != null && currentThreadsSwitcherHasIdentity(nodes, username)) {
+                    return act(screen, bridge.dismissKeyboard())
+                }
+                return act(screen, bridge.click(threadsAddProfile))
+            }
+            "THREADS_PROFILE_CHOOSER" -> {
+                val username = requestedUsername(profile)
+                if (username == null) {
+                    return confirmation(screen, "THREADS_PROFILE_IDENTITY_MISSING")
+                }
+                val target = LocalUiSelector(texts = setOf(username))
+                if (!has(nodes, target)) {
+                    return confirmation(screen, "THREADS_PROFILE_NOT_LISTED")
+                }
+                return act(screen, bridge.click(target))
+            }
             "THREADS_ONBOARDING" -> {
                 val selector = if (has(nodes, threadsJoin)) threadsJoin else continueSelector
                 return act(screen, bridge.click(selector))
@@ -368,6 +404,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun detectThreads(nodes: List<LocalUiNode>): String {
         if (bridge.foregroundPackage() != THREADS_PACKAGE) return "UNKNOWN"
         detectCommon(nodes)?.let { return it }
+        if (has(nodes, threadsProfileChooserMarker)) return "THREADS_PROFILE_CHOOSER"
         if (has(nodes, threadsAddProfile)) return "THREADS_ACCOUNT_SWITCHER"
         if (has(nodes, threadsNameInput) || has(nodes, threadsBioInput)) return "THREADS_PROFILE_SETUP"
         if (has(nodes, threadsJoin) || has(nodes, continueSelector)) return "THREADS_ONBOARDING"
@@ -447,6 +484,31 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
 
     private fun usernameStem(value: String): String =
         value.lowercase(Locale.ROOT).replace(Regex("[._]"), "")
+
+    private fun requestedUsername(profile: Map<String, String?>): String? =
+        profile["username"]
+            ?.trim()
+            ?.removePrefix("@")
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf(::isInstagramUsername)
+
+    private fun currentThreadsSwitcherHasIdentity(
+        nodes: List<LocalUiNode>,
+        username: String,
+    ): Boolean {
+        val marker = nodes.firstOrNull { matches(it, currentAccountMarker) } ?: return false
+        return nodes.any { node ->
+            normalize(node.text) == normalize(username) &&
+                node.top <= marker.bottom && node.bottom >= marker.top
+        }
+    }
+
+    private fun currentThreadsHomeHasIdentity(
+        nodes: List<LocalUiNode>,
+        username: String,
+    ): Boolean = nodes.any { node ->
+        normalize(node.text) == normalize(username) && node.top in 1..280
+    }
 
     private fun detectCommon(nodes: List<LocalUiNode>): String? {
         if (nodes.any { it.password }) return "PASSWORD_REQUIRED"

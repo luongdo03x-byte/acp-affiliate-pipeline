@@ -14,6 +14,7 @@ class LocalSafeUiAutomationTest {
         val taps = mutableListOf<Pair<Int, Int>>()
         val longClicks = mutableListOf<LocalUiSelector>()
         val values = mutableListOf<String>()
+        var backs = 0
         override fun foregroundPackage() = packageName
         override fun nodes() = snapshot
         override fun click(selector: LocalUiSelector): Boolean {
@@ -28,7 +29,10 @@ class LocalSafeUiAutomationTest {
             taps += x to y
             return true
         }
-        override fun dismissKeyboard(): Boolean = true
+        override fun dismissKeyboard(): Boolean {
+            backs += 1
+            return true
+        }
         override fun setText(selector: LocalUiSelector, value: String): Boolean {
             values += value
             return true
@@ -377,6 +381,87 @@ class LocalSafeUiAutomationTest {
         assertEquals("THREADS_ACCOUNT_SWITCHER", result.screen)
         assertEquals(1, bridge.clicks.size)
         assertFalse(bridge.clicks.single().requireClickable)
+    }
+
+    @Test
+    fun threadsProfileChooserClicksOnlyRequestedInstagramUsername() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Đăng nhập vào Threads"),
+                LocalUiNode(text = "bear.25_07"),
+                LocalUiNode(text = "Tham gia bằng Instagram"),
+                LocalUiNode(text = "phuongthao.pham26"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(
+            mapOf("username" to "phuongthao.pham26"),
+        )
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_PROFILE_CHOOSER", result.screen)
+        assertEquals(setOf("phuongthao.pham26"), bridge.clicks.single().texts)
+    }
+
+    @Test
+    fun threadsProfileChooserStopsWhenRequestedUsernameIsAbsent() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Tham gia bằng Instagram"),
+                LocalUiNode(text = "another.account"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(
+            mapOf("username" to "phuongthao.pham26"),
+        )
+
+        assertEquals("needs_confirmation", result.status)
+        assertEquals("THREADS_PROFILE_NOT_LISTED", result.reason)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun threadsSwitcherClosesWhenRequestedProfileIsCurrent() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(text = "\"Thêm trang cá nhân\""),
+                LocalUiNode(text = "phuongthao.pham26", top = 439, bottom = 472),
+                LocalUiNode(contentDescription = "Tài khoản hiện tại", top = 460, bottom = 496),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(
+            mapOf("username" to "phuongthao.pham26"),
+        )
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_ACCOUNT_SWITCHER", result.screen)
+        assertEquals(1, bridge.backs)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun threadsHomeCompletesOnlyWhenRequestedIdentityIsInComposer() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(contentDescription = "Bảng feed"),
+                LocalUiNode(text = "phuongthao.pham26", top = 172, bottom = 207),
+                LocalUiNode(viewId = "barcelona_tab_profile"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(
+            mapOf("username" to "phuongthao.pham26"),
+        )
+
+        assertEquals("completed", result.status)
+        assertEquals("THREADS_HOME", result.screen)
+        assertTrue(bridge.longClicks.isEmpty())
     }
 
     @Test
