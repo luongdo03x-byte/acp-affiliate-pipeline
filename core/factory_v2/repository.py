@@ -110,6 +110,15 @@ class FactoryRepository:
         )
         return self.get_account(account_id)
 
+    def update_account_username(self, account_id: str, username: str, *, updated_at: str) -> dict:
+        cursor = self.conn.execute(
+            "UPDATE factory_account SET username=?, updated_at=? WHERE id=?",
+            (username, updated_at, account_id),
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(account_id)
+        return self.get_account(account_id)
+
     def insert_worker(self, row: Mapping[str, Any]) -> dict:
         _insert(self.conn, "factory_worker", row)
         return self.get_worker(row["id"])

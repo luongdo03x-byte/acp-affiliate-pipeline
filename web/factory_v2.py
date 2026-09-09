@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 
 from flask import abort, jsonify, request
 
@@ -49,6 +50,7 @@ _HOST_FIELDS = (
 _ALLOWED_RUNNER_RESULT_KEYS = frozenset({
     "package", "activity", "waiting_human", "error_code", "prepared",
     "flow_status", "screen", "reason", "last_safe_step",
+    "actual_username",
 })
 _ALLOWED_FLOW_STATUSES = frozenset({
     "running", "waiting_human", "completed", "needs_confirmation",
@@ -185,6 +187,11 @@ def _clean_runner_result(value) -> dict:
             if flow_status not in _ALLOWED_FLOW_STATUSES:
                 raise ValueError("flow_status không hợp lệ")
             clean[key] = flow_status
+        elif key == "actual_username":
+            username = str(child or "").strip().lstrip("@").lower()
+            if not username or len(username) > 30 or not re.fullmatch(r"[a-z0-9._]+", username):
+                raise ValueError("actual_username không hợp lệ")
+            clean[key] = username
         elif key in {"package", "activity", "error_code", "screen", "reason", "last_safe_step"}:
             clean[key] = None if child is None else str(child)[:240]
         elif key in {"waiting_human", "prepared"}:

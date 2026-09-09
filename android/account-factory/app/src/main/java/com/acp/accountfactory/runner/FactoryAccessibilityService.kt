@@ -1,7 +1,10 @@
 package com.acp.accountfactory.runner
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.os.Bundle
+import android.graphics.Path
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -38,13 +41,43 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
         return buildList { collect(root, this) }
     }
 
-    override fun click(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->
-        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    override fun click(selector: LocalUiSelector): Boolean =
+        withMatchingNode(selector.copy(requireClickable = false)) { node ->
+            clickNodeOrClickableAncestor(node)
+        }
+
+    private fun clickNodeOrClickableAncestor(node: AccessibilityNodeInfo): Boolean {
+        var target = node
+        while (!target.isClickable) {
+            val parent = target.parent ?: return false
+            if (target !== node) target.recycle()
+            target = parent
+        }
+        return try {
+            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } finally {
+            if (target !== node) target.recycle()
+        }
     }
 
     override fun longClick(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->
-        node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return@withMatchingNode true
+        val bounds = Rect().also(node::getBoundsInScreen)
+        dispatchTap(bounds.centerX(), bounds.centerY(), 800L)
     }
+
+    override fun tapAt(x: Int, y: Int): Boolean = dispatchTap(x, y, 80L)
+
+    private fun dispatchTap(x: Int, y: Int, durationMs: Long): Boolean {
+        if (x < 0 || y < 0) return false
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    override fun dismissKeyboard(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
 
     override fun setText(selector: LocalUiSelector, value: String): Boolean {
         if (value.isBlank() || value.length > 500 || value.any { it.code < 32 }) return false
@@ -58,6 +91,7 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
 
     private fun collect(node: AccessibilityNodeInfo, output: MutableList<LocalUiNode>) {
         val password = node.isPassword
+        val bounds = Rect().also(node::getBoundsInScreen)
         output += LocalUiNode(
             text = if (password) "" else node.text?.toString().orEmpty(),
             contentDescription = if (password) "" else node.contentDescription?.toString().orEmpty(),
@@ -67,6 +101,10 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
             longClickable = node.isLongClickable,
             editable = node.isEditable,
             password = password,
+            left = bounds.left,
+            top = bounds.top,
+            right = bounds.right,
+            bottom = bounds.bottom,
         )
         for (index in 0 until node.childCount) {
             node.getChild(index)?.let { child ->

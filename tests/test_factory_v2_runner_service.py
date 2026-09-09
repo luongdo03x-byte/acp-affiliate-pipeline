@@ -36,6 +36,17 @@ class FactoryV2RunnerServiceTests(unittest.TestCase):
         )
         self.assertIsNotNone(updated["last_heartbeat_at"])
 
+    def test_register_recovers_idle_local_runner_after_expired_lease(self):
+        worker = self.service.register_local_runner("android-id-recover", "Phone")
+        self.repo.update_worker_fields(
+            worker["id"], state="RECOVERING", last_error="expired lease"
+        )
+
+        updated = self.service.register_local_runner("android-id-recover", "Phone")
+
+        self.assertEqual("READY", updated["state"])
+        self.assertIsNone(updated["last_error"])
+
     def test_heartbeat_rejects_assignment_mismatch(self):
         worker = self.service.register_local_runner("android-id-3", "Phone")
         self.repo.update_worker_fields(

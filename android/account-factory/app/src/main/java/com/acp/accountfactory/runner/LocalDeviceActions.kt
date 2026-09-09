@@ -189,7 +189,11 @@ open class LocalDeviceActions(
 
     private companion object {
         const val TAG = "AcpLocalActions"
-        const val ACCOUNT_SWITCH_CHAIN_STEPS = 2
+        // Accessibility gestures are asynchronous. A second action in the same
+        // command can land before a long-press finishes and toggle the account
+        // switcher closed again. Let the next polled command observe the stable
+        // postcondition before it performs another mutation.
+        const val ACCOUNT_SWITCH_CHAIN_STEPS = 0
         const val UI_SETTLING_RETRIES = 5
         val ACCOUNT_SWITCH_SCREENS = setOf(
             "IG_HOME", "IG_ACCOUNT_SWITCHER",

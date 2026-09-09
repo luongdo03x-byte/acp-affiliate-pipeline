@@ -16,6 +16,9 @@ class FactoryV2StateMachineTests(unittest.TestCase):
         self.assertEqual(S.IG_CREATED, safe_stage_after_transition(S.IG_CREATED, S.WAITING_HUMAN))
         self.assertEqual(S.THREADS_CREATED, safe_stage_after_transition(S.IG_CREATED, S.THREADS_CREATED))
 
+    def test_threads_preparation_can_retry_from_last_safe_stage(self):
+        self.assertTrue(can_transition(S.THREADS_READY_FOR_HUMAN, S.RETRY_PENDING))
+
 
 if __name__ == "__main__":
     unittest.main()

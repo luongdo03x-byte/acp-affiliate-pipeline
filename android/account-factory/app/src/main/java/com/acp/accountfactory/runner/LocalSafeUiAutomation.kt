@@ -12,6 +12,10 @@ data class LocalUiNode(
     val longClickable: Boolean = false,
     val editable: Boolean = false,
     val password: Boolean = false,
+    val left: Int = 0,
+    val top: Int = 0,
+    val right: Int = 0,
+    val bottom: Int = 0,
 )
 
 data class LocalUiSelector(
@@ -29,6 +33,8 @@ interface LocalAccessibilityBridge {
     fun nodes(): List<LocalUiNode>
     fun click(selector: LocalUiSelector): Boolean
     fun longClick(selector: LocalUiSelector): Boolean
+    fun tapAt(x: Int, y: Int): Boolean
+    fun dismissKeyboard(): Boolean
     fun setText(selector: LocalUiSelector, value: String): Boolean
 }
 
@@ -36,12 +42,14 @@ data class LocalFlowOutcome(
     val status: String,
     val screen: String,
     val reason: String? = null,
+    val actualUsername: String? = null,
 ) {
-    fun result(): Map<String, Any?> = mapOf(
-        "flow_status" to status,
-        "screen" to screen,
-        "reason" to reason,
-    )
+    fun result(): Map<String, Any?> = buildMap {
+        put("flow_status", status)
+        put("screen", screen)
+        put("reason", reason)
+        actualUsername?.let { put("actual_username", it) }
+    }
 }
 
 /** Fail-closed Accessibility automation shared by physical-device commands. */
@@ -60,6 +68,16 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private val instagramSignup = LocalUiSelector(
         texts = setOf("Create new account", "Tạo tài khoản mới"),
         contentDescriptions = setOf("Create new account", "Tạo tài khoản mới"),
+        requireClickable = true,
+    )
+    private val accountCenterConsent = LocalUiSelector(
+        texts = setOf("Allow and continue", "Cho phép và tiếp tục"),
+        contentDescriptions = setOf("Allow and continue", "Cho phép và tiếp tục"),
+        requireClickable = true,
+    )
+    private val instagramTermsConsent = LocalUiSelector(
+        texts = setOf("I agree", "Tôi đồng ý"),
+        contentDescriptions = setOf("I agree", "Tôi đồng ý"),
         requireClickable = true,
     )
     private val instagramProfileTab = LocalUiSelector(
@@ -127,21 +145,40 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         ),
         requireClickable = true,
     )
+    private val threadsProfileChooserMarker = LocalUiSelector(
+        texts = setOf(
+            "Join with Instagram", "Log in to Threads",
+            "Tham gia bằng Instagram", "Đăng nhập vào Threads",
+        ),
+        contentDescriptions = setOf(
+            "Join with Instagram", "Log in to Threads",
+            "Tham gia bằng Instagram", "Đăng nhập vào Threads",
+        ),
+    )
     private val threadsProfileTab = LocalUiSelector(
-        resourceIds = setOf("com.instagram.barcelona:id/profile_tab"),
+        resourceIds = setOf(
+            "com.instagram.barcelona:id/profile_tab",
+            "com.instagram.barcelona:id/barcelona_tab_profile",
+            "barcelona_tab_profile",
+        ),
         contentDescriptions = setOf("Profile", "Trang cá nhân"),
-        requireLongClickable = true,
+    )
+    private val currentAccountMarker = LocalUiSelector(
+        contentDescriptions = setOf("Current account", "Tài khoản hiện tại"),
     )
     private val threadsAddProfile = LocalUiSelector(
         texts = setOf(
             "Add profile", "Add account",
             "Thêm trang cá nhân", "Thêm tài khoản",
+            "\"Add profile\"", "\"Add account\"",
+            "\"Thêm trang cá nhân\"", "\"Thêm tài khoản\"",
         ),
         contentDescriptions = setOf(
             "Add profile", "Add account",
             "Thêm trang cá nhân", "Thêm tài khoản",
+            "\"Add profile\"", "\"Add account\"",
+            "\"Thêm trang cá nhân\"", "\"Thêm tài khoản\"",
         ),
-        requireClickable = true,
     )
     private val threadsNameInput = LocalUiSelector(
         resourceIds = setOf(
@@ -166,6 +203,10 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "IG_HOME" -> return act(screen, bridge.longClick(instagramProfileTab))
             "IG_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(instagramAddAccount))
             "IG_SIGNUP_ENTRY" -> return act(screen, bridge.click(instagramSignup))
+            "IG_ACCOUNT_CENTER_CONSENT" ->
+                return act(screen, bridge.click(accountCenterConsent))
+            "IG_TERMS_CONSENT" ->
+                return act(screen, bridge.click(instagramTermsConsent))
             "IG_CONTACT_ENTRY" -> {
                 val contact = profile["signup_contact"].orEmpty().trim()
                 if (contact.isEmpty()) return confirmation(screen, "MISSING_SIGNUP_CONTACT")
@@ -187,7 +228,36 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
                 // Chỉ dừng khi thông báo nhắc đúng tên ĐANG định điền -- thông báo
                 // còn sót của tên trước đó không được chặn lượt điền tên mới.
                 val wantedUsername = profile["username"]
+                val availableUsername = availableUsername(nodes)
+                if (!wantedUsername.isNullOrBlank() && availableUsername != null) {
+                    val adoptedUsername = availableUsername.takeUnless {
+                        it.equals(wantedUsername, ignoreCase = true)
+                    }
+                    if (has(nodes, continueSelector)) {
+                        return if (bridge.click(continueSelector)) {
+                            LocalFlowOutcome(
+                                "running", screen, actualUsername = adoptedUsername,
+                            )
+                        } else {
+                            confirmation(screen)
+                        }
+                    }
+                    return if (bridge.dismissKeyboard()) {
+                        LocalFlowOutcome(
+                            "running", screen, "KEYBOARD_DISMISSED",
+                            actualUsername = adoptedUsername,
+                        )
+                    } else {
+                        LocalFlowOutcome(
+                            "needs_confirmation", screen, "UI_CHANGED",
+                            actualUsername = adoptedUsername,
+                        )
+                    }
+                }
                 if (!wantedUsername.isNullOrBlank() && usernameRejected(nodes, wantedUsername)) {
+                    if (chooseUsernameSuggestion(nodes, wantedUsername)) {
+                        return LocalFlowOutcome("running", screen, "USERNAME_SUGGESTION_SELECTED")
+                    }
                     return LocalFlowOutcome("retry_pending", screen, "USERNAME_UNAVAILABLE")
                 }
                 val fields = listOf(
@@ -220,8 +290,31 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         val screen = detectThreads(nodes)
         protectedOutcome(screen)?.let { return it }
         when (screen) {
-            "THREADS_HOME" -> return act(screen, bridge.longClick(threadsProfileTab))
-            "THREADS_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(threadsAddProfile))
+            "THREADS_HOME" -> {
+                val username = requestedUsername(profile)
+                if (username != null && currentThreadsHomeHasIdentity(nodes, username)) {
+                    return LocalFlowOutcome("completed", screen)
+                }
+                return act(screen, bridge.longClick(threadsProfileTab))
+            }
+            "THREADS_ACCOUNT_SWITCHER" -> {
+                val username = requestedUsername(profile)
+                if (username != null && currentThreadsSwitcherHasIdentity(nodes, username)) {
+                    return act(screen, bridge.dismissKeyboard())
+                }
+                return act(screen, bridge.click(threadsAddProfile))
+            }
+            "THREADS_PROFILE_CHOOSER" -> {
+                val username = requestedUsername(profile)
+                if (username == null) {
+                    return confirmation(screen, "THREADS_PROFILE_IDENTITY_MISSING")
+                }
+                val target = LocalUiSelector(texts = setOf(username))
+                if (!has(nodes, target)) {
+                    return confirmation(screen, "THREADS_PROFILE_NOT_LISTED")
+                }
+                return act(screen, bridge.click(target))
+            }
             "THREADS_ONBOARDING" -> {
                 val selector = if (has(nodes, threadsJoin)) threadsJoin else continueSelector
                 return act(screen, bridge.click(selector))
@@ -276,6 +369,15 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         detectCommon(nodes)?.let { return it }
         if (has(nodes, instagramAddAccount)) return "IG_ACCOUNT_SWITCHER"
         if (has(nodes, instagramSignup)) return "IG_SIGNUP_ENTRY"
+        if (has(nodes, accountCenterConsent) &&
+            containsAny(nodes, "account center", "trung tam tai khoan")
+        ) return "IG_ACCOUNT_CENTER_CONSENT"
+        if (has(nodes, instagramTermsConsent) && containsAny(
+                nodes,
+                "by signing up, you agree to",
+                "bang viec dang ky, ban dong y voi dieu khoan",
+            )
+        ) return "IG_TERMS_CONSENT"
         if (has(nodes, contactInput)) return "IG_CONTACT_ENTRY"
         if (has(nodes, birthdayInput)) return "IG_BIRTHDAY_ENTRY"
         if (has(nodes, usernameInput) || has(nodes, instagramNameInput) || has(nodes, instagramBioInput)) {
@@ -302,6 +404,7 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun detectThreads(nodes: List<LocalUiNode>): String {
         if (bridge.foregroundPackage() != THREADS_PACKAGE) return "UNKNOWN"
         detectCommon(nodes)?.let { return it }
+        if (has(nodes, threadsProfileChooserMarker)) return "THREADS_PROFILE_CHOOSER"
         if (has(nodes, threadsAddProfile)) return "THREADS_ACCOUNT_SWITCHER"
         if (has(nodes, threadsNameInput) || has(nodes, threadsBioInput)) return "THREADS_PROFILE_SETUP"
         if (has(nodes, threadsJoin) || has(nodes, continueSelector)) return "THREADS_ONBOARDING"
@@ -320,6 +423,91 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "khong dung duoc", "khong su dung duoc", "da co nguoi su dung", "da ton tai",
             "isn't available", "is not available", "not available", "is taken", "already taken",
         ).any(text::contains)
+    }
+
+    /** Đọc giá trị thật từ text của EditText; content-desc có thể giữ tên cũ. */
+    private fun availableUsername(nodes: List<LocalUiNode>): String? {
+        val input = nodes.firstOrNull { matches(it, usernameInput) } ?: return null
+        val candidate = input.text.trim().lowercase(Locale.ROOT)
+        if (!isInstagramUsername(candidate)) return null
+        val markers = setOf(
+            "username is available",
+            "valid username",
+            "ten nguoi dung hop le",
+            "gia tri nhap la ten nguoi dung hop le",
+        )
+        val available = nodes.any { node ->
+            listOf(node.text, node.contentDescription)
+                .map(::normalize)
+                .any { value -> markers.any(value::contains) }
+        }
+        return candidate.takeIf { available }
+    }
+
+    /**
+     * Chọn gợi ý đầu tiên chỉ trên đúng màn username-rejected đã xác minh.
+     * Instagram Compose hiện vẽ ba gợi ý nhưng không expose chúng trong cây
+     * accessibility trên Redmi 9A. Khi đó dùng điểm ngay dưới thông báo lỗi;
+     * vòng sau vẫn phải đọc được username hợp lệ trước khi bấm Tiếp.
+     */
+    private fun chooseUsernameSuggestion(nodes: List<LocalUiNode>, wantedUsername: String): Boolean {
+        val exposed = nodes.firstOrNull { node ->
+            node.clickable && !node.editable &&
+                isInstagramUsername(node.text.trim()) &&
+                usernameStem(node.text) == usernameStem(wantedUsername) &&
+                !node.text.trim().equals(wantedUsername, ignoreCase = true)
+        }
+        if (exposed != null) {
+            return bridge.click(
+                LocalUiSelector(texts = setOf(exposed.text), requireClickable = true),
+            )
+        }
+
+        val input = nodes.firstOrNull { matches(it, usernameInput) } ?: return false
+        val rejection = nodes.firstOrNull { node ->
+            val value = normalize(node.text + " " + node.contentDescription)
+            value.contains(normalize(wantedUsername)) &&
+                listOf("khong dung duoc", "khong su dung duoc", "not available", "is taken")
+                    .any(value::contains)
+        } ?: return false
+        if (rejection.right <= rejection.left || rejection.bottom <= rejection.top) return false
+        val x = (rejection.left + rejection.right) / 2
+        val inputHeight = (input.bottom - input.top).coerceAtLeast(0)
+        val y = rejection.bottom + maxOf(48, inputHeight)
+        val screenBottom = nodes.maxOfOrNull { it.bottom } ?: 0
+        if (x <= 0 || y <= rejection.bottom || (screenBottom > 0 && y >= screenBottom)) return false
+        return bridge.tapAt(x, y)
+    }
+
+    private fun isInstagramUsername(value: String): Boolean =
+        value.length in 1..30 && value.matches(Regex("[A-Za-z0-9._]+"))
+
+    private fun usernameStem(value: String): String =
+        value.lowercase(Locale.ROOT).replace(Regex("[._]"), "")
+
+    private fun requestedUsername(profile: Map<String, String?>): String? =
+        profile["username"]
+            ?.trim()
+            ?.removePrefix("@")
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf(::isInstagramUsername)
+
+    private fun currentThreadsSwitcherHasIdentity(
+        nodes: List<LocalUiNode>,
+        username: String,
+    ): Boolean {
+        val marker = nodes.firstOrNull { matches(it, currentAccountMarker) } ?: return false
+        return nodes.any { node ->
+            normalize(node.text) == normalize(username) &&
+                node.top <= marker.bottom && node.bottom >= marker.top
+        }
+    }
+
+    private fun currentThreadsHomeHasIdentity(
+        nodes: List<LocalUiNode>,
+        username: String,
+    ): Boolean = nodes.any { node ->
+        normalize(node.text) == normalize(username) && node.top in 1..280
     }
 
     private fun detectCommon(nodes: List<LocalUiNode>): String? {
@@ -343,12 +531,21 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun hasHome(nodes: List<LocalUiNode>, packageName: String): Boolean {
         val prefix = "$packageName:id/"
         val home = nodes.any {
-            normalize(it.contentDescription) in setOf("home", "trang chu") ||
-                it.viewId in setOf("${prefix}feed_tab", "${prefix}home_tab")
+            normalize(it.contentDescription) in setOf("home", "trang chu", "feed", "bang feed") ||
+                it.viewId in setOf(
+                    "${prefix}feed_tab",
+                    "${prefix}home_tab",
+                    "${prefix}barcelona_tab_main_feed",
+                    "barcelona_tab_main_feed",
+                )
         }
         val profile = nodes.any {
             normalize(it.contentDescription) in setOf("profile", "trang ca nhan") ||
-                it.viewId == "${prefix}profile_tab"
+                it.viewId in setOf(
+                    "${prefix}profile_tab",
+                    "${prefix}barcelona_tab_profile",
+                    "barcelona_tab_profile",
+                )
         }
         return home && profile
     }
@@ -369,16 +566,19 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         return values.map(::normalize).any { wanted -> candidates.any { it.contains(wanted) } }
     }
 
-    private fun has(nodes: List<LocalUiNode>, selector: LocalUiSelector): Boolean = nodes.any {
-        (!selector.requireClickable || it.clickable) &&
-            (!selector.requireLongClickable || it.longClickable) &&
-            (!selector.requireEditable || it.editable) &&
-            (it.viewId in selector.resourceIds || normalize(it.text) in selector.texts.map(::normalize) ||
-                normalize(it.contentDescription) in selector.contentDescriptions.map(::normalize) ||
+    private fun matches(node: LocalUiNode, selector: LocalUiSelector): Boolean = with(node) {
+        (!selector.requireClickable || clickable) &&
+            (!selector.requireLongClickable || longClickable) &&
+            (!selector.requireEditable || editable) &&
+            (viewId in selector.resourceIds || normalize(text) in selector.texts.map(::normalize) ||
+                normalize(contentDescription) in selector.contentDescriptions.map(::normalize) ||
                 selector.contentDescriptionPrefixes.any { prefix ->
-                    normalize(it.contentDescription).startsWith(normalize(prefix))
+                    normalize(contentDescription).startsWith(normalize(prefix))
                 })
     }
+
+    private fun has(nodes: List<LocalUiNode>, selector: LocalUiSelector): Boolean =
+        nodes.any { matches(it, selector) }
 
     companion object {
         const val INSTAGRAM_PACKAGE = "com.instagram.android"

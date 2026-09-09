@@ -29,6 +29,8 @@ class LocalDeviceActionsTest {
         override fun nodes() = listOf(LocalUiNode(text = "Unexpected transition frame"))
         override fun click(selector: LocalUiSelector) = false
         override fun longClick(selector: LocalUiSelector) = false
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
         override fun setText(selector: LocalUiSelector, value: String) = false
     }
 
@@ -55,6 +57,8 @@ class LocalDeviceActionsTest {
             screen += 1
             return true
         }
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
         override fun setText(selector: LocalUiSelector, value: String) = false
     }
 
@@ -132,7 +136,7 @@ class LocalDeviceActionsTest {
     }
 
     @Test
-    fun accountSwitcherNavigationRunsAsOneBoundedCommandChain() {
+    fun accountSwitcherNavigationPerformsOnlyOneMutationPerCommand() {
         val bridge = SwitchingBridge()
         val actions = LocalDeviceActions(
             FakePlatform(),
@@ -145,6 +149,6 @@ class LocalDeviceActionsTest {
         val result = actions.execute(command("AUTOMATE_INSTAGRAM"))
 
         assertEquals("running", result.result["flow_status"])
-        assertEquals("IG_SIGNUP_ENTRY", result.result["screen"])
+        assertEquals("IG_HOME", result.result["screen"])
     }
 }

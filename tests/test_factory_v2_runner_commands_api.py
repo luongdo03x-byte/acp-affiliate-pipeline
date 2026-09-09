@@ -164,6 +164,63 @@ class FactoryV2RunnerCommandApiTests(unittest.TestCase):
         self.assertEqual("waiting_human", response["status"])
         self.assertEqual("PASSWORD_REQUIRED", response["result"]["screen"])
 
+    def test_sanitized_actual_username_round_trips_to_runtime(self):
+        command = self.gateway.send(
+            self.job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "phuongthaopham6"}},
+        )
+        self.client.get(
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/next",
+            headers=self.auth,
+        )
+        result_url = (
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/"
+            f"{command['command_id']}/result"
+        )
+
+        response = self.client.post(
+            result_url,
+            headers=self.auth,
+            json={
+                "status": "COMPLETED",
+                "result": {
+                    "flow_status": "running",
+                    "screen": "IG_PROFILE_SETUP",
+                    "actual_username": "Phuo.NgThaoPham6",
+                },
+            },
+        )
+
+        self.assertEqual(202, response.status_code)
+        result = self.gateway.send(
+            self.job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "phuongthaopham6"}},
+        )
+        self.assertEqual("phuo.ngthaopham6", result["actual_username"])
+
+    def test_invalid_actual_username_is_rejected(self):
+        command = self.gateway.send(
+            self.job,
+            "AUTOMATE_INSTAGRAM",
+            {"profile": {"username": "sample_user"}},
+        )
+        self.client.get(
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/next",
+            headers=self.auth,
+        )
+        response = self.client.post(
+            f"/api/factory/v2/runners/{self.worker['id']}/commands/{command['command_id']}/result",
+            headers=self.auth,
+            json={
+                "status": "COMPLETED",
+                "result": {"flow_status": "running", "actual_username": "bad name!"},
+            },
+        )
+
+        self.assertEqual(400, response.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()
