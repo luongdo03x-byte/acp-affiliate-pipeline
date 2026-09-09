@@ -54,6 +54,12 @@ class FactoryV2OAuthExpiryTests(unittest.TestCase):
             AccountStage.THREADS_CREATED,
         ):
             self.service.transition_account(account["id"], stage)
+        self.conn.execute(
+            """UPDATE factory_account
+               SET tester_invited_at=?, tester_accepted_at=?
+               WHERE id=?""",
+            ("2026-09-10T00:00:00+00:00", "2026-09-10T00:00:00+00:00", account["id"]),
+        )
 
         started = start_account_oauth(
             self.conn,

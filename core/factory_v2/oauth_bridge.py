@@ -38,6 +38,8 @@ def start_account_oauth(conn, account_id: str, redirect_uri: str, provider) -> d
     account = repo.get_account(account_id)
     if account is None:
         raise KeyError(account_id)
+    if not account.get("tester_accepted_at"):
+        raise ValueError("account has not accepted the Threads tester invitation")
     if account["stage"] not in _RETRYABLE_START_STAGES:
         raise ValueError(f"account cannot start OAuth from {account['stage']}")
     if account["stage"] == AccountStage.RETRY_PENDING.value:

@@ -107,7 +107,7 @@ class FactoryV2ApiTests(unittest.TestCase):
         })
         return checkpoint_id
 
-    def seed_threads_created(self, username="maianh.le"):
+    def seed_threads_created(self, username="maianh.le", *, tester_accepted=True):
         account = self.repo.list_accounts(self.batch["id"])[0]
         self.conn.execute(
             "UPDATE factory_account SET username=? WHERE id=?", (username, account["id"])
@@ -120,6 +120,13 @@ class FactoryV2ApiTests(unittest.TestCase):
             AccountStage.THREADS_CREATED,
         ):
             self.service.transition_account(account["id"], stage)
+        if tester_accepted:
+            self.conn.execute(
+                """UPDATE factory_account
+                   SET tester_invited_at=?, tester_accepted_at=?
+                   WHERE id=?""",
+                ("2026-09-10T00:00:00+00:00", "2026-09-10T00:00:00+00:00", account["id"]),
+            )
         return self.repo.get_account(account["id"])
 
     def assert_no_sensitive_keys(self, value):
@@ -274,6 +281,20 @@ class FactoryV2ApiTests(unittest.TestCase):
         worker = self.repo.get_worker("worker-01")
         self.assertEqual("RUNNING", worker["state"])
         self.assertIsNotNone(worker["current_job_id"])
+
+    def test_oauth_start_returns_409_without_tester_acceptance(self):
+        account = self.seed_threads_created("chua.moi", tester_accepted=False)
+
+        res = self.client.post(
+            f"/api/factory/v2/accounts/{account['id']}/oauth/start",
+            headers=self.auth,
+        )
+
+        self.assertEqual(409, res.status_code)
+        self.assertIn("tester", res.get_json()["error"])
+        updated = self.repo.get_account(account["id"])
+        self.assertEqual(AccountStage.THREADS_CREATED.value, updated["stage"])
+        self.assertIsNone(updated["oauth_session_id"])
 
     def test_oauth_start_ignores_client_supplied_username(self):
         account = self.seed_threads_created("maianh.le")
