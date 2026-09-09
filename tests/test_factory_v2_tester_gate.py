@@ -226,6 +226,27 @@ class TesterGateTests(unittest.TestCase):
         self.assertNotIn("ACCEPT_THREADS_TESTER", self.gateway.sent)
         self.assertEqual(0, self.activation.start_calls)
 
+    def test_activation_requests_consent_after_opening_url(self):
+        self.conn.execute(
+            "UPDATE factory_account SET tester_invited_at=?, tester_accepted_at=? WHERE id=?",
+            ("2026-09-10T00:00:00+00:00", "2026-09-10T00:00:00+00:00", self.account_id),
+        )
+        job = self._job_for(self.account_id, desired_action="START_ACP")
+
+        self.runtime._start_activation(job, self.repo.get_account(self.account_id))
+
+        self.assertIn("OPEN_URL", self.gateway.sent)
+        self.assertIn("CONFIRM_THREADS_OAUTH", self.gateway.sent)
+        self.assertLess(
+            self.gateway.sent.index("OPEN_URL"),
+            self.gateway.sent.index("CONFIRM_THREADS_OAUTH"),
+        )
+        row = self.conn.execute(
+            "SELECT state, desired_action FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone()
+        self.assertEqual("WAITING_HUMAN", row["state"])
+        self.assertEqual("WAIT_ACP", row["desired_action"])
+
 
 if __name__ == "__main__":
     unittest.main()

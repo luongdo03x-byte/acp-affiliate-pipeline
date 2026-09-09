@@ -21,6 +21,7 @@ from core.factory_v2.ui_automation.instagram.flow import InstagramFlow
 from core.factory_v2.ui_automation.instagram.screens import build_instagram_detector
 from core.factory_v2.ui_automation.threads.flow import ThreadsFlow
 from core.factory_v2.ui_automation.threads.screens import build_threads_detector
+from core.factory_v2.ui_automation.threads.consent_flow import ThreadsConsentFlow
 from core.factory_v2.ui_automation.threads.tester_flow import ThreadsTesterFlow
 from core.factory_v2.worker_protocol import CommandLedger, WorkerCommand, WorkerHeartbeat
 
@@ -142,6 +143,7 @@ class WorkerAgent:
         instagram_flow=None,
         threads_flow=None,
         threads_tester_flow=None,
+        threads_consent_flow=None,
         adb_client=None,
     ):
         self.worker_id = worker_id
@@ -173,6 +175,9 @@ class WorkerAgent:
         self.instagram_flow = instagram_flow
         self.threads_flow = threads_flow
         self.threads_tester_flow = threads_tester_flow or ThreadsTesterFlow(
+            self.threads_flow.driver
+        )
+        self.threads_consent_flow = threads_consent_flow or ThreadsConsentFlow(
             self.threads_flow.driver
         )
 
@@ -326,6 +331,13 @@ class WorkerAgent:
                 return self._flow_response(
                     "threads",
                     self.threads_tester_flow.accept_invite(),
+                )
+            if action == "CONFIRM_THREADS_OAUTH":
+                # The authorization window is already in the foreground after
+                # OPEN_URL, so this action must not reopen the Threads app.
+                return self._flow_response(
+                    "threads",
+                    self.threads_consent_flow.confirm(),
                 )
             if action == "OBSERVE_CHECKPOINT":
                 flow_name = str(command.payload.get("flow") or self.flow or "").strip().lower()

@@ -606,6 +606,12 @@ class FactoryControllerRuntime:
         opened = self._command(job, "OPEN_URL", {"url": started["authorization_url"]})
         if _pending(opened):
             return
+        # Tap the authorization control when the device positively identifies the
+        # consent window. Any other outcome leaves the ACP_OAUTH checkpoint open
+        # and the job parked on WAIT_ACP for a human, exactly as before.
+        consent = self._command(job, "CONFIRM_THREADS_OAUTH")
+        if _pending(consent):
+            return
         self.repo.conn.execute(
             """UPDATE factory_job
                SET state='WAITING_HUMAN', desired_action='WAIT_ACP', heartbeat_at=?, lease_expires_at=?
