@@ -1,11 +1,18 @@
 import os
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
+
+# acp.web composes the package from ``..core``, so the repository's parent must
+# be importable before the wizard module is loaded.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from flask import Flask
 
 from core import db
+from core.db import now
 from core.account_factory import ensure_schema as ensure_oauth_schema
 from core.factory_v2.models import AccountStage
 from core.factory_v2.repository import FactoryRepository
@@ -51,6 +58,17 @@ class ThreadsOnboardingWebTests(unittest.TestCase):
         os.environ.pop("ACP_MASTER_KEY", None)
         os.environ["ACP_PUBLIC_BASE_URL"] = "https://acp.example"
         os.environ["META_APP_TESTERS_URL"] = "https://developers.facebook.com/apps/123/app-roles/"
+
+        # The wizard resolves acp.core.db, a different module object from the
+        # core.db this fixture rebinds. Without this patch the routes would open
+        # the real shared database instead of the temporary one.
+        for target in (
+            "acp.web.threads_onboarding.connect",
+            "acp.web.account_factory.connect",
+        ):
+            patcher = patch(target, db.connect)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         conn = db.connect()
         conn.executescript("""
@@ -106,13 +124,99 @@ class ThreadsOnboardingWebTests(unittest.TestCase):
                 os.environ[key] = old
 
     def _build_app(self):
-        from web.threads_onboarding import register_threads_onboarding_routes
+        from acp.web.threads_onboarding import register_threads_onboarding_routes
 
         app = Flask(__name__, template_folder="../web/templates")
         app.secret_key = "test-secret"
         app.config["THREADS_ONBOARDING_OAUTH_FACTORY"] = lambda: self.provider
         register_threads_onboarding_routes(app, admin_password="")
         return app
+
+    def _seed_batch_waiting_invite(self, name, usernames):
+        conn = db.connect()
+        try:
+            repo = FactoryRepository(conn)
+            service = FactoryService(conn and repo)
+            batch = service.create_batch(name, count=len(usernames), seed=31)
+            account_ids = []
+            for account, username in zip(repo.list_accounts(batch["id"]), usernames):
+                conn.execute(
+                    """UPDATE factory_account
+                       SET username=?, stage='THREADS_CREATED', last_safe_stage='THREADS_CREATED',
+                           tester_invited_at=NULL, tester_accepted_at=NULL
+                       WHERE id=?""",
+                    (username, account["id"]),
+                )
+                conn.execute(
+                    """INSERT INTO factory_checkpoint
+                       (id,batch_id,account_id,type,status,message,created_at)
+                       VALUES (?,?,?,'TESTER_INVITE','WAITING_EXTERNAL',?,?)""",
+                    (
+                        f"cp-{account['id']}", batch["id"], account["id"],
+                        "Chờ mời tài khoản này làm Threads Tester trên Meta.", now(),
+                    ),
+                )
+                account_ids.append(account["id"])
+            return batch["id"], account_ids
+        finally:
+            conn.close()
+
+    def _account_row(self, account_id):
+        conn = db.connect()
+        try:
+            return conn.execute(
+                """SELECT tester_invited_at, tester_accepted_at
+                   FROM factory_account WHERE id=?""",
+                (account_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def test_batch_invite_marks_every_pending_account(self):
+        first_batch, first_ids = self._seed_batch_waiting_invite(
+            "Batch mot", ["acc_one", "acc_two"]
+        )
+        _, other_ids = self._seed_batch_waiting_invite("Batch hai", ["acc_three"])
+        app = self._build_app()
+
+        response = app.test_client().post(
+            f"/kenh/threads/onboarding/batch/{first_batch}/tester-invited"
+        )
+
+        self.assertEqual(302, response.status_code)
+        for account_id in first_ids:
+            row = self._account_row(account_id)
+            self.assertIsNotNone(row["tester_invited_at"])
+            self.assertIsNone(row["tester_accepted_at"])
+        self.assertIsNone(self._account_row(other_ids[0])["tester_invited_at"])
+
+        conn = db.connect()
+        try:
+            open_rows = conn.execute(
+                """SELECT COUNT(*) AS n FROM factory_checkpoint
+                   WHERE batch_id=? AND type='TESTER_INVITE' AND status='WAITING_EXTERNAL'""",
+                (first_batch,),
+            ).fetchone()["n"]
+            still_open = conn.execute(
+                """SELECT COUNT(*) AS n FROM factory_checkpoint
+                   WHERE batch_id!=? AND type='TESTER_INVITE' AND status='WAITING_EXTERNAL'""",
+                (first_batch,),
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+        self.assertEqual(0, open_rows)
+        self.assertEqual(1, still_open)
+
+    def test_wizard_lists_pending_invite_batch(self):
+        batch_id, _ = self._seed_batch_waiting_invite("Batch ba", ["acc_four", "acc_five"])
+        app = self._build_app()
+
+        body = app.test_client().get("/kenh/threads/onboarding").get_data(as_text=True)
+
+        self.assertIn("Đã thêm trên Meta", body)
+        self.assertIn(f"/kenh/threads/onboarding/batch/{batch_id}/tester-invited", body)
+        self.assertIn("acc_four", body)
+        self.assertIn("acc_five", body)
 
     def test_wizard_shows_next_account_and_configured_meta_tester_link(self):
         app = self._build_app()

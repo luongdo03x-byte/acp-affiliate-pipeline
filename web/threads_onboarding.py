@@ -101,6 +101,27 @@ def _mark_denied(conn, state: str) -> str | None:
     return oauth_session["id"]
 
 
+def pending_invite_batches(conn) -> list[dict]:
+    """Group accounts waiting for a Meta tester invitation by batch."""
+    rows = conn.execute(
+        """SELECT c.batch_id AS batch_id, c.account_id AS account_id, a.username AS username
+           FROM factory_checkpoint c
+           JOIN factory_account a ON a.id = c.account_id
+           WHERE c.type='TESTER_INVITE'
+             AND c.status IN ('WAITING_EXTERNAL','OPEN','SNOOZED')
+           ORDER BY c.batch_id, a.sequence, a.id"""
+    ).fetchall()
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        entry = grouped.setdefault(
+            row["batch_id"],
+            {"batch_id": row["batch_id"], "usernames": [], "account_ids": []},
+        )
+        entry["usernames"].append(row["username"])
+        entry["account_ids"].append(row["account_id"])
+    return list(grouped.values())
+
+
 def register_threads_onboarding_routes(app, *, admin_password: str):
     @app.get("/kenh/threads/onboarding")
     def threads_onboarding():
@@ -116,6 +137,7 @@ def register_threads_onboarding_routes(app, *, admin_password: str):
                 if account["onboarding_status"] == "OAUTH_IN_PROGRESS":
                     _sync_safely(conn, account.get("oauth_session_id"))
             accounts = list_onboarding_accounts(conn)
+            invite_batches = pending_invite_batches(conn)
         finally:
             conn.close()
 
@@ -140,9 +162,54 @@ def register_threads_onboarding_routes(app, *, admin_password: str):
             next_account=next_account,
             counts=counts,
             meta_testers_url=_meta_testers_url(),
+            pending_invite_batches=invite_batches,
             summary=request.args.get("summary"),
             err=request.args.get("err"),
         )
+
+    @app.post("/kenh/threads/onboarding/batch/<batch_id>/tester-invited")
+    def threads_onboarding_batch_tester_invited(batch_id):
+        auth_redirect = _login_redirect(admin_password)
+        if auth_redirect is not None:
+            return auth_redirect
+
+        conn = connect()
+        try:
+            ensure_factory_schema(conn)
+            target = next(
+                (
+                    batch
+                    for batch in pending_invite_batches(conn)
+                    if batch["batch_id"] == batch_id
+                ),
+                None,
+            )
+            if target is None:
+                return redirect(url_for(
+                    "threads_onboarding",
+                    err="Batch không có account nào đang chờ mời tester",
+                ))
+            for account_id in target["account_ids"]:
+                mark_tester_invited(conn, account_id)
+            conn.execute(
+                """UPDATE factory_checkpoint
+                   SET status='RESOLVED', resolved_at=?, resolution='TESTER_INVITED'
+                   WHERE batch_id=? AND type='TESTER_INVITE'
+                     AND status IN ('WAITING_EXTERNAL','OPEN','SNOOZED')""",
+                (now(), batch_id),
+            )
+            count = len(target["account_ids"])
+        except ValueError:
+            return redirect(url_for(
+                "threads_onboarding",
+                err="Có account trong batch chưa sẵn sàng ghi nhận invite",
+            ))
+        finally:
+            conn.close()
+        return redirect(url_for(
+            "threads_onboarding",
+            summary=f"Đã ghi nhận invite cho {count} account trong batch {batch_id}",
+        ))
 
     @app.post("/kenh/threads/onboarding/<account_id>/tester-invited")
     def threads_onboarding_tester_invited(account_id):
