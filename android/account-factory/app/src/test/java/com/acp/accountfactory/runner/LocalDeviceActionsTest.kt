@@ -136,7 +136,7 @@ class LocalDeviceActionsTest {
     }
 
     @Test
-    fun accountSwitcherNavigationRunsAsOneBoundedCommandChain() {
+    fun accountSwitcherNavigationPerformsOnlyOneMutationPerCommand() {
         val bridge = SwitchingBridge()
         val actions = LocalDeviceActions(
             FakePlatform(),
@@ -149,6 +149,6 @@ class LocalDeviceActionsTest {
         val result = actions.execute(command("AUTOMATE_INSTAGRAM"))
 
         assertEquals("running", result.result["flow_status"])
-        assertEquals("IG_SIGNUP_ENTRY", result.result["screen"])
+        assertEquals("IG_HOME", result.result["screen"])
     }
 }
