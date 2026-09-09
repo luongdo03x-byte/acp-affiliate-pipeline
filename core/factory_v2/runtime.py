@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 import os
+import re
+import sqlite3
 import threading
 import time
 
@@ -357,6 +359,31 @@ class FactoryControllerRuntime:
         detail = response.get("result") if isinstance(response.get("result"), dict) else {}
         screen = str(detail.get("screen") or "UNKNOWN")[:120]
         reason = str(detail.get("reason") or screen)[:120]
+
+        actual_username = str(response.get("actual_username") or "").strip().lstrip("@").lower()
+        if actual_username:
+            if flow != "instagram" or len(actual_username) > 30 or not re.fullmatch(
+                r"[a-z0-9._]+", actual_username
+            ):
+                self._ensure_remote_checkpoint(
+                    job, account, flow=flow, screen=screen, confirmation=True
+                )
+                return
+            if actual_username != str(account.get("username") or "").lower():
+                try:
+                    self.repo.update_account_username(
+                        account["id"], actual_username, updated_at=now()
+                    )
+                except sqlite3.IntegrityError:
+                    self._transition_remote_terminal(
+                        job,
+                        account,
+                        stage=AccountStage.USERNAME_UNAVAILABLE,
+                        error_code="USERNAME_CONFLICT",
+                        message="Suggested username conflicts with another account in this batch",
+                    )
+                    return
+                account["username"] = actual_username
 
         if status == "running":
             self._set_remote_running(

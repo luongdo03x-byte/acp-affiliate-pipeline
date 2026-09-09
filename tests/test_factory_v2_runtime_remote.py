@@ -1,11 +1,12 @@
+import sqlite3
 import unittest
 
 from core.factory_v2.runtime import FactoryControllerRuntime
 
 
 _ALLOWED = {
-    "RUNNER_ASSIGNED": {"IG_READY_FOR_HUMAN", "RETRY_PENDING", "NEEDS_CONFIRMATION", "ERROR"},
-    "AVD_ASSIGNED": {"IG_READY_FOR_HUMAN", "RETRY_PENDING", "NEEDS_CONFIRMATION", "ERROR"},
+    "RUNNER_ASSIGNED": {"IG_READY_FOR_HUMAN", "USERNAME_UNAVAILABLE", "RETRY_PENDING", "NEEDS_CONFIRMATION", "ERROR"},
+    "AVD_ASSIGNED": {"IG_READY_FOR_HUMAN", "USERNAME_UNAVAILABLE", "RETRY_PENDING", "NEEDS_CONFIRMATION", "ERROR"},
     "IG_READY_FOR_HUMAN": {"WAITING_HUMAN", "IG_CREATED", "NEEDS_VERIFICATION", "ERROR"},
     "WAITING_HUMAN": {"IG_CREATED", "THREADS_CREATED", "NEEDS_VERIFICATION", "NEEDS_CONFIRMATION", "USERNAME_UNAVAILABLE", "RETRY_PENDING", "ERROR"},
     "NEEDS_CONFIRMATION": {"WAITING_HUMAN", "IG_READY_FOR_HUMAN", "THREADS_READY_FOR_HUMAN", "RETRY_PENDING", "ERROR"},
@@ -43,6 +44,11 @@ class FakeRepo:
     def resolve_checkpoint(self, *args, **kwargs):
         if self.checkpoint:
             self.checkpoint["status"] = "RESOLVED"
+
+    def update_account_username(self, account_id, username, *, updated_at):
+        self.account["username"] = username
+        self.account["updated_at"] = updated_at
+        return self.account
 
 
 class FakeService:
@@ -224,6 +230,50 @@ class RemoteRuntimeTests(unittest.TestCase):
         runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
         self.assertEqual("RETRY_PENDING", acc["stage"])
         self.assertEqual("RATE_LIMITED", service.transitions[-1][2])
+        self.assertEqual([("job-1", "FAILED")], runtime.released)
+
+    def test_suggested_instagram_username_becomes_authoritative_before_next_step(self):
+        acc = account()
+        repo = FakeRepo(acc)
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "actual_username": "phuo.ngthaopham6",
+                "result": {"screen": "IG_PROFILE_SETUP"},
+            }]),
+        )
+
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+
+        self.assertEqual("phuo.ngthaopham6", acc["username"])
+        self.assertEqual("AUTOMATE_INSTAGRAM", runtime.running_actions[-1])
+
+    def test_duplicate_suggested_username_stops_without_repeating_command(self):
+        acc = account()
+        repo = FakeRepo(acc)
+        repo.update_account_username = lambda *args, **kwargs: (_ for _ in ()).throw(
+            sqlite3.IntegrityError("duplicate username")
+        )
+        service = FakeService(repo)
+        runtime = TestRuntime(
+            repo,
+            service,
+            FakeGateway([{
+                "ok": True,
+                "status": "running",
+                "actual_username": "already.planned",
+                "result": {"screen": "IG_PROFILE_SETUP"},
+            }]),
+        )
+
+        runtime._drive_job(job("AUTOMATE_INSTAGRAM"))
+
+        self.assertEqual("USERNAME_UNAVAILABLE", acc["stage"])
+        self.assertEqual("USERNAME_CONFLICT", service.transitions[-1][2])
         self.assertEqual([("job-1", "FAILED")], runtime.released)
 
     def test_remote_threads_completion_uses_existing_activation_path(self):

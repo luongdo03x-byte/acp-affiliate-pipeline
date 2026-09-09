@@ -29,6 +29,8 @@ class LocalDeviceActionsTest {
         override fun nodes() = listOf(LocalUiNode(text = "Unexpected transition frame"))
         override fun click(selector: LocalUiSelector) = false
         override fun longClick(selector: LocalUiSelector) = false
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
         override fun setText(selector: LocalUiSelector, value: String) = false
     }
 
@@ -55,6 +57,8 @@ class LocalDeviceActionsTest {
             screen += 1
             return true
         }
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
         override fun setText(selector: LocalUiSelector, value: String) = false
     }
 
