@@ -280,6 +280,32 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun explicitlyApprovedInstagramTermsCanBeAcceptedAutomatically() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(
+                    text = "Để đăng ký, hãy đọc cũng như đồng ý với các điều khoản và chính sách của chúng tôi",
+                ),
+                LocalUiNode(
+                    text = "Bằng việc đăng ký, bạn đồng ý với Điều khoản, Chính sách quyền riêng tư và Chính sách cookie của Instagram.",
+                ),
+                LocalUiNode(
+                    text = "Tôi đồng ý",
+                    contentDescription = "Tôi đồng ý",
+                    clickable = true,
+                ),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(emptyMap())
+
+        assertEquals("running", result.status)
+        assertEquals("IG_TERMS_CONSENT", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
     fun unknownUiNeverMutates() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.THREADS_PACKAGE,

@@ -75,6 +75,11 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         contentDescriptions = setOf("Allow and continue", "Cho phép và tiếp tục"),
         requireClickable = true,
     )
+    private val instagramTermsConsent = LocalUiSelector(
+        texts = setOf("I agree", "Tôi đồng ý"),
+        contentDescriptions = setOf("I agree", "Tôi đồng ý"),
+        requireClickable = true,
+    )
     private val instagramProfileTab = LocalUiSelector(
         resourceIds = setOf("com.instagram.android:id/profile_tab"),
         contentDescriptions = setOf("Profile", "Trang cá nhân"),
@@ -181,6 +186,8 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "IG_SIGNUP_ENTRY" -> return act(screen, bridge.click(instagramSignup))
             "IG_ACCOUNT_CENTER_CONSENT" ->
                 return act(screen, bridge.click(accountCenterConsent))
+            "IG_TERMS_CONSENT" ->
+                return act(screen, bridge.click(instagramTermsConsent))
             "IG_CONTACT_ENTRY" -> {
                 val contact = profile["signup_contact"].orEmpty().trim()
                 if (contact.isEmpty()) return confirmation(screen, "MISSING_SIGNUP_CONTACT")
@@ -323,6 +330,12 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         if (has(nodes, accountCenterConsent) &&
             containsAny(nodes, "account center", "trung tam tai khoan")
         ) return "IG_ACCOUNT_CENTER_CONSENT"
+        if (has(nodes, instagramTermsConsent) && containsAny(
+                nodes,
+                "by signing up, you agree to",
+                "bang viec dang ky, ban dong y voi dieu khoan",
+            )
+        ) return "IG_TERMS_CONSENT"
         if (has(nodes, contactInput)) return "IG_CONTACT_ENTRY"
         if (has(nodes, birthdayInput)) return "IG_BIRTHDAY_ENTRY"
         if (has(nodes, usernameInput) || has(nodes, instagramNameInput) || has(nodes, instagramBioInput)) {
