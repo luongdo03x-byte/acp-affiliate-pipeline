@@ -46,14 +46,18 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
     }
 
     override fun longClick(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->
-        node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return@withMatchingNode true
+        val bounds = Rect().also(node::getBoundsInScreen)
+        dispatchTap(bounds.centerX(), bounds.centerY(), 800L)
     }
 
-    override fun tapAt(x: Int, y: Int): Boolean {
+    override fun tapAt(x: Int, y: Int): Boolean = dispatchTap(x, y, 80L)
+
+    private fun dispatchTap(x: Int, y: Int, durationMs: Long): Boolean {
         if (x < 0 || y < 0) return false
         val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 80L))
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
             .build()
         return dispatchGesture(gesture, null, null)
     }

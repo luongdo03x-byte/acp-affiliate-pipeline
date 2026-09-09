@@ -342,6 +342,29 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun currentThreadsComposeHomeLongPressesProfileTabByStableId() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(
+                LocalUiNode(contentDescription = "Bảng feed"),
+                LocalUiNode(
+                    viewId = "barcelona_tab_profile",
+                    left = 557,
+                    top = 1392,
+                    right = 688,
+                    bottom = 1449,
+                ),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(emptyMap())
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_HOME", result.screen)
+        assertEquals(1, bridge.longClicks.size)
+    }
+
+    @Test
     fun observingExistingThreadsHomeDoesNotAdvanceFlow() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.THREADS_PACKAGE,

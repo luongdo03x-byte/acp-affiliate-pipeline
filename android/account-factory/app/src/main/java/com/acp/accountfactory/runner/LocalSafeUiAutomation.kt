@@ -146,9 +146,12 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         requireClickable = true,
     )
     private val threadsProfileTab = LocalUiSelector(
-        resourceIds = setOf("com.instagram.barcelona:id/profile_tab"),
+        resourceIds = setOf(
+            "com.instagram.barcelona:id/profile_tab",
+            "com.instagram.barcelona:id/barcelona_tab_profile",
+            "barcelona_tab_profile",
+        ),
         contentDescriptions = setOf("Profile", "Trang cá nhân"),
-        requireLongClickable = true,
     )
     private val threadsAddProfile = LocalUiSelector(
         texts = setOf(
@@ -463,12 +466,21 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     private fun hasHome(nodes: List<LocalUiNode>, packageName: String): Boolean {
         val prefix = "$packageName:id/"
         val home = nodes.any {
-            normalize(it.contentDescription) in setOf("home", "trang chu") ||
-                it.viewId in setOf("${prefix}feed_tab", "${prefix}home_tab")
+            normalize(it.contentDescription) in setOf("home", "trang chu", "feed", "bang feed") ||
+                it.viewId in setOf(
+                    "${prefix}feed_tab",
+                    "${prefix}home_tab",
+                    "${prefix}barcelona_tab_main_feed",
+                    "barcelona_tab_main_feed",
+                )
         }
         val profile = nodes.any {
             normalize(it.contentDescription) in setOf("profile", "trang ca nhan") ||
-                it.viewId == "${prefix}profile_tab"
+                it.viewId in setOf(
+                    "${prefix}profile_tab",
+                    "${prefix}barcelona_tab_profile",
+                    "barcelona_tab_profile",
+                )
         }
         return home && profile
     }
