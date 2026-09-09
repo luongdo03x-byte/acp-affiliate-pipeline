@@ -256,6 +256,30 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun explicitAccountCenterConsentCanBeContinuedAutomatically() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Trung tâm tài khoản"),
+                LocalUiNode(
+                    text = "Khi tạo tài khoản bằng cách này, bạn sẽ có thể sử dụng những tính năng hoạt động trên nhiều sản phẩm của chúng tôi.",
+                ),
+                LocalUiNode(
+                    text = "Cho phép và tiếp tục",
+                    contentDescription = "Cho phép và tiếp tục",
+                    clickable = true,
+                ),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(emptyMap())
+
+        assertEquals("running", result.status)
+        assertEquals("IG_ACCOUNT_CENTER_CONSENT", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
     fun unknownUiNeverMutates() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.THREADS_PACKAGE,

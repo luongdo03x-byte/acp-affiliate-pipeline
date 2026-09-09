@@ -70,6 +70,11 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         contentDescriptions = setOf("Create new account", "Tạo tài khoản mới"),
         requireClickable = true,
     )
+    private val accountCenterConsent = LocalUiSelector(
+        texts = setOf("Allow and continue", "Cho phép và tiếp tục"),
+        contentDescriptions = setOf("Allow and continue", "Cho phép và tiếp tục"),
+        requireClickable = true,
+    )
     private val instagramProfileTab = LocalUiSelector(
         resourceIds = setOf("com.instagram.android:id/profile_tab"),
         contentDescriptions = setOf("Profile", "Trang cá nhân"),
@@ -174,6 +179,8 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             "IG_HOME" -> return act(screen, bridge.longClick(instagramProfileTab))
             "IG_ACCOUNT_SWITCHER" -> return act(screen, bridge.click(instagramAddAccount))
             "IG_SIGNUP_ENTRY" -> return act(screen, bridge.click(instagramSignup))
+            "IG_ACCOUNT_CENTER_CONSENT" ->
+                return act(screen, bridge.click(accountCenterConsent))
             "IG_CONTACT_ENTRY" -> {
                 val contact = profile["signup_contact"].orEmpty().trim()
                 if (contact.isEmpty()) return confirmation(screen, "MISSING_SIGNUP_CONTACT")
@@ -313,6 +320,9 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         detectCommon(nodes)?.let { return it }
         if (has(nodes, instagramAddAccount)) return "IG_ACCOUNT_SWITCHER"
         if (has(nodes, instagramSignup)) return "IG_SIGNUP_ENTRY"
+        if (has(nodes, accountCenterConsent) &&
+            containsAny(nodes, "account center", "trung tam tai khoan")
+        ) return "IG_ACCOUNT_CENTER_CONSENT"
         if (has(nodes, contactInput)) return "IG_CONTACT_ENTRY"
         if (has(nodes, birthdayInput)) return "IG_BIRTHDAY_ENTRY"
         if (has(nodes, usernameInput) || has(nodes, instagramNameInput) || has(nodes, instagramBioInput)) {
