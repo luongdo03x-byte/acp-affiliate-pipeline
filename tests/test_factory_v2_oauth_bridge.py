@@ -95,7 +95,7 @@ class FactoryV2OAuthBridgeTests(unittest.TestCase):
         else:
             os.environ["ACP_PUBLIC_BASE_URL"] = self.old_public_base
 
-    def seed_threads_created(self, username="maianh.le"):
+    def seed_threads_created(self, username="maianh.le", *, tester_accepted=True):
         batch = self.service.create_batch("OAuth Batch", count=1, seed=11)
         account = self.repo.list_accounts(batch["id"])[0]
         self.conn.execute(
@@ -109,6 +109,13 @@ class FactoryV2OAuthBridgeTests(unittest.TestCase):
             AccountStage.THREADS_CREATED,
         ):
             self.service.transition_account(account["id"], stage)
+        if tester_accepted:
+            self.conn.execute(
+                """UPDATE factory_account
+                   SET tester_invited_at=?, tester_accepted_at=?
+                   WHERE id=?""",
+                ("2026-09-10T00:00:00+00:00", "2026-09-10T00:00:00+00:00", account["id"]),
+            )
         return self.repo.get_account(account["id"])
 
     def start(self, username="maianh.le", provider=None):
@@ -118,6 +125,19 @@ class FactoryV2OAuthBridgeTests(unittest.TestCase):
             self.conn, account["id"], self.redirect_uri, provider
         )
         return account, result
+
+    def test_start_rejects_account_without_tester_acceptance(self):
+        account = self.seed_threads_created("chua.moi", tester_accepted=False)
+
+        with self.assertRaises(ValueError) as caught:
+            start_account_oauth(
+                self.conn, account["id"], self.redirect_uri, self.provider
+            )
+
+        self.assertIn("tester", str(caught.exception))
+        updated = self.repo.get_account(account["id"])
+        self.assertEqual(AccountStage.THREADS_CREATED.value, updated["stage"])
+        self.assertIsNone(updated["oauth_session_id"])
 
     def test_start_oauth_uses_authoritative_username_and_marks_connecting(self):
         account, result = self.start("maianh.le")

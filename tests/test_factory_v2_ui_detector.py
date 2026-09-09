@@ -37,6 +37,48 @@ class SelectorTests(unittest.TestCase):
         self.assertIsNone(SIGN_UP.find(snapshot))
 
 
+class TesterOnboardingDetectorTests(unittest.TestCase):
+    def setUp(self):
+        self.detector = build_threads_detector()
+
+    def test_invite_list_is_detected(self):
+        snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (
+            node(text="Invites", clickable=True),
+        ))
+        self.assertEqual("THREADS_TESTER_INVITE_LIST", self.detector.detect(snapshot).kind)
+
+    def test_security_consent_outranks_tester_screens(self):
+        snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (
+            node(text="Two-factor authentication"),
+            node(text="Accept", clickable=True),
+        ))
+        detected = self.detector.detect(snapshot)
+        self.assertEqual("CONSENT_WITH_SECURITY_IMPACT", detected.kind)
+        self.assertTrue(detected.protected)
+
+    def test_oauth_consent_needs_scope_marker_and_allow_button(self):
+        allow_only = UiSnapshot("com.android.chrome", ".Main", (
+            node(text="Allow", clickable=True),
+        ))
+        self.assertNotEqual("THREADS_OAUTH_CONSENT", self.detector.detect(allow_only).kind)
+
+        full = UiSnapshot("com.android.chrome", ".Main", (
+            node(text="threads_content_publish"),
+            node(text="Allow", clickable=True),
+        ))
+        self.assertEqual("THREADS_OAUTH_CONSENT", self.detector.detect(full).kind)
+
+    def test_password_screen_outranks_oauth_consent(self):
+        snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (
+            node(text="Password"),
+            node(text="threads_basic"),
+            node(text="Allow", clickable=True),
+        ))
+        detected = self.detector.detect(snapshot)
+        self.assertEqual("PASSWORD_REQUIRED", detected.kind)
+        self.assertTrue(detected.protected)
+
+
 class DetectorTests(unittest.TestCase):
     def test_otp_wins_over_continue_button(self):
         snapshot = UiSnapshot("com.instagram.android", ".MainActivity", (node(text="Enter confirmation code"), node(text="Continue", clickable=True)))

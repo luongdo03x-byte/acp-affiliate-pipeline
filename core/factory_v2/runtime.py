@@ -499,7 +499,89 @@ class FactoryControllerRuntime:
         with transaction(self.repo.conn):
             self.scheduler.release_job_in_transaction(job_id, final_state)
 
+    def _tester_checkpoint(self, account_id: str):
+        return self.repo.conn.execute(
+            """SELECT * FROM factory_checkpoint
+               WHERE account_id=? AND type='TESTER_INVITE'
+                 AND status IN ('WAITING_EXTERNAL','OPEN','SNOOZED')
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (account_id,),
+        ).fetchone()
+
+    def _resolve_tester_checkpoint(self, account_id: str, resolution: str) -> None:
+        checkpoint = self._tester_checkpoint(account_id)
+        if checkpoint is not None:
+            self.repo.resolve_checkpoint(
+                checkpoint["id"],
+                resolved_at=now(),
+                resolution=resolution,
+            )
+
+    def _open_tester_checkpoint(self, job, account) -> None:
+        timestamp = now()
+        if self._tester_checkpoint(account["id"]) is None:
+            self.repo.create_checkpoint({
+                "id": ulid(),
+                "batch_id": account["batch_id"],
+                "account_id": account["id"],
+                "worker_id": job["worker_id"],
+                "type": "TESTER_INVITE",
+                "status": "WAITING_EXTERNAL",
+                "message": "Chờ mời tài khoản này làm Threads Tester trên Meta.",
+                "created_at": timestamp,
+            })
+        self.repo.conn.execute(
+            """UPDATE factory_job
+               SET state='WAITING_HUMAN', desired_action='WAIT_TESTER', heartbeat_at=?, lease_expires_at=?
+               WHERE id=?""",
+            (timestamp, _lease_extension(), job["id"]),
+        )
+        self.repo.conn.execute(
+            "UPDATE factory_worker SET state='WAITING_HUMAN', last_progress_at=? WHERE id=?",
+            (timestamp, job["worker_id"]),
+        )
+
+    def _drive_tester_invite(self, job, account) -> None:
+        from .threads_onboarding import mark_tester_accepted
+
+        self.repo.conn.execute(
+            "UPDATE factory_job SET heartbeat_at=?, lease_expires_at=? WHERE id=?",
+            (now(), _lease_extension(), job["id"]),
+        )
+        if account.get("tester_accepted_at"):
+            self._resolve_tester_checkpoint(account["id"], "TESTER_ACCEPTED")
+            self._start_activation(job, self.repo.get_account(account["id"]))
+            return
+        if not account.get("tester_invited_at"):
+            # The operator has not confirmed the Meta-side invitation yet, so
+            # there is nothing for the device to accept.
+            return
+
+        response = self._command(job, "ACCEPT_THREADS_TESTER")
+        if _pending(response):
+            return
+        if response.get("status") == "completed":
+            mark_tester_accepted(self.repo.conn, account["id"])
+            self._resolve_tester_checkpoint(account["id"], "TESTER_ACCEPTED")
+            self._start_activation(job, self.repo.get_account(account["id"]))
+            return
+
+        result = response.get("result") or {}
+        if result.get("reason") == "NO_TESTER_INVITE":
+            checkpoint = self._tester_checkpoint(account["id"])
+            if checkpoint is not None:
+                self.repo.conn.execute(
+                    "UPDATE factory_checkpoint SET message=? WHERE id=?",
+                    (
+                        "Chưa thấy lời mời trên Meta cho account này.",
+                        checkpoint["id"],
+                    ),
+                )
+
     def _start_activation(self, job, account) -> None:
+        if not account.get("tester_accepted_at"):
+            self._open_tester_checkpoint(job, account)
+            return
         try:
             activation = self._activation()
             started = activation.start(account["id"])
@@ -523,6 +605,12 @@ class FactoryControllerRuntime:
         self._ensure_activation_checkpoint(job, current)
         opened = self._command(job, "OPEN_URL", {"url": started["authorization_url"]})
         if _pending(opened):
+            return
+        # Tap the authorization control when the device positively identifies the
+        # consent window. Any other outcome leaves the ACP_OAUTH checkpoint open
+        # and the job parked on WAIT_ACP for a human, exactly as before.
+        consent = self._command(job, "CONFIRM_THREADS_OAUTH")
+        if _pending(consent):
             return
         self.repo.conn.execute(
             """UPDATE factory_job
@@ -671,6 +759,8 @@ class FactoryControllerRuntime:
                     raise ValueError("SOCIAL_ONLY activation requested before Threads completion")
             else:
                 self._start_activation(job, account)
+        elif action == "WAIT_TESTER":
+            self._drive_tester_invite(job, account)
         elif action == "WAIT_ACP":
             self._reconcile_activation(job, account)
 
@@ -701,7 +791,7 @@ class FactoryControllerRuntime:
                  AND desired_action IN (
                      'PREPARE_INSTAGRAM','AUTOMATE_INSTAGRAM',
                      'PREPARE_THREADS','AUTOMATE_THREADS','OBSERVE_CHECKPOINT',
-                     'VERIFY_CHECKPOINT','RETRY_CHECKPOINT','START_ACP','WAIT_ACP'
+                     'VERIFY_CHECKPOINT','RETRY_CHECKPOINT','START_ACP','WAIT_TESTER','WAIT_ACP'
                  )
                ORDER BY leased_at, id"""
         ).fetchall()

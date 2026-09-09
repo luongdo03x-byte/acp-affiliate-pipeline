@@ -3,7 +3,21 @@ from __future__ import annotations
 
 from ..detector import ScreenDetector, ScreenSignature
 from ..selectors import Selector
-from .selectors import BIO_INPUT, CONTINUE, DISPLAY_NAME_INPUT, HOME, JOIN_THREADS, PROFILE
+from .selectors import (
+    ACCOUNT_ENTRY,
+    BIO_INPUT,
+    CONTINUE,
+    DISPLAY_NAME_INPUT,
+    HOME,
+    JOIN_THREADS,
+    OAUTH_CONSENT_ALLOW,
+    OAUTH_CONSENT_MARKER,
+    PROFILE,
+    SETTINGS_ENTRY,
+    TESTER_ACCEPT,
+    TESTER_INVITES,
+    WEBSITE_PERMISSIONS,
+)
 
 PACKAGE = "com.instagram.barcelona"
 
@@ -32,6 +46,15 @@ def build_threads_detector() -> ScreenDetector:
         ScreenSignature("ACCOUNT_DISABLED", PACKAGE, (_text("account_disabled", "Your account has been disabled", "Account disabled"),), 1, 0.99, False, 33),
         ScreenSignature("APP_CRASH", "*", (_text("app_crash", "Threads keeps stopping", "Threads has stopped"),), 1, 0.99, False, 34),
         ScreenSignature("THREADS_POSTCHECK_OK", PACKAGE, (HOME, PROFILE), 2, 0.99, False, 60),
+        # Tester onboarding screens rank above THREADS_HOME so a settings page
+        # that still shows the home tab is not mistaken for the feed.
+        ScreenSignature("THREADS_TESTER_INVITE_CONFIRM", PACKAGE, (TESTER_ACCEPT,), 1, 0.95, False, 70),
+        ScreenSignature("THREADS_TESTER_INVITE_LIST", PACKAGE, (TESTER_INVITES,), 1, 0.95, False, 71),
+        ScreenSignature("THREADS_WEBSITE_PERMISSIONS", PACKAGE, (WEBSITE_PERMISSIONS,), 1, 0.95, False, 72),
+        ScreenSignature("THREADS_SETTINGS", PACKAGE, (SETTINGS_ENTRY, ACCOUNT_ENTRY), 2, 0.95, False, 73),
+        # The authorization window may render in the browser or in-app, so it is
+        # package-agnostic and needs both the scope marker and a clickable allow.
+        ScreenSignature("THREADS_OAUTH_CONSENT", "*", (OAUTH_CONSENT_MARKER, OAUTH_CONSENT_ALLOW), 2, 0.95, False, 74),
         ScreenSignature("THREADS_PROFILE_SETUP", PACKAGE, (DISPLAY_NAME_INPUT, BIO_INPUT, CONTINUE), 2, 0.96, False, 80),
         ScreenSignature("THREADS_ONBOARDING", PACKAGE, (JOIN_THREADS, CONTINUE), 1, 0.94, False, 81),
         ScreenSignature("THREADS_HOME", PACKAGE, (HOME,), 1, 0.96, False, 82),

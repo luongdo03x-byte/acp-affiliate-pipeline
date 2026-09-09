@@ -24,6 +24,20 @@
   <span class="tag ok">ACTIVE {{ counts.get('ACTIVE', 0) }}</span>
 </div>
 
+{% for batch in pending_invite_batches %}
+<section class="card">
+  <h3>Batch {{ batch.batch_id }} — {{ batch.usernames|length }} account chờ mời tester</h3>
+  <p class="lede">Thêm toàn bộ username dưới đây vào Threads Testers trên Meta, rồi bấm nút xác nhận.</p>
+  <textarea readonly rows="{{ batch.usernames|length }}" style="width:100%">{{ batch.usernames|join('\n') }}</textarea>
+  <div class="channel-meta">
+    <a class="btn btn--ghost" href="{{ meta_testers_url }}" target="_blank" rel="noopener">Mở App roles trên Meta</a>
+    <form method="post" action="{{ url_for('threads_onboarding_batch_tester_invited', batch_id=batch.batch_id) }}">
+      <button class="btn" type="submit">Đã thêm trên Meta</button>
+    </form>
+  </div>
+</section>
+{% endfor %}
+
 {% if next_account %}
 <div class="section-heading section-heading--spaced"><div><h2>Account tiếp theo</h2><p class="note">Xử lý account này xong, ACP tự đưa account kế tiếp lên đầu.</p></div></div>
 <section class="card channel-card">
