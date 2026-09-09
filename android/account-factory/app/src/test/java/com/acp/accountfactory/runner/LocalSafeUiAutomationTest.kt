@@ -30,6 +30,46 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun usernameScreenIsNotMistakenForFinalSubmit() {
+        // Cây UI thật chụp từ Redmi 9A. Instagram dựng màn này bằng Compose nên
+        // MỌI node đều có resource-id rỗng; ô nhập chỉ nhận ra được qua
+        // content-desc. Phần mô tả chứa cụm "tạo tài khoản", đúng từ khoá mà
+        // luật IG_FINAL_SIGNUP_SUBMIT dò -- nên nếu luật đó chạy trước phép
+        // kiểm ô nhập, màn hình bị coi nhầm là bước cần người và cả luồng dừng.
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.INSTAGRAM_PACKAGE,
+            listOf(
+                LocalUiNode(text = "Tạo tên người dùng", contentDescription = "Tạo tên người dùng"),
+                LocalUiNode(
+                    text = "Để bắt đầu tạo tài khoản, bạn cần thêm tên người dùng hoặc dùng gợi ý của chúng tôi.",
+                    contentDescription = "Để bắt đầu tạo tài khoản, bạn cần thêm tên người dùng hoặc dùng gợi ý của chúng tôi.",
+                ),
+                LocalUiNode(
+                    text = "squirrel.27519677",
+                    contentDescription = "Tên người dùng,squirrel.27519677",
+                    className = "android.widget.EditText",
+                    clickable = true,
+                    longClickable = true,
+                    editable = true,
+                ),
+                LocalUiNode(contentDescription = "Tiếp", className = "android.widget.Button", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runInstagram(mapOf("username" to "phuongthaop"))
+
+        assertEquals(
+            "màn hình nhập tên người dùng bị coi nhầm là bước cần người",
+            "IG_PROFILE_SETUP",
+            result.screen,
+        )
+        assertTrue(
+            "phải điền tên người dùng của hồ sơ, không dùng gợi ý của Instagram",
+            bridge.values.contains("phuongthaop"),
+        )
+    }
+
+    @Test
     fun passwordAlwaysStopsBeforeMutation() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.INSTAGRAM_PACKAGE,

@@ -264,14 +264,25 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         if (bridge.foregroundPackage() != INSTAGRAM_PACKAGE) return "UNKNOWN"
         detectCommon(nodes)?.let { return it }
         if (has(nodes, instagramAddAccount)) return "IG_ACCOUNT_SWITCHER"
-        if (containsAny(nodes, "create account", "sign up", "đăng ký", "tạo tài khoản") &&
-            !containsAny(nodes, "create new account", "tạo tài khoản mới")) return "IG_FINAL_SIGNUP_SUBMIT"
         if (has(nodes, instagramSignup)) return "IG_SIGNUP_ENTRY"
         if (has(nodes, contactInput)) return "IG_CONTACT_ENTRY"
         if (has(nodes, birthdayInput)) return "IG_BIRTHDAY_ENTRY"
         if (has(nodes, usernameInput) || has(nodes, instagramNameInput) || has(nodes, instagramBioInput)) {
             return "IG_PROFILE_SETUP"
         }
+        // Luật dựa trên VĂN BẢN phải chạy SAU các phép kiểm ô nhập cụ thể.
+        //
+        // Màn "Tạo tên người dùng" có câu mô tả "Để bắt đầu tạo tài khoản, bạn
+        // cần thêm tên người dùng..." -- trúng từ khoá "tạo tài khoản" ở dưới.
+        // Khi luật này chạy trước, màn hình đó bị xếp vào IG_FINAL_SIGNUP_SUBMIT,
+        // mà đó là màn hình được bảo vệ, nên runner dừng và đòi người thao tác
+        // trong khi thực chất nó chỉ cần điền tên rồi bấm Tiếp. Cả luồng tạo tài
+        // khoản đứng lại ở đây.
+        //
+        // Một ô nhập nhận diện được luôn là tín hiệu chắc chắn hơn một cụm từ
+        // nằm trong đoạn văn mô tả.
+        if (containsAny(nodes, "create account", "sign up", "đăng ký", "tạo tài khoản") &&
+            !containsAny(nodes, "create new account", "tạo tài khoản mới")) return "IG_FINAL_SIGNUP_SUBMIT"
         if (containsAny(nodes, "add profile photo", "thêm ảnh đại diện")) return "IG_AVATAR_SETUP"
         if (hasHome(nodes, INSTAGRAM_PACKAGE)) return "IG_HOME"
         return "UNKNOWN"
