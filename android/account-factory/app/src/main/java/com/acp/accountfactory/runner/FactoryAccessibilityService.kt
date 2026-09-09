@@ -41,8 +41,23 @@ class FactoryAccessibilityService : AccessibilityService(), LocalAccessibilityBr
         return buildList { collect(root, this) }
     }
 
-    override fun click(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->
-        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    override fun click(selector: LocalUiSelector): Boolean =
+        withMatchingNode(selector.copy(requireClickable = false)) { node ->
+            clickNodeOrClickableAncestor(node)
+        }
+
+    private fun clickNodeOrClickableAncestor(node: AccessibilityNodeInfo): Boolean {
+        var target = node
+        while (!target.isClickable) {
+            val parent = target.parent ?: return false
+            if (target !== node) target.recycle()
+            target = parent
+        }
+        return try {
+            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } finally {
+            if (target !== node) target.recycle()
+        }
     }
 
     override fun longClick(selector: LocalUiSelector): Boolean = withMatchingNode(selector) { node ->

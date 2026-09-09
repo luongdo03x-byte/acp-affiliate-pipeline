@@ -157,12 +157,15 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         texts = setOf(
             "Add profile", "Add account",
             "Thêm trang cá nhân", "Thêm tài khoản",
+            "\"Add profile\"", "\"Add account\"",
+            "\"Thêm trang cá nhân\"", "\"Thêm tài khoản\"",
         ),
         contentDescriptions = setOf(
             "Add profile", "Add account",
             "Thêm trang cá nhân", "Thêm tài khoản",
+            "\"Add profile\"", "\"Add account\"",
+            "\"Thêm trang cá nhân\"", "\"Thêm tài khoản\"",
         ),
-        requireClickable = true,
     )
     private val threadsNameInput = LocalUiSelector(
         resourceIds = setOf(

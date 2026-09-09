@@ -365,6 +365,21 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
+    fun threadsAccountSwitcherAcceptsLabelInsideClickableParent() {
+        val bridge = FakeBridge(
+            LocalSafeUiAutomation.THREADS_PACKAGE,
+            listOf(LocalUiNode(text = "\"Thêm trang cá nhân\"", clickable = false)),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runThreads(emptyMap())
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_ACCOUNT_SWITCHER", result.screen)
+        assertEquals(1, bridge.clicks.size)
+        assertFalse(bridge.clicks.single().requireClickable)
+    }
+
+    @Test
     fun observingExistingThreadsHomeDoesNotAdvanceFlow() {
         val bridge = FakeBridge(
             LocalSafeUiAutomation.THREADS_PACKAGE,

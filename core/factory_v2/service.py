@@ -253,6 +253,7 @@ class FactoryService:
             if not existing.get("current_job_id") and existing.get("state") in {
                 WorkerState.STOPPED.value,
                 WorkerState.ERROR.value,
+                WorkerState.RECOVERING.value,
             }:
                 updates.update(state=WorkerState.READY.value, draining=0, last_error=None)
             return self.repo.update_worker_fields(existing["id"], **updates)
