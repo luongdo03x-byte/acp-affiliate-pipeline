@@ -27,7 +27,9 @@ class FactoryV2ActivationTests(unittest.TestCase):
         self.account = self.repo.list_accounts(batch["id"])[0]
         self.conn.execute(
             """UPDATE factory_account
-               SET stage='THREADS_CREATED', last_safe_stage='THREADS_CREATED'
+               SET stage='THREADS_CREATED', last_safe_stage='THREADS_CREATED',
+                   tester_invited_at='2026-09-10T00:00:00+00:00',
+                   tester_accepted_at='2026-09-10T00:00:00+00:00'
                WHERE id=?""",
             (self.account["id"],),
         )

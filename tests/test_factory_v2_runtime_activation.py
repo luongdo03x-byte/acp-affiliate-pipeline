@@ -111,6 +111,8 @@ class FactoryRuntimeActivationTests(unittest.TestCase):
         self.conn.execute(
             """UPDATE factory_account
                SET stage='WAITING_HUMAN', last_safe_stage='IG_CREATED',
+                   tester_invited_at='2026-09-10T00:00:00+00:00',
+                   tester_accepted_at='2026-09-10T00:00:00+00:00',
                    assigned_worker_id=?, current_job_id='job-1'
                WHERE id=?""",
             (worker["id"], account["id"]),
