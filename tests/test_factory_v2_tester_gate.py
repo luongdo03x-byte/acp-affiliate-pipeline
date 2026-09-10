@@ -247,6 +247,44 @@ class TesterGateTests(unittest.TestCase):
         self.assertEqual("WAITING_HUMAN", row["state"])
         self.assertEqual("WAIT_ACP", row["desired_action"])
 
+    def test_running_step_rotates_command_id_so_next_tick_advances(self):
+        # Gateway của máy thật gắn kết quả vào mã lệnh. Không đổi mã sau mỗi
+        # bước thì tick sau đọc lại đúng kết quả cũ và luồng đứng yên mãi.
+        self._mark_invited()
+        job = self._job_for(self.account_id, desired_action="WAIT_TESTER")
+        before = job["command_id"]
+        self.gateway.responses["ACCEPT_THREADS_TESTER"] = {
+            "ok": True,
+            "status": "running",
+            "result": {"screen": "APP_OPENING", "reason": None},
+        }
+
+        self.runtime._drive_tester_invite(job, self.repo.get_account(self.account_id))
+
+        after = self.conn.execute(
+            "SELECT command_id FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone()["command_id"]
+        self.assertNotEqual(before, after)
+        account = self.repo.get_account(self.account_id)
+        self.assertIsNone(account["tester_accepted_at"])
+
+    def test_missing_invite_does_not_rotate_command_id(self):
+        self._mark_invited()
+        job = self._job_for(self.account_id, desired_action="WAIT_TESTER")
+        before = job["command_id"]
+        self.gateway.responses["ACCEPT_THREADS_TESTER"] = {
+            "ok": True,
+            "status": "needs_confirmation",
+            "result": {"screen": "THREADS_TESTER_INVITE_LIST", "reason": "NO_TESTER_INVITE"},
+        }
+
+        self.runtime._drive_tester_invite(job, self.repo.get_account(self.account_id))
+
+        after = self.conn.execute(
+            "SELECT command_id FROM factory_job WHERE id=?", (job["id"],)
+        ).fetchone()["command_id"]
+        self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()

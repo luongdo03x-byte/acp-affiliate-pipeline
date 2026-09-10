@@ -604,6 +604,16 @@ class FactoryControllerRuntime:
                         checkpoint["id"],
                     ),
                 )
+            return
+
+        if response.get("status") == "running":
+            # The local runner keys each result to the job's command_id, so a
+            # step that reports progress must retire that id. Reusing it makes
+            # the next tick read the same finished result forever.
+            self.repo.conn.execute(
+                "UPDATE factory_job SET command_id=? WHERE id=?",
+                (ulid(), job["id"]),
+            )
 
     def _start_activation(self, job, account) -> None:
         if not account.get("tester_accepted_at"):
