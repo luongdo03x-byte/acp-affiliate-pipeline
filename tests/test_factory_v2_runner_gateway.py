@@ -97,6 +97,20 @@ class FactoryV2RunnerGatewayTests(unittest.TestCase):
         self.assertNotIn('"profile"', queued["payload_json"])
         self.assertIsNone(self.processes.last_command)
 
+    def test_local_gateway_allows_tester_and_consent_actions(self):
+        # Cả hai lệnh này phải nằm trong danh sách cho phép của gateway, nếu
+        # không runtime sẽ ném ValueError mỗi tick và điện thoại không bao giờ
+        # nhận được lệnh.
+        for action in ("ACCEPT_THREADS_TESTER", "CONFIRM_THREADS_OAUTH"):
+            with self.subTest(action=action):
+                job = self._leased_job(f"phone-{action.lower()}", "LOCAL_DEVICE")
+                result = self.gateway.send(job, action)
+
+                self.assertEqual("pending", result["status"])
+                queued = self.repo.get_runner_command(result["command_id"])
+                self.assertEqual(action, queued["action"])
+                self.assertEqual("LOCAL_DEVICE", queued["runner_type"])
+
     def test_local_gateway_reuses_unfinished_command(self):
         job = self._leased_job("phone-2", "LOCAL_DEVICE")
         first = self.gateway.send(job, "OBSERVE_FOREGROUND")
