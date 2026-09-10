@@ -524,16 +524,64 @@ class LocalSafeUiAutomationTest {
     }
 
     // --- Threads tester onboarding -------------------------------------------------
+    // Node dựng theo cây giao diện thật đọc từ máy ngày 10/09.
 
     private fun threadsBridge(vararg nodes: LocalUiNode) =
         FakeBridge(LocalSafeUiAutomation.THREADS_PACKAGE, nodes.toList())
 
+    private fun profileTabNode() = LocalUiNode(viewId = "barcelona_tab_profile")
+
+    private fun settingsIconNode() = LocalUiNode(
+        contentDescription = "Cài đặt",
+        viewId = "profile_screen_profile_settings",
+        clickable = true,
+    )
+
+    private fun appsAndWebsitesTitleNode() = LocalUiNode(
+        text = "Apps and Websites",
+        contentDescription = "Apps and Websites",
+        viewId = "com.instagram.barcelona:id/action_bar_title",
+        clickable = true,
+    )
+
     @Test
-    fun testerAcceptMoDuocMucQuyenTrangWebTuManCaiDat() {
+    fun tuFeedThiMoTrangCaNhanTruoc() {
         val bridge = threadsBridge(
-            LocalUiNode(text = "Cài đặt"),
-            LocalUiNode(text = "Tài khoản", clickable = true),
-            LocalUiNode(text = "Quyền trang web", clickable = true),
+            LocalUiNode(contentDescription = "Bảng feed"),
+            profileTabNode(),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_HOME", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun trangCaNhanConThanhDieuHuongVanBamNutCaiDat() {
+        // Trang cá nhân vẫn còn thanh tab dưới cùng. Nếu thang ưu tiên xét tab
+        // hồ sơ trước thì nó bấm lại chính tab đang đứng và kẹt vòng lặp.
+        val bridge = threadsBridge(
+            LocalUiNode(contentDescription = "Bảng feed"),
+            profileTabNode(),
+            settingsIconNode(),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_PROFILE", result.screen)
+    }
+
+    @Test
+    fun manCaiDatBamDungNhanTiengVietDayDu() {
+        // Nhãn thật là "Quyền trên trang web". Bản đầu tôi viết thiếu chữ "trên"
+        // nên selector không bao giờ khớp.
+        val bridge = threadsBridge(
+            LocalUiNode(text = "Cài đặt khác"),
+            LocalUiNode(text = "Ngôn ngữ"),
+            LocalUiNode(text = "Quyền trên trang web"),
         )
 
         val result = LocalSafeUiAutomation(bridge).runTesterAccept()
@@ -544,38 +592,46 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
-    fun testerAcceptMoDuocMucLoiMoi() {
+    fun manUngDungMoTabLoiMoiKhiDangODungTabKhac() {
         val bridge = threadsBridge(
-            LocalUiNode(text = "Quyền trang web"),
-            LocalUiNode(text = "Lời mời", clickable = true),
+            appsAndWebsitesTitleNode(),
+            LocalUiNode(text = "Active"),
+            LocalUiNode(contentDescription = "Invites", clickable = true),
         )
 
         val result = LocalSafeUiAutomation(bridge).runTesterAccept()
 
         assertEquals("running", result.status)
-        assertEquals("THREADS_WEBSITE_PERMISSIONS", result.screen)
+        assertEquals("THREADS_APPS_AND_WEBSITES", result.screen)
         assertEquals(1, bridge.clicks.size)
     }
 
     @Test
-    fun testerAcceptBamChapNhanKhiCoLoiMoi() {
+    fun bamChapNhanRoiBaoHoanTatNgay() {
+        // Nút thật là Button chỉ có content-desc, nhãn chữ nằm ở node con.
         val bridge = threadsBridge(
-            LocalUiNode(text = "Lời mời"),
-            LocalUiNode(text = "Chấp nhận", clickable = true),
+            appsAndWebsitesTitleNode(),
+            LocalUiNode(text = "Đây là những ứng dụng và trang web mà bạn đã được mời thử nghiệm."),
+            LocalUiNode(text = "ACP"),
+            LocalUiNode(contentDescription = "Chấp nhận", clickable = true),
+            LocalUiNode(contentDescription = "Từ chối", clickable = true),
         )
 
         val result = LocalSafeUiAutomation(bridge).runTesterAccept()
 
-        assertEquals("running", result.status)
+        assertEquals("completed", result.status)
         assertEquals("THREADS_TESTER_INVITE_LIST", result.screen)
         assertEquals(1, bridge.clicks.size)
+        assertEquals(setOf("Accept", "Chấp nhận"), bridge.clicks.single().contentDescriptions)
     }
 
     @Test
-    fun testerAcceptBaoThieuLoiMoiThayViBamBua() {
-        // Vào tới mục Lời mời mà không có nút chấp nhận nghĩa là phía Meta chưa
-        // mời tài khoản này. Phải báo đúng lý do, tuyệt đối không chạm gì khác.
-        val bridge = threadsBridge(LocalUiNode(text = "Lời mời"))
+    fun dungTabLoiMoiMaTrongThiBaoThieuLoiMoi() {
+        val bridge = threadsBridge(
+            appsAndWebsitesTitleNode(),
+            LocalUiNode(text = "Đây là những ứng dụng và trang web mà bạn đã được mời thử nghiệm."),
+            LocalUiNode(contentDescription = "Invites", clickable = true),
+        )
 
         val result = LocalSafeUiAutomation(bridge).runTesterAccept()
 
@@ -585,42 +641,16 @@ class LocalSafeUiAutomationTest {
     }
 
     @Test
-    fun testerAcceptHoanTatKhiThayManXacNhan() {
-        val bridge = threadsBridge(LocalUiNode(text = "Đã chấp nhận lời mời"))
-
-        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
-
-        assertEquals("completed", result.status)
-        assertEquals("THREADS_TESTER_INVITE_ACCEPTED", result.screen)
-        assertTrue(bridge.clicks.isEmpty())
-    }
-
-    @Test
     fun testerAcceptDungLaiTruocManBaoVe() {
         val bridge = threadsBridge(
             LocalUiNode(text = "Mã xác minh"),
-            LocalUiNode(text = "Chấp nhận", clickable = true),
+            LocalUiNode(contentDescription = "Chấp nhận", clickable = true),
         )
 
         val result = LocalSafeUiAutomation(bridge).runTesterAccept()
 
         assertEquals("waiting_human", result.status)
         assertTrue(bridge.clicks.isEmpty())
-    }
-
-    @Test
-    fun manCaiDatConThanhDieuHuongKhongBiDocThanhFeed() {
-        // THREADS_HOME chỉ cần thấy tab home và tab profile. Nếu màn cài đặt xếp
-        // sau nó thì trang cài đặt còn thanh dưới sẽ bị nhận nhầm là feed.
-        val bridge = threadsBridge(
-            LocalUiNode(contentDescription = "Home"),
-            LocalUiNode(contentDescription = "Profile"),
-            LocalUiNode(text = "Quyền trang web", clickable = true),
-        )
-
-        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
-
-        assertEquals("THREADS_WEBSITE_PERMISSIONS", result.screen)
     }
 
     // --- Threads OAuth consent -----------------------------------------------------

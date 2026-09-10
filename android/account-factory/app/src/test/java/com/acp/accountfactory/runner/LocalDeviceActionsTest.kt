@@ -198,7 +198,8 @@ class LocalDeviceActionsTest {
 
         val result = actions.execute(command("ACCEPT_THREADS_TESTER"))
 
-        assertEquals("running", result.result["flow_status"])
+        // Bấm được nút Chấp nhận là coi như xong; không chờ đoán màn hình sau đó.
+        assertEquals("completed", result.result["flow_status"])
         assertEquals("THREADS_TESTER_INVITE_LIST", result.result["screen"])
         assertEquals(1, bridge.clicks.size)
     }

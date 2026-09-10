@@ -195,18 +195,34 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         requireEditable = true,
     )
 
-    private val threadsSettingsMarker = LocalUiSelector(
-        texts = setOf("Settings", "Cài đặt"),
+    // Đọc trực tiếp từ cây giao diện Threads trên máy thật ngày 10/09. Nhãn
+    // tiếng Việt là "Quyền trên trang web", không phải "Quyền trang web", và
+    // nút Cài đặt trên trang cá nhân là icon chỉ có content-desc.
+    private val threadsProfileSettingsIcon = LocalUiSelector(
+        resourceIds = setOf(
+            "com.instagram.barcelona:id/profile_screen_profile_settings",
+            "profile_screen_profile_settings",
+        ),
+        contentDescriptions = setOf("Settings", "Cài đặt"),
     )
     private val threadsWebsitePermissions = LocalUiSelector(
-        texts = setOf("Website permissions", "Quyền trang web"),
+        texts = setOf("Website permissions", "Quyền trên trang web"),
+        contentDescriptions = setOf("Website permissions", "Quyền trên trang web"),
     )
-    private val threadsTesterInvites = LocalUiSelector(
+    private val threadsAppsAndWebsites = LocalUiSelector(
+        resourceIds = setOf("com.instagram.barcelona:id/action_bar_title"),
+        texts = setOf("Apps and Websites", "Ứng dụng và trang web"),
+        contentDescriptions = setOf("Apps and Websites", "Ứng dụng và trang web"),
+    )
+    private val threadsTesterInvitesTab = LocalUiSelector(
         texts = setOf("Invites", "Lời mời"),
+        contentDescriptions = setOf("Invites", "Lời mời"),
     )
+    // Nút thật là Button chỉ có content-desc; nhãn "Từ chối" nằm ngay dưới nên
+    // selector phải khớp đúng chữ, không dùng so khớp chứa.
     private val threadsTesterAccept = LocalUiSelector(
         texts = setOf("Accept", "Chấp nhận"),
-        requireClickable = true,
+        contentDescriptions = setOf("Accept", "Chấp nhận"),
     )
     private val oauthAllow = LocalUiSelector(
         texts = setOf("Allow", "Authorize", "Cho phép", "Ủy quyền"),
@@ -362,31 +378,52 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
     }
 
     /**
-     * Một bước mỗi lần gọi, đúng nếp của runThreads: runtime gọi lại ở tick sau
-     * cho tới khi thấy màn xác nhận. Chỉ chạm trên màn đã nhận diện chắc chắn.
+     * Một bước mỗi lần gọi, đúng nếp của runThreads: runtime gọi lại ở tick sau.
+     *
+     * Thang ưu tiên đi từ màn sâu nhất ra ngoài, và dựa trên node chứ không thêm
+     * loại màn hình mới vào detectThreads. Thêm vào đó sẽ khiến trang cá nhân
+     * không còn được runThreads nhận là THREADS_HOME, làm hỏng luồng tạo tài
+     * khoản đang chạy.
      */
     fun runTesterAccept(): LocalFlowOutcome {
         val nodes = bridge.nodes()
         val screen = detectThreads(nodes)
         protectedOutcome(screen)?.let { return it }
-        return when (screen) {
-            "THREADS_TESTER_INVITE_ACCEPTED" -> LocalFlowOutcome("completed", screen)
-            "THREADS_SETTINGS" -> act(screen, bridge.click(threadsWebsitePermissions))
-            "THREADS_WEBSITE_PERMISSIONS" -> act(screen, bridge.click(threadsTesterInvites))
-            "THREADS_TESTER_INVITE_LIST" ->
-                if (has(nodes, threadsTesterAccept)) {
-                    act(screen, bridge.click(threadsTesterAccept))
+        return when {
+            has(nodes, threadsTesterAccept) ->
+                if (bridge.click(threadsTesterAccept)) {
+                    LocalFlowOutcome("completed", "THREADS_TESTER_INVITE_LIST")
                 } else {
-                    // Mục Lời mời không có nút chấp nhận nghĩa là phía Meta chưa
-                    // mời tài khoản này. Báo lý do, không mò sang màn khác.
-                    confirmation(screen, "NO_TESTER_INVITE")
+                    confirmation("THREADS_TESTER_INVITE_LIST", "ACCEPT_TAP_FAILED")
                 }
-            "RATE_LIMITED", "ACTION_BLOCKED", "NETWORK_ERROR" ->
+            has(nodes, threadsAppsAndWebsites) ->
+                if (invitesTabShowing(nodes)) {
+                    // Đang đứng đúng tab Lời mời mà không có nút chấp nhận:
+                    // phía Meta chưa mời tài khoản này.
+                    confirmation("THREADS_TESTER_INVITE_LIST", "NO_TESTER_INVITE")
+                } else {
+                    act("THREADS_APPS_AND_WEBSITES", bridge.click(threadsTesterInvitesTab))
+                }
+            has(nodes, threadsWebsitePermissions) ->
+                act("THREADS_SETTINGS", bridge.click(threadsWebsitePermissions))
+            has(nodes, threadsProfileSettingsIcon) ->
+                act("THREADS_PROFILE", bridge.click(threadsProfileSettingsIcon))
+            has(nodes, threadsProfileTab) ->
+                act("THREADS_HOME", bridge.click(threadsProfileTab))
+            screen in setOf("RATE_LIMITED", "ACTION_BLOCKED", "NETWORK_ERROR") ->
                 LocalFlowOutcome("retry_pending", screen, screen)
-            "ACCOUNT_DISABLED" -> LocalFlowOutcome("error", screen, screen)
+            screen == "ACCOUNT_DISABLED" -> LocalFlowOutcome("error", screen, screen)
             else -> confirmation(screen)
         }
     }
+
+    /** Tab Lời mời đang mở thì màn hình có câu giới thiệu riêng của tab đó. */
+    private fun invitesTabShowing(nodes: List<LocalUiNode>): Boolean = containsAny(
+        nodes,
+        "duoc moi thu nghiem",
+        "invited to test",
+        "invited you to test",
+    )
 
     /**
      * Cửa sổ ủy quyền có thể mở trong trình duyệt, nên không dò theo package.
@@ -477,12 +514,6 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         if (has(nodes, threadsAddProfile)) return "THREADS_ACCOUNT_SWITCHER"
         if (has(nodes, threadsNameInput) || has(nodes, threadsBioInput)) return "THREADS_PROFILE_SETUP"
         if (has(nodes, threadsJoin) || has(nodes, continueSelector)) return "THREADS_ONBOARDING"
-        // Các màn tester phải đứng trước THREADS_HOME: một trang cài đặt còn
-        // thanh điều hướng dưới cùng vẫn thoả điều kiện của màn feed.
-        if (containsAny(nodes, "da chap nhan", "invitation accepted")) return "THREADS_TESTER_INVITE_ACCEPTED"
-        if (has(nodes, threadsSettingsMarker)) return "THREADS_SETTINGS"
-        if (has(nodes, threadsWebsitePermissions)) return "THREADS_WEBSITE_PERMISSIONS"
-        if (has(nodes, threadsTesterInvites)) return "THREADS_TESTER_INVITE_LIST"
         if (hasHome(nodes, THREADS_PACKAGE)) return "THREADS_HOME"
         return "UNKNOWN"
     }

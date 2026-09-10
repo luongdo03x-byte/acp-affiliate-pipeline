@@ -41,16 +41,10 @@ class TesterOnboardingDetectorTests(unittest.TestCase):
     def setUp(self):
         self.detector = build_threads_detector()
 
-    def test_invite_list_is_detected(self):
-        snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (
-            node(text="Invites", clickable=True),
-        ))
-        self.assertEqual("THREADS_TESTER_INVITE_LIST", self.detector.detect(snapshot).kind)
-
-    def test_security_consent_outranks_tester_screens(self):
+    def test_security_consent_outranks_the_accept_button(self):
         snapshot = UiSnapshot("com.instagram.barcelona", ".MainActivity", (
             node(text="Two-factor authentication"),
-            node(text="Accept", clickable=True),
+            node(text="Chấp nhận", clickable=True),
         ))
         detected = self.detector.detect(snapshot)
         self.assertEqual("CONSENT_WITH_SECURITY_IMPACT", detected.kind)
