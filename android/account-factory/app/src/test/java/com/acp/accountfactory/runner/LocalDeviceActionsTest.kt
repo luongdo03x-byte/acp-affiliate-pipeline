@@ -151,4 +151,87 @@ class LocalDeviceActionsTest {
         assertEquals("running", result.result["flow_status"])
         assertEquals("IG_HOME", result.result["screen"])
     }
+
+    private class TesterInviteBridge : LocalAccessibilityBridge {
+        val clicks = mutableListOf<LocalUiSelector>()
+        override fun foregroundPackage() = LocalSafeUiAutomation.THREADS_PACKAGE
+        override fun nodes() = listOf(
+            LocalUiNode(text = "Lời mời"),
+            LocalUiNode(text = "Chấp nhận", clickable = true),
+        )
+        override fun click(selector: LocalUiSelector): Boolean {
+            clicks += selector
+            return true
+        }
+        override fun longClick(selector: LocalUiSelector) = false
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
+        override fun setText(selector: LocalUiSelector, value: String) = false
+    }
+
+    private class ConsentBridge : LocalAccessibilityBridge {
+        val clicks = mutableListOf<LocalUiSelector>()
+        override fun foregroundPackage() = "com.android.chrome"
+        override fun nodes() = listOf(
+            LocalUiNode(text = "threads_content_publish"),
+            LocalUiNode(text = "Cho phép", clickable = true),
+        )
+        override fun click(selector: LocalUiSelector): Boolean {
+            clicks += selector
+            return true
+        }
+        override fun longClick(selector: LocalUiSelector) = false
+        override fun tapAt(x: Int, y: Int) = false
+        override fun dismissKeyboard() = false
+        override fun setText(selector: LocalUiSelector, value: String) = false
+    }
+
+    @Test
+    fun acceptThreadsTesterChayLuongChapNhanLoiMoi() {
+        val bridge = TesterInviteBridge()
+        val actions = LocalDeviceActions(
+            FakePlatform(),
+            FakeClipboard(),
+            ForegroundObservationStore(),
+            automationProvider = { LocalSafeUiAutomation(bridge) },
+        )
+
+        val result = actions.execute(command("ACCEPT_THREADS_TESTER"))
+
+        assertEquals("running", result.result["flow_status"])
+        assertEquals("THREADS_TESTER_INVITE_LIST", result.result["screen"])
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun confirmThreadsOauthBamNutCapQuyen() {
+        val bridge = ConsentBridge()
+        val actions = LocalDeviceActions(
+            FakePlatform(),
+            FakeClipboard(),
+            ForegroundObservationStore(),
+            automationProvider = { LocalSafeUiAutomation(bridge) },
+        )
+
+        val result = actions.execute(command("CONFIRM_THREADS_OAUTH"))
+
+        assertEquals("completed", result.result["flow_status"])
+        assertEquals("THREADS_OAUTH_CONSENT", result.result["screen"])
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun haiLenhMoiKhongConBiTraVeUnsupported() {
+        val actions = LocalDeviceActions(
+            FakePlatform(),
+            FakeClipboard(),
+            ForegroundObservationStore(),
+            automationProvider = { LocalSafeUiAutomation(TesterInviteBridge()) },
+        )
+
+        listOf("ACCEPT_THREADS_TESTER", "CONFIRM_THREADS_OAUTH").forEach { action ->
+            val result = actions.execute(command(action))
+            assertFalse(result.result["error_code"] == "UNSUPPORTED_ACTION")
+        }
+    }
 }

@@ -195,6 +195,24 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         requireEditable = true,
     )
 
+    private val threadsSettingsMarker = LocalUiSelector(
+        texts = setOf("Settings", "Cài đặt"),
+    )
+    private val threadsWebsitePermissions = LocalUiSelector(
+        texts = setOf("Website permissions", "Quyền trang web"),
+    )
+    private val threadsTesterInvites = LocalUiSelector(
+        texts = setOf("Invites", "Lời mời"),
+    )
+    private val threadsTesterAccept = LocalUiSelector(
+        texts = setOf("Accept", "Chấp nhận"),
+        requireClickable = true,
+    )
+    private val oauthAllow = LocalUiSelector(
+        texts = setOf("Allow", "Authorize", "Cho phép", "Ủy quyền"),
+        requireClickable = true,
+    )
+
     fun runInstagram(profile: Map<String, String?>): LocalFlowOutcome {
         val nodes = bridge.nodes()
         val screen = detectInstagram(nodes)
@@ -343,6 +361,57 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         }
     }
 
+    /**
+     * Một bước mỗi lần gọi, đúng nếp của runThreads: runtime gọi lại ở tick sau
+     * cho tới khi thấy màn xác nhận. Chỉ chạm trên màn đã nhận diện chắc chắn.
+     */
+    fun runTesterAccept(): LocalFlowOutcome {
+        val nodes = bridge.nodes()
+        val screen = detectThreads(nodes)
+        protectedOutcome(screen)?.let { return it }
+        return when (screen) {
+            "THREADS_TESTER_INVITE_ACCEPTED" -> LocalFlowOutcome("completed", screen)
+            "THREADS_SETTINGS" -> act(screen, bridge.click(threadsWebsitePermissions))
+            "THREADS_WEBSITE_PERMISSIONS" -> act(screen, bridge.click(threadsTesterInvites))
+            "THREADS_TESTER_INVITE_LIST" ->
+                if (has(nodes, threadsTesterAccept)) {
+                    act(screen, bridge.click(threadsTesterAccept))
+                } else {
+                    // Mục Lời mời không có nút chấp nhận nghĩa là phía Meta chưa
+                    // mời tài khoản này. Báo lý do, không mò sang màn khác.
+                    confirmation(screen, "NO_TESTER_INVITE")
+                }
+            "RATE_LIMITED", "ACTION_BLOCKED", "NETWORK_ERROR" ->
+                LocalFlowOutcome("retry_pending", screen, screen)
+            "ACCOUNT_DISABLED" -> LocalFlowOutcome("error", screen, screen)
+            else -> confirmation(screen)
+        }
+    }
+
+    /**
+     * Cửa sổ ủy quyền có thể mở trong trình duyệt, nên không dò theo package.
+     * Bắt buộc thấy cả dấu hiệu scope lẫn nút bấm được thì mới chạm.
+     */
+    fun confirmOAuthConsent(): LocalFlowOutcome {
+        repeat(CONSENT_POLLS) {
+            val nodes = bridge.nodes()
+            detectCommon(nodes)?.let { common ->
+                protectedOutcome(common)?.let { return it }
+            }
+            val hasScope = containsAny(
+                nodes, "threads_basic", "threads_content_publish", "profile info and posts",
+            )
+            if (hasScope && has(nodes, oauthAllow)) {
+                return if (bridge.click(oauthAllow)) {
+                    LocalFlowOutcome("completed", OAUTH_CONSENT_SCREEN)
+                } else {
+                    confirmation(OAUTH_CONSENT_SCREEN, "CONSENT_TAP_FAILED")
+                }
+            }
+        }
+        return confirmation(OAUTH_CONSENT_SCREEN, "CONSENT_NOT_DETECTED")
+    }
+
     fun observe(flow: String): LocalFlowOutcome {
         val nodes = bridge.nodes()
         val screen = if (flow.lowercase(Locale.ROOT) == "threads") {
@@ -408,6 +477,12 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
         if (has(nodes, threadsAddProfile)) return "THREADS_ACCOUNT_SWITCHER"
         if (has(nodes, threadsNameInput) || has(nodes, threadsBioInput)) return "THREADS_PROFILE_SETUP"
         if (has(nodes, threadsJoin) || has(nodes, continueSelector)) return "THREADS_ONBOARDING"
+        // Các màn tester phải đứng trước THREADS_HOME: một trang cài đặt còn
+        // thanh điều hướng dưới cùng vẫn thoả điều kiện của màn feed.
+        if (containsAny(nodes, "da chap nhan", "invitation accepted")) return "THREADS_TESTER_INVITE_ACCEPTED"
+        if (has(nodes, threadsSettingsMarker)) return "THREADS_SETTINGS"
+        if (has(nodes, threadsWebsitePermissions)) return "THREADS_WEBSITE_PERMISSIONS"
+        if (has(nodes, threadsTesterInvites)) return "THREADS_TESTER_INVITE_LIST"
         if (hasHome(nodes, THREADS_PACKAGE)) return "THREADS_HOME"
         return "UNKNOWN"
     }
@@ -518,6 +593,11 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
             listOf("verification code", "security code", "ma xac minh", "ma bao mat", "otp").any(text::contains) -> "OTP_REQUIRED"
             listOf("confirm your identity", "selfie", "xac minh danh tinh").any(text::contains) -> "SELFIE_OR_IDENTITY_CHECK"
             listOf("security challenge", "security check", "kiem tra bao mat").any(text::contains) -> "SECURITY_CHALLENGE"
+            // Hai loại dưới đây bản Python đã coi là màn bảo vệ từ đầu, bản
+            // Kotlin thì chưa. Thiếu "hai lớp" thì luồng ủy quyền có thể nhầm
+            // màn bảo mật thành màn cấp quyền rồi tự bấm.
+            listOf("confirm your email", "verify your email", "confirm your phone", "verify your phone", "xac nhan email", "xac minh email", "xac nhan so dien thoai").any(text::contains) -> "EMAIL_OR_PHONE_VERIFICATION"
+            listOf("two-factor authentication", "two factor authentication", "review security settings", "xac thuc hai lop", "xac thuc hai yeu to").any(text::contains) -> "CONSENT_WITH_SECURITY_IMPACT"
             listOf("recover account", "account recovery", "khoi phuc tai khoan").any(text::contains) -> "ACCOUNT_RECOVERY"
             listOf("account disabled", "tai khoan bi vo hieu hoa").any(text::contains) -> "ACCOUNT_DISABLED"
             listOf("try again later", "rate limit", "thu lai sau").any(text::contains) -> "RATE_LIMITED"
@@ -582,10 +662,13 @@ class LocalSafeUiAutomation(private val bridge: LocalAccessibilityBridge) {
 
     companion object {
         const val INSTAGRAM_PACKAGE = "com.instagram.android"
+        const val OAUTH_CONSENT_SCREEN = "THREADS_OAUTH_CONSENT"
+        private const val CONSENT_POLLS = 3
         const val THREADS_PACKAGE = "com.instagram.barcelona"
         private val PROTECTED_SCREENS = setOf(
             "PASSWORD_REQUIRED", "OTP_REQUIRED", "CAPTCHA_REQUIRED", "IG_FINAL_SIGNUP_SUBMIT",
             "SELFIE_OR_IDENTITY_CHECK", "SECURITY_CHALLENGE", "ACCOUNT_RECOVERY",
+            "EMAIL_OR_PHONE_VERIFICATION", "CONSENT_WITH_SECURITY_IMPACT",
         )
 
         // NFD chỉ tách được dấu phụ (ô, ù, ê...). Chữ "đ" là một ký tự riêng,

@@ -522,4 +522,184 @@ class LocalSafeUiAutomationTest {
         assertEquals(listOf("acp_generated_user"), bridge.values)
         assertEquals(1, bridge.clicks.size)
     }
+
+    // --- Threads tester onboarding -------------------------------------------------
+
+    private fun threadsBridge(vararg nodes: LocalUiNode) =
+        FakeBridge(LocalSafeUiAutomation.THREADS_PACKAGE, nodes.toList())
+
+    @Test
+    fun testerAcceptMoDuocMucQuyenTrangWebTuManCaiDat() {
+        val bridge = threadsBridge(
+            LocalUiNode(text = "Cài đặt"),
+            LocalUiNode(text = "Tài khoản", clickable = true),
+            LocalUiNode(text = "Quyền trang web", clickable = true),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_SETTINGS", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun testerAcceptMoDuocMucLoiMoi() {
+        val bridge = threadsBridge(
+            LocalUiNode(text = "Quyền trang web"),
+            LocalUiNode(text = "Lời mời", clickable = true),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_WEBSITE_PERMISSIONS", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun testerAcceptBamChapNhanKhiCoLoiMoi() {
+        val bridge = threadsBridge(
+            LocalUiNode(text = "Lời mời"),
+            LocalUiNode(text = "Chấp nhận", clickable = true),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("running", result.status)
+        assertEquals("THREADS_TESTER_INVITE_LIST", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun testerAcceptBaoThieuLoiMoiThayViBamBua() {
+        // Vào tới mục Lời mời mà không có nút chấp nhận nghĩa là phía Meta chưa
+        // mời tài khoản này. Phải báo đúng lý do, tuyệt đối không chạm gì khác.
+        val bridge = threadsBridge(LocalUiNode(text = "Lời mời"))
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("needs_confirmation", result.status)
+        assertEquals("NO_TESTER_INVITE", result.reason)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun testerAcceptHoanTatKhiThayManXacNhan() {
+        val bridge = threadsBridge(LocalUiNode(text = "Đã chấp nhận lời mời"))
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("completed", result.status)
+        assertEquals("THREADS_TESTER_INVITE_ACCEPTED", result.screen)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun testerAcceptDungLaiTruocManBaoVe() {
+        val bridge = threadsBridge(
+            LocalUiNode(text = "Mã xác minh"),
+            LocalUiNode(text = "Chấp nhận", clickable = true),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("waiting_human", result.status)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun manCaiDatConThanhDieuHuongKhongBiDocThanhFeed() {
+        // THREADS_HOME chỉ cần thấy tab home và tab profile. Nếu màn cài đặt xếp
+        // sau nó thì trang cài đặt còn thanh dưới sẽ bị nhận nhầm là feed.
+        val bridge = threadsBridge(
+            LocalUiNode(contentDescription = "Home"),
+            LocalUiNode(contentDescription = "Profile"),
+            LocalUiNode(text = "Quyền trang web", clickable = true),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("THREADS_WEBSITE_PERMISSIONS", result.screen)
+    }
+
+    // --- Threads OAuth consent -----------------------------------------------------
+
+    @Test
+    fun consentBamChoPhepTrongTrinhDuyet() {
+        // Cửa sổ ủy quyền mở ngoài app Threads, nên nhận diện không được phụ
+        // thuộc vào package đang chạy.
+        val bridge = FakeBridge(
+            "com.android.chrome",
+            listOf(
+                LocalUiNode(text = "threads_content_publish"),
+                LocalUiNode(text = "Cho phép", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).confirmOAuthConsent()
+
+        assertEquals("completed", result.status)
+        assertEquals("THREADS_OAUTH_CONSENT", result.screen)
+        assertEquals(1, bridge.clicks.size)
+    }
+
+    @Test
+    fun consentKhongBamKhiThieuDauHieuScope() {
+        // Một nút "Cho phép" đơn độc có thể là hộp thoại quyền của hệ điều hành.
+        val bridge = FakeBridge(
+            "com.android.chrome",
+            listOf(LocalUiNode(text = "Cho phép", clickable = true)),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).confirmOAuthConsent()
+
+        assertEquals("needs_confirmation", result.status)
+        assertEquals("CONSENT_NOT_DETECTED", result.reason)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun consentKhongBamKhiThieuNutBamDuoc() {
+        val bridge = FakeBridge(
+            "com.android.chrome",
+            listOf(
+                LocalUiNode(text = "threads_basic"),
+                LocalUiNode(text = "Cho phép"),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).confirmOAuthConsent()
+
+        assertEquals("needs_confirmation", result.status)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun manHaiLopKhongBaoGioBiNhamThanhManUyQuyen() {
+        val bridge = FakeBridge(
+            "com.android.chrome",
+            listOf(
+                LocalUiNode(text = "Two-factor authentication"),
+                LocalUiNode(text = "threads_basic"),
+                LocalUiNode(text = "Allow", clickable = true),
+            ),
+        )
+
+        val result = LocalSafeUiAutomation(bridge).confirmOAuthConsent()
+
+        assertEquals("waiting_human", result.status)
+        assertEquals("CONSENT_WITH_SECURITY_IMPACT", result.screen)
+        assertTrue(bridge.clicks.isEmpty())
+    }
+
+    @Test
+    fun manXacMinhEmailDuocCoiLaManBaoVe() {
+        val bridge = threadsBridge(LocalUiNode(text = "Confirm your email"))
+
+        val result = LocalSafeUiAutomation(bridge).runTesterAccept()
+
+        assertEquals("waiting_human", result.status)
+        assertEquals("EMAIL_OR_PHONE_VERIFICATION", result.screen)
+    }
 }

@@ -69,6 +69,8 @@ open class LocalDeviceActions(
                 "PREPARE_INSTAGRAM" -> prepareInstagram()
                 "AUTOMATE_INSTAGRAM" -> automate(command, "instagram")
                 "AUTOMATE_THREADS" -> automate(command, "threads")
+                "ACCEPT_THREADS_TESTER" -> testerAccept()
+                "CONFIRM_THREADS_OAUTH" -> confirmOAuthConsent()
                 "OBSERVE_CHECKPOINT" -> observeCheckpoint(command)
                 "OPEN_PACKAGE" -> openPackage(command)
                 "OPEN_URL" -> openUrl(command)
@@ -132,6 +134,29 @@ open class LocalDeviceActions(
         profile: Map<String, String?>,
     ): LocalFlowOutcome =
         if (flow == "threads") automation.runThreads(profile) else automation.runInstagram(profile)
+
+    /** Mở app Threads rồi tiến một bước trong luồng chấp nhận lời mời tester. */
+    private fun testerAccept(): RunnerCommandResult {
+        val automation = automationProvider() ?: return flowResult(
+            LocalFlowOutcome("needs_confirmation", "UNKNOWN", "ACCESSIBILITY_UNAVAILABLE"),
+        )
+        if (automation.foregroundPackageForRunner() != LocalSafeUiAutomation.THREADS_PACKAGE) {
+            platform.openPackage(LocalSafeUiAutomation.THREADS_PACKAGE)
+            return flowResult(LocalFlowOutcome("running", "APP_OPENING"))
+        }
+        return flowResult(automation.runTesterAccept())
+    }
+
+    /**
+     * Cửa sổ ủy quyền đã ở trước mặt sau OPEN_URL, nên không mở lại app nào.
+     * Mở app ở đây sẽ đá chính màn hình cần bấm ra sau lưng.
+     */
+    private fun confirmOAuthConsent(): RunnerCommandResult {
+        val automation = automationProvider() ?: return flowResult(
+            LocalFlowOutcome("needs_confirmation", "UNKNOWN", "ACCESSIBILITY_UNAVAILABLE"),
+        )
+        return flowResult(automation.confirmOAuthConsent())
+    }
 
     private fun observeCheckpoint(command: RunnerCommandDto): RunnerCommandResult {
         val automation = automationProvider() ?: return flowResult(
