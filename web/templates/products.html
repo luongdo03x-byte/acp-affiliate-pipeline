@@ -449,7 +449,7 @@ Phong cách: ảnh chụp sản phẩm studio chuyên nghiệp, nền sáng đơ
         <label class="catalog-card__select">
           <input type="checkbox" class="catalog-select-item" name="product_id" value="{{ p.id }}" form="catalog-batch-form">
         </label>
-        {% if p.main_image_url %}<img src="{{ p.main_image_url }}" alt="{{ p.name }}" loading="lazy">{% else %}<span>Chưa có ảnh</span>{% endif %}
+        {% set image_src = p | product_image_src %}{% if image_src %}<img src="{{ image_src }}" alt="{{ p.name }}" loading="lazy">{% else %}<span>Chưa có ảnh</span>{% endif %}
       </div>
       <div class="catalog-card__body">
         <div class="catalog-card__topline">

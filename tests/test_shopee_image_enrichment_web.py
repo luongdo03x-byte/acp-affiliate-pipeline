@@ -128,6 +128,41 @@ class ShopeeImageEnrichmentWebTests(unittest.TestCase):
         self.assertIn(b"Shopee Visible", response.data)
         self.assertNotIn(b"AccessTrade Hidden", response.data)
 
+    def test_workspace_shows_enriched_image_from_same_origin_media_route(self):
+        from unittest import mock
+
+        from acp.web import server
+
+        media_dir = os.path.join(self.tmp.name, "media")
+        os.makedirs(media_dir)
+        local_path = os.path.join(media_dir, "shopee_10_7.jpg")
+        with open(local_path, "wb") as fh:
+            fh.write(b"jpeg-bytes")
+        self._insert_product(
+            product_id="s7",
+            item_id="7",
+            main_image_url="http://localhost:5000/media/shopee_10_7.jpg",
+        )
+        self._insert_product(product_id="s8", item_id="8", main_image_url="https://cdn.example/x.jpg")
+        conn = self.db.connect()
+        try:
+            conn.execute("UPDATE product SET image_path_local=? WHERE id='s7'", (local_path,))
+        finally:
+            conn.close()
+
+        with mock.patch.object(server, "MEDIA_DIR", media_dir):
+            response = self.client.get("/sanpham/shopee")
+            media = self.client.get("/media/shopee_10_7.jpg")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'src="/media/shopee_10_7.jpg"', response.data)
+        self.assertNotIn(b"http://localhost:5000/media/shopee_10_7.jpg", response.data)
+        # Without a local file the public URL is still the fallback.
+        self.assertIn(b'src="https://cdn.example/x.jpg"', response.data)
+        self.assertEqual(media.status_code, 200)
+        self.assertEqual(media.data, b"jpeg-bytes")
+        media.close()
+
     def test_status_filter_shows_only_requested_state(self):
         self._insert_product(product_id="ready", item_id="1", name="Ready Product")
         self._insert_product(product_id="helper", item_id="2", name="Helper Product")

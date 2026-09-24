@@ -213,8 +213,9 @@
       {% set usage = item.usage_state or 'UNUSED' %}
       <tr data-product-id="{{ item.id }}" data-auto-state="{{ auto }}" data-usage-state="{{ usage }}" data-image-state="{{ state }}">
         <td style="width:88px">
-          {% if item.main_image_url %}
-            <img src="{{ item.main_image_url }}" alt="Ảnh {{ item.name }}" loading="lazy" style="width:72px;height:72px;object-fit:cover;border-radius:10px">
+          {% set image_src = item | product_image_src %}
+          {% if image_src %}
+            <img src="{{ image_src }}" alt="Ảnh {{ item.name }}" loading="lazy" style="width:72px;height:72px;object-fit:cover;border-radius:10px">
           {% else %}
             <div class="image-placeholder" style="width:72px;height:72px">Chưa có ảnh</div>
           {% endif %}
