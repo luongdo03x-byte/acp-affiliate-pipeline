@@ -76,6 +76,31 @@ def _fmt_int(v):
         return "0"
 
 
+def _product_image_src(item):
+    """URL ảnh để trình duyệt của người vận hành hiển thị.
+
+    ``main_image_url`` là URL công khai dựng từ ACP_MEDIA_BASE_URL dành cho
+    Meta tải ảnh lúc đăng; nó có thể là localhost của máy khác, domain ngrok cũ
+    hoặc trang cảnh báo của ngrok, nên ảnh đã enrich xong vẫn hiện "vỡ". Khi
+    file đã có trong MEDIA_DIR thì dùng route /media cùng origin với dashboard.
+    """
+    if item is None:
+        return None
+    try:
+        local_path = str(item["image_path_local"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        local_path = ""
+    if local_path:
+        name = os.path.basename(local_path)
+        if name and os.path.isfile(os.path.join(MEDIA_DIR, name)):
+            return url_for("media", name=name)
+    try:
+        public_url = str(item["main_image_url"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        public_url = ""
+    return public_url or None
+
+
 def _safe_external_url(value):
     """Return only a browser-safe absolute HTTP(S) URL for catalog rendering."""
     text = str(value or "").strip()
@@ -262,6 +287,7 @@ def create_app():
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
     app.jinja_env.filters["vnd"] = _fmt_vnd
     app.jinja_env.filters["num"] = _fmt_int
+    app.jinja_env.filters["product_image_src"] = _product_image_src
 
     app.secret_key = os.environ.get("ACP_SECRET_KEY") or secrets.token_hex(32)
     admin_password = os.environ.get("ACP_ADMIN_PASSWORD", "")
